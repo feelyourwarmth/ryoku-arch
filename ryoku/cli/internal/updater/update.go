@@ -256,14 +256,22 @@ func runSystemUpgrade() error {
 	return runInhibited("System", "System package upgrade", systemUpgradeArgs())
 }
 
-// systemUpgradeArgs is the packaged-box upgrade command. --overwrite adopts the
-// privileged helpers + polkit rules deploy.sh seeds unowned (ryoku-dns,
-// ryoku-wifi-powersave) once ryoku-desktop packages those paths; without it a
-// pacman file conflict aborts the whole -Syu and blocks every update until the
-// files are deleted by hand.
+// ryokuOverwriteGlob names the ryoku-desktop-owned paths that the ISO installer
+// and ryoku/shell/deploy.sh seed unowned before the package began owning them:
+// the privileged helpers (ryoku-dns, ryoku-wifi-powersave), their polkit rules,
+// and the Plymouth splash theme (installer bootloader.sh + deploy.sh). Every
+// ryoku-desktop (re)install --overwrites these, or the first upgrade that starts
+// owning a seeded path aborts the whole transaction ("exists in filesystem") and
+// blocks every update until the files are removed by hand. Keep in sync with the
+// doctor's ryokuSystemGlobs, which clears the same paths on an already-wedged box.
+const ryokuOverwriteGlob = "/usr/bin/ryoku-*," +
+	"/usr/share/polkit-1/rules.d/*ryoku*.rules," +
+	"/usr/share/plymouth/themes/ryoku/*"
+
+// systemUpgradeArgs is the packaged-box upgrade command.
 func systemUpgradeArgs() []string {
 	return []string{"sudo", "env", "SNAP_PAC_SKIP=y", "pacman", "-Syu", "--noconfirm",
-		"--overwrite", "/usr/bin/ryoku-*,/usr/share/polkit-1/rules.d/*ryoku*.rules"}
+		"--overwrite", ryokuOverwriteGlob}
 }
 
 // channelSwitchArgs installs the [ryoku] channel's ryoku-desktop explicitly,
@@ -271,7 +279,7 @@ func systemUpgradeArgs() []string {
 // pulling the umbrella's exact-version depends with it.
 func channelSwitchArgs() []string {
 	return []string{"sudo", "env", "SNAP_PAC_SKIP=y", "pacman", "-S", "--noconfirm",
-		"--overwrite", "/usr/bin/ryoku-*,/usr/share/polkit-1/rules.d/*ryoku*.rules", "ryoku-desktop"}
+		"--overwrite", ryokuOverwriteGlob, "ryoku-desktop"}
 }
 
 // runAURUpgrade runs `yay -Sua` under the same sleep inhibitor.

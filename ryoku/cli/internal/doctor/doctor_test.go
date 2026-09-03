@@ -2370,17 +2370,23 @@ func TestStrayRyokuFilesSelectsUnownedOnly(t *testing.T) {
 			return []string{"/usr/bin/ryoku-dns", "/usr/bin/ryoku-gpu"}, nil
 		case "/usr/share/polkit-1/rules.d/*ryoku*.rules":
 			return []string{"/usr/share/polkit-1/rules.d/50-ryoku-dns.rules"}, nil
+		case "/usr/share/plymouth/themes/ryoku/*":
+			return []string{"/usr/share/plymouth/themes/ryoku/bullet.png", "/usr/share/plymouth/themes/ryoku/logo.png"}, nil
 		}
 		return nil, nil
 	}
-	owned := func(p string) bool { return p == "/usr/bin/ryoku-gpu" } // packaged; the rest are deploy-seeded
+	// packaged; the rest are seeded unowned by the installer / a dev deploy.
+	owned := func(p string) bool {
+		return p == "/usr/bin/ryoku-gpu" || p == "/usr/share/plymouth/themes/ryoku/logo.png"
+	}
 	got := strayRyokuFiles(ryokuSystemGlobs, glob, owned)
 	want := map[string]bool{
 		"/usr/bin/ryoku-dns":                             true,
 		"/usr/share/polkit-1/rules.d/50-ryoku-dns.rules": true,
+		"/usr/share/plymouth/themes/ryoku/bullet.png":    true,
 	}
 	if len(got) != len(want) {
-		t.Fatalf("strayRyokuFiles = %v, want exactly the two unowned paths", got)
+		t.Fatalf("strayRyokuFiles = %v, want exactly the three unowned paths", got)
 	}
 	for _, g := range got {
 		if !want[g] {

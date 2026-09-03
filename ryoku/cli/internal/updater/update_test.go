@@ -149,10 +149,11 @@ func TestPackagedStatusUpToDateOfflineEmptyRecent(t *testing.T) {
 }
 
 // systemUpgradeArgs must run an unattended -Syu and --overwrite the Ryoku system
-// paths deploy.sh seeds unowned (ryoku-dns / ryoku-wifi-powersave + their polkit
-// rules). Once ryoku-desktop packages those paths a file conflict otherwise
-// aborts the whole -Syu and blocks every user update; dropping the glob silently
-// reintroduces that outage, so pin it here.
+// paths the ISO installer and deploy.sh seed unowned (ryoku-dns /
+// ryoku-wifi-powersave + their polkit rules, and the Plymouth splash theme).
+// Once ryoku-desktop packages those paths a file conflict otherwise aborts the
+// whole -Syu and blocks every user update; dropping any of them from the glob
+// silently reintroduces that outage, so pin them here.
 func TestSystemUpgradeAdoptsSeededRyokuFiles(t *testing.T) {
 	args := systemUpgradeArgs()
 	joined := strings.Join(args, " ")
@@ -175,6 +176,8 @@ func TestSystemUpgradeAdoptsSeededRyokuFiles(t *testing.T) {
 		"/usr/bin/ryoku-wifi-powersave",
 		"/usr/share/polkit-1/rules.d/50-ryoku-dns.rules",
 		"/usr/share/polkit-1/rules.d/49-ryoku-wifi-powersave.rules",
+		"/usr/share/plymouth/themes/ryoku/bullet.png",
+		"/usr/share/plymouth/themes/ryoku/logo.png",
 	} {
 		covered := false
 		for _, g := range strings.Split(glob, ",") {

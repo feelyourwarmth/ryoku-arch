@@ -138,6 +138,17 @@
   placement; `validate <dir>` checks a local tree (`plugin.go`, `main.go`).
 
 ### Fixed
+- **`ryoku update` no longer aborts on the Plymouth splash theme.** Once
+  `ryoku-desktop` began owning `/usr/share/plymouth/themes/ryoku/`, boxes whose
+  ISO installer had seeded that theme unowned hit
+  `ryoku-desktop: /usr/share/plymouth/themes/ryoku/bullet.png exists in filesystem`
+  on the next `pacman -Syu`, and the whole transaction rolled back so no update
+  landed. The upgrade, the channel switch, and the boot-guard revert now
+  `--overwrite` the theme path alongside the privileged helpers and polkit rules
+  (one shared `ryokuOverwriteGlob`), and `ryoku doctor` clears the same unowned
+  theme files on a box already wedged so its next update adopts them
+  (`internal/updater/update.go`, `internal/updater/bootguard.go`,
+  `internal/doctor/doctor.go`).
 - **Doctor ignores Zen launcher-wrapper directories.** Zen installations must
   carry Firefox's `application.ini` marker before the policy reconciler treats
   them as an install root, so a `/usr/bin/zen-browser` wrapper no longer makes
