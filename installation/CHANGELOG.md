@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Changed
+- `tests/container-install.sh`: **installs a prebuilt signed repo when
+  `RYOKU_PREBUILT_REPO=1`** (the publish's artifact, verified with the release
+  keyring at `SigLevel=Required`, no build toolchain) and asserts the release
+  and channel the publish named; a hand build still builds with a throwaway
+  key. Also asserts the boot guard ships and disarms on a proven boot.
 - `iso/build.sh`: **A release ISO bakes from its frozen release directory.**
   `RYOKU_ISO_REPO_URL` (the `repo_url` input of the ISO workflows, which
   `publish-repo.yml` passes for a tagged release) now reaches

@@ -416,19 +416,7 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
-          mkdir -p ~/.config/rclone
-          cat > ~/.config/rclone/rclone.conf <<EOF
-          [Ryoku]
-          type = s3
-          provider = Cloudflare
-          access_key_id = ${R2_ACCESS_KEY_ID}
-          secret_access_key = ${R2_SECRET_ACCESS_KEY}
-          endpoint = ${R2_ENDPOINT}
-          # The scoped R2 API token has Object Read+Write only, not bucket-level
-          # perms. Without this flag rclone calls HeadBucket then CreateBucket,
-          # both of which 403, and the upload aborts. The bucket already exists.
-          no_check_bucket = true
-          EOF
+          ./bin/ryoku-r2-config
 
           # R2_BUCKET = the shared release bucket, served at the channel root
           # (iso.ryoku.dev/<channel>/). publish the tracked ISO, signature,

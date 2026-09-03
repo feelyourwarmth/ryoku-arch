@@ -263,6 +263,11 @@ island (when the channel serves the next line) and the Hub's Updates page.
 - The install-test workflow builds the ISO and runs a real, unattended install in
   a VM, then verifies the desktop comes up, so a broken install or a missing
   package is caught before a user hits it.
+- The publish (`publish-repo.yml`) builds and signs the repo once, keeps it as
+  a workflow artifact, installs ryoku-desktop from that artifact on Arch and
+  CachyOS with the release key verified (`installation/tests/container-install.sh`
+  with `RYOKU_PREBUILT_REPO=1`), and uploads the same artifact. What was tested
+  is byte-for-byte what ships; a run that fails the gate publishes nothing.
 - `bin/ryoku-dev-lint-qml <config-root>...` fails on QML that cannot load. The
   publish gate (`installation/tests/container-install.sh`) runs it over the
   materialized shell and Hub trees against the installed Qt modules, the same
