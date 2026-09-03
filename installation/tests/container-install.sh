@@ -168,4 +168,29 @@ log "linting the materialized QML for load failures"
 "$REPO/bin/ryoku-dev-lint-qml" "$cfg/quickshell/shell" "$cfg/quickshell/hub" \
   || die "shipped QML cannot load (see above); a user's desktop would come up broken"
 
+# 7. release naming and channels. the package must carry the /etc/ryoku-release
+#    marker (a hand build names itself local-<pkgver>), the CLI must read it
+#    and report the channel from the [ryoku] Server line, and `ryoku track`
+#    must refuse to move a box whose [ryoku] points at a mirror Ryoku does not
+#    publish (this local repo), instead of rewriting it into a channel it
+#    cannot serve. the live switch itself (stable -> testing -> a pinned
+#    release) needs the published channels and runs in the VM install test.
+log "checking release naming and channel handling"
+[[ -f /etc/ryoku-release ]] || die "ryoku-desktop did not ship /etc/ryoku-release"
+grep -qE '^RELEASE=local-[0-9]' /etc/ryoku-release || die "unexpected /etc/ryoku-release: $(cat /etc/ryoku-release)"
+grep -qE '^CHANNEL=local$' /etc/ryoku-release || die "hand build must be marked CHANNEL=local"
+ver=$(runuser -u "$TESTUSER" -- env "HOME=/home/$TESTUSER" ryoku version)
+[[ $ver == local-* ]] || die "ryoku version should print the release marker, got: $ver"
+cat >>/etc/pacman.conf <<EOF
+
+[ryoku]
+SigLevel = Never
+Server = file://$OUT
+EOF
+if runuser -u "$TESTUSER" -- env "HOME=/home/$TESTUSER" ryoku track testing 2>/tmp/track.err; then
+  die "ryoku track must refuse a [ryoku] repo Ryoku does not publish"
+fi
+grep -q "does not publish" /tmp/track.err || die "unexpected track refusal: $(cat /tmp/track.err)"
+grep -q "^Server = file://$OUT" /etc/pacman.conf || die "track rewrote a foreign [ryoku] Server line"
+
 log "container-install: OK -- ryoku-desktop delivered the full config to $cfg"
