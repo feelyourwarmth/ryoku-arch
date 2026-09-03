@@ -32,6 +32,25 @@ not owned by a pacman package) it runs `prowl-agent update`; a packaged box
 already got the new build from `pacman -Syu`, so the step just logs that the
 binary is managed by pacman. Both are best effort and never fail an update.
 
+### The boot guard
+
+A packaged update that moves the box to another release arms a boot guard:
+stage2 writes `/var/lib/ryoku/update-pending.json` (previous release, new
+release, the pre-update snapshot, the boot it ran in). `ryoku-boot-guard.service`
+runs `ryoku boot-guard` as root early in every boot, before the display
+manager, and only while that marker exists. The shell daemon records a good
+boot once the shell has stayed up 45 s (`/var/lib/ryoku/boot/ok-<uid>`, the boot
+id); a record from any boot other than the one the update ran in disarms the
+guard. Without one, the boot counts: on the second, the guard tracks the
+previous release back (`ryoku track <from>` plus `pacman -Syu`; the Ryoku set
+only, Arch untouched), re-materializes every user's config from it, and leaves
+a notice `ryoku doctor` shows once. On a third it points the Limine boot menu
+at the pre-update snapshot entry, for the case where the packages were not what
+broke. `sudo ryoku boot-guard --disarm` clears a marker by hand. The `ryoku`
+package ships the unit and its tmpfiles entry; the doctor enables the unit and
+prepares the record directory on every update, so boxes installed before it get
+it on their next update.
+
 ## materialize: the config a user receives
 
 `ryoku materialize` lays the package's base config (`/usr/share/ryoku/config`,

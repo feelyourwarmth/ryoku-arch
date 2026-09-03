@@ -19,6 +19,21 @@
   touching it, when `[ryoku]` points at a mirror Ryoku does not publish.
   Checkout boxes keep `ryoku track main | unstable-dev` (`internal/sys/release.go`,
   `internal/updater/release.go`, `track.go`).
+- **A boot guard reverts a packaged update whose boots fail.** After a
+  release moves the box, stage2 arms `/var/lib/ryoku/update-pending.json`
+  (previous release, new release, pre-update snapshot, the boot it ran in).
+  `ryoku-boot-guard.service` runs `ryoku boot-guard` early in every boot as
+  root: a boot the shell daemon recorded as good (`/var/lib/ryoku/boot/ok-<uid>`,
+  written once the shell stays up 45 s) disarms it; otherwise it counts, and
+  on the second failed boot tracks the previous release back (the Ryoku set
+  only; Arch untouched), re-materializes every user's config from it, and
+  leaves a notice the doctor shows once. On a third it points the Limine boot
+  menu at the pre-update snapshot entry. The unit and its tmpfiles ship with
+  the `ryoku` package; the doctor enables the unit on every update so boxes
+  installed before it get it, and `sudo ryoku boot-guard --disarm` clears a
+  marker by hand (`internal/updater/bootguard.go`, `systemd/`,
+  `internal/doctor/reconcile_bootguard.go`).
+
 
 - **`ryoku plugin new` scaffolds a plugin in the right place, and `validate`
   audits it.** `new <id> [--bar|--desktop|--popout]` writes a working plugin

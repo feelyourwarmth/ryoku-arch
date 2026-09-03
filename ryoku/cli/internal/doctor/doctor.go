@@ -114,6 +114,7 @@ func reconcilers() []reconciler {
 		{"stale update run-state", reconcileStaleUpdateRun},
 		{"stale install crypt mapper", reconcileStaleCryptMapper},
 		{"ryoku package channel", reconcileRyokuChannel},
+		{"boot guard", reconcileBootGuard},
 		{"update channel checkout", reconcileUpdateChannel},
 		{"update checkout pointer", reconcileRepoPointer},
 		{"stale dev residue", reconcileDevResidue},

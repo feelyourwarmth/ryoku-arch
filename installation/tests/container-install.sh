@@ -193,4 +193,20 @@ fi
 grep -q "does not publish" /tmp/track.err || die "unexpected track refusal: $(cat /tmp/track.err)"
 grep -q "^Server = file://$OUT" /etc/pacman.conf || die "track rewrote a foreign [ryoku] Server line"
 
+# 8. the boot guard. the ryoku package ships the unit and the tmpfiles entry
+#    for the sessions' boot records; `ryoku boot-guard` with nothing pending is
+#    a no-op, and a marker whose desktop was proven up in another boot is
+#    disarmed rather than counted.
+log "checking the boot guard"
+[[ -f /usr/lib/systemd/system/ryoku-boot-guard.service ]] || die "ryoku did not ship ryoku-boot-guard.service"
+[[ -f /usr/lib/tmpfiles.d/ryoku.conf ]] || die "ryoku did not ship its tmpfiles entry"
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/ryoku.conf
+[[ -d /var/lib/ryoku/boot ]] || die "tmpfiles did not create /var/lib/ryoku/boot"
+[[ $(stat -c %a /var/lib/ryoku/boot) == 1777 ]] || die "/var/lib/ryoku/boot must be 1777, got $(stat -c %a /var/lib/ryoku/boot)"
+ryoku boot-guard || die "boot-guard with nothing pending must succeed"
+printf '{"from":"v0.0.1","to":"v0.0.2","armedBoot":"armed-boot","boots":0,"at":"x"}\n' >/var/lib/ryoku/update-pending.json
+runuser -u "$TESTUSER" -- sh -c "echo later-boot >/var/lib/ryoku/boot/ok-$(id -u "$TESTUSER")" || die "a session cannot record its boot"
+ryoku boot-guard | grep -q "disarmed" || die "a proven boot must disarm the guard"
+[[ ! -e /var/lib/ryoku/update-pending.json ]] || die "disarm left the marker behind"
+
 log "container-install: OK -- ryoku-desktop delivered the full config to $cfg"

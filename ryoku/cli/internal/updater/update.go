@@ -122,6 +122,11 @@ func Update(args []string) error {
 
 	progress.at("packages")
 	progress.logf("Updating system packages (pacman)")
+	// the release this box runs before pacman moves it; stage2 (the new
+	// binary) reads it from the environment to arm the boot guard.
+	if from := sys.ReadRelease().Release; from != "" {
+		os.Setenv("RYOKU_UPDATE_FROM", from)
+	}
 	clearStalePacmanLock()
 	if err := runSystemUpgrade(); err != nil {
 		// only advertise `ryoku rollback` when the pre snapshot it needs exists;
@@ -335,6 +340,12 @@ func updateStage2(pre string) error {
 	} else {
 		progress.skip("aur")
 	}
+
+	// The packages are in. From here the boot guard watches: if the next two
+	// boots never bring the desktop up, it puts the Ryoku set back on the
+	// release this box ran before. Armed only for a real move (the release
+	// changed) so a no-op update never leaves a marker behind.
+	armBootGuard(pre)
 
 	progress.at("apply")
 	progress.logf("Applying the new configuration")
