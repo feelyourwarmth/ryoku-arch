@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+- **QS Bar Settings has an Identity tab again.** The launcher mark (wordmark or
+  glyph, with the full word and glyph grids drawn as the bar draws them) and
+  the workspaces (count, marker style, live preview) were folded into two rows
+  of the Widgets list, which only had room for a handful of the options. They
+  are the bar's identity, so they sit in one route between Bar and Layout, and
+  the old `logo` / `spaces` route ids land there. The Launcher and Workspaces
+  rows in Widgets now point at it instead of carrying a cut-down copy
+  (`qsbar/controlcenter/routes/IdentityRoute.qml`, `kit/Routes.js`,
+  `core/widgets.json`).
+
 ### Fixed
 - **The Rashin chat's skill list now shows the `ryoku` skill.** The sidebar
   listed slash-able skills by walking `~/.hermes/skills`, which does not follow

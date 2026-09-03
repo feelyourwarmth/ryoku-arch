@@ -5,24 +5,27 @@
 // one-line summary the head prints (kept to a few words: it has one line), the
 // words search matches on, and the rail section it sits in.
 //
-// The panel is about one thing, the bar, so the rail's first group is four
-// routes: where the bar sits (Bar), how its widgets are arranged (Layout), what
-// each widget is and does (Widgets), and the dock that rides beside it (Dock).
-// A second, parted group holds Community: every installed bar plugin that is
-// not Ryoku's own, so a widget someone else wrote is never mixed in with the
-// shipped set. What this panel used to also carry -- logo, spaces, pickers,
-// desktop widgets, the mid-work switches, the session -- already has a home
-// (folded into Widgets, moved to the Hub, or reached from quick settings).
+// The panel is about one thing, the bar, so the rail's first group is five
+// routes: where the bar sits (Bar), the mark and workspaces that make it this
+// user's (Identity), how its widgets are arranged (Layout), what each widget is
+// and does (Widgets), and the dock that rides beside it (Dock). A second, parted
+// group holds Community: every installed bar plugin that is not Ryoku's own, so
+// a widget someone else wrote is never mixed in with the shipped set. What this
+// panel used to also carry -- pickers, desktop widgets, the mid-work switches,
+// the session -- already has a home (the Hub, or quick settings).
 var ROUTES = [
     { id: "bars",    label: "Bar",     gloss: "\u5e2f", file: "BarsRoute", section: "bar",
       desc: "Position, shape, surface, gaps and motion.",
       keywords: "position top bottom form full fit dock notch islands surface border corners frost shadow depth tooltip gap gaps accent colour scale size motion animation auto hide" },
+    { id: "identity", label: "Identity", gloss: "\u5370", file: "IdentityRoute", section: "bar",
+      desc: "The launcher mark and the workspaces.",
+      keywords: "identity logo mark wordmark word glyph icon kanji launcher brand ryoku arch hyprland workspaces spaces count marker style numbers kanji rings preview" },
     { id: "layout",  label: "Layout",  gloss: "\u914d\u7f6e", file: "LayoutRoute", section: "bar",
       desc: "Where each widget sits on the bar.",
       keywords: "arrange order move reorder left center centre right lane add widget plugin unlock drag reset layout hide show" },
     { id: "widgets", label: "Widgets", gloss: "\u90e8\u54c1", file: "WidgetsRoute", section: "bar",
       desc: "Show, size, colour and tune each widget.",
-      keywords: "widget show hide on off density icon compact colour fill launcher mark wordmark glyph workspaces marker ai claude codex opencode volume boost clock weather sensor temperature plugin settings" },
+      keywords: "widget show hide on off density icon compact colour fill ai claude codex opencode volume boost clock weather sensor temperature plugin settings" },
     { id: "dock",    label: "Dock",    gloss: "\u53f0", file: "DockRoute", section: "bar",
       desc: "The app dock opposite the bar.",
       keywords: "dock app pinned pin edge autohide auto hide magnify frost depth shadow label media chip peek" },
@@ -63,7 +66,7 @@ function inSection(section) {
 
 // Retired route ids, mapped to their nearest new home, so an old caller (a
 // keybind, a saved link, `bar settings <route>`) never lands on nothing:
-//   logo, spaces      -> the launcher's / workspaces' own settings, in Widgets
+//   logo, spaces      -> Identity (the mark and the workspaces, one route again)
 //   widgets, appearance -> the Widgets route (renamed from the old Appearance)
 //   pickers           -> the Hub's Desktop page owns picker style now; nearest here is Widgets
 //   desktop           -> the Hub owns desktop widgets now; nearest here is Widgets
@@ -74,6 +77,7 @@ function resolve(id) {
     switch (id) {
     case "logo":
     case "spaces":
+        return "identity";
     case "appearance":
     case "pickers":
     case "desktop":
