@@ -33,6 +33,17 @@
   `core/widgets.json`).
 
 ### Fixed
+- **The audio graph no longer touches Quickshell's Pipewire structures mid-teardown.**
+  The shell already fed every audio Repeater from a debounced snapshot so a view
+  never rebuilds inside a node-removal dispatch, but the singleton's
+  `PwObjectTracker` still bound its object set to the live lists, so a mass audio
+  reset (a device flap, "Device or resource busy") that destroys every node rewrote
+  the tracked set on every single removal, inside the same dispatch. That is a
+  reported Quickshell segfault: a binding write into the Pipewire object tracker
+  while a node is being freed. The tracker now follows the settled snapshots (the
+  two default devices stay live so the bar volume reads instantly), so it never
+  re-tracks across a dying node and costs no immediacy, since no view shows a node
+  before it reaches the settled list (`services/Audio.qml`).
 - **The Rashin chat's skill list now shows the `ryoku` skill.** The sidebar
   listed slash-able skills by walking `~/.hermes/skills`, which does not follow
   the symlink `wire` lays for the shipped skill, so Hermes had the skill but the
