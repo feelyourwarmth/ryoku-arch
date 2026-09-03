@@ -188,6 +188,21 @@ stanza, so there is no second state to drift from it:
 A checkout box (`ryoku track main | unstable-dev`) tracks git branches instead
 and rebuilds from source; see `docs/development.md`.
 
+### Release names
+
+Every release line has a name from the creation stories Ryoku draws on (the
+Kojiki and the Theogony), in the order those stories tell them; `CODENAME`
+holds the current one and `release/names.md` tells each name's story. The
+name changes when a line begins (the pre-1.0 line is Onogoro, the first
+island; 1.0 is Amaterasu) and every release inside the line keeps it. It
+travels with the release: `build-repo.sh` writes it into `release.json` and
+the ryoku-desktop package into `/etc/ryoku-release` (`NAME=`), the publish
+copies it into `releases/index.json`, the Stable Release and Release Notes
+workflows title the tag and the GitHub release with it (a line's first release
+opens with its story), and a box shows it in `ryoku version --pretty` (which
+fastfetch's OS line uses), `ryoku status`, `ryoku rollback`, the update
+island (when the channel serves the next line) and the Hub's Updates page.
+
 ## The contract
 
 - **A user-facing config file must be delivered by a path a user runs**: shipped

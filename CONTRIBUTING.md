@@ -113,6 +113,11 @@ Release** workflow run on `main` (`bump_type: none` tags the version `main`
 carries). Never squash-merge into a release
 branch: squashing collapses commits and drops their notes.
 
+A release line carries a name (`CODENAME`, its story in `release/names.md`);
+the release is titled with it and a line's first release opens with the story.
+Starting a new line is one commit that changes `CODENAME` and adds the
+section, before the release that begins it.
+
 ## Pull requests
 
 1. Fork the repository and branch off the current development branch.

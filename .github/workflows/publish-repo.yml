@@ -374,13 +374,14 @@ jobs:
           tmp=$(mktemp -d)
           rclone cat "Ryoku:$R2_BUCKET/releases/index.json" > "$tmp/index.json" 2>/dev/null || echo '{"schema":1,"releases":[]}' > "$tmp/index.json"
           jq --arg tag "$RELEASE" \
-             --arg version "$(cat release/repo/out/x86_64/release.json | jq -r .version)" \
+             --arg name "$(jq -r .name release/repo/out/x86_64/release.json)" \
+             --arg version "$(jq -r .version release/repo/out/x86_64/release.json)" \
              --arg commit "$GITHUB_SHA" \
              --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
              --arg repo "$PREFIX/x86_64" \
              --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
              '.schema = 1
-              | .releases = ([{tag: $tag, version: $version, commit: $commit, date: $date, repo: $repo, run: $run}]
+              | .releases = ([{tag: $tag, name: $name, version: $version, commit: $commit, date: $date, repo: $repo, run: $run}]
                              + [.releases[] | select(.tag != $tag)])
               | .latest = $tag' \
              "$tmp/index.json" > "$tmp/index.new.json"

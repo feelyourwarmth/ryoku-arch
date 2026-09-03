@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Added
+- **`ryoku version --pretty` leads with the release line's name** ("Onogoro
+  v0.56.0-beta.19"; fastfetch's OS line uses it), and the name reaches
+  `ryoku status` (text and `releaseName`/`channelReleaseName` in the JSON the
+  island and the Hub read) and the `ryoku rollback` release list. It comes
+  from `/etc/ryoku-release` (`NAME=`) on a packaged box and the checkout's
+  `CODENAME` on a dev box (`internal/updater/version.go`,
+  `internal/sys/release.go`).
 - **Package channels: `ryoku track stable | testing | v<tag>` and
   `ryoku rollback --to v<tag>`.** On a packaged box the channel is the
   `[ryoku]` `Server` line and nothing else; `track` rewrites it and runs an

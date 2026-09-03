@@ -21,6 +21,10 @@ Singleton {
     readonly property bool named: !!(root.frame.release && root.frame.channelRelease)
     readonly property string installed: root.named ? root.frame.release : (root.frame.installedVersion || "")
     readonly property string latest: root.named ? root.frame.channelRelease : (root.frame.latestVersion || "")
+    // the line's name ("Onogoro"); the latest name differs only when the
+    // channel serves the next line, which is worth saying out loud.
+    readonly property string installedName: root.frame.releaseName || ""
+    readonly property string latestName: root.frame.channelReleaseName || ""
     readonly property var commits: root.frame.updates || []
     readonly property var packages: root.frame.packages || []
 

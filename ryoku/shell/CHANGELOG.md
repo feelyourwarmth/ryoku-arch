@@ -3,6 +3,11 @@
 ## Unreleased
 
 ### Added
+- **The update island and the Hub's Updates page name the release line.**
+  The Hub shows "Ryoku Onogoro" over the version pair, and both say
+  "Onogoro v0.56.x -> Amaterasu v1.0.0" when the channel serves the next line
+  (`services/Updates.qml`, `hub/quickshell/Singletons/Updates.qml`,
+  `hub/quickshell/pages/UpdatesPage.qml`, `UpdateWidget.qml`).
 - **The shell daemon records a good boot for the boot guard.** Once the shell
   surface has stayed up 45 s (past the supervisor's crash window) the daemon
   writes the boot id to `/var/lib/ryoku/boot/ok-<uid>`; `ryoku boot-guard`

@@ -50,6 +50,12 @@ fi
 
 channel=${RYOKU_ISO_CHANNEL:-${CHANNEL:-main}}
 variant=${RYOKU_ISO_VARIANT:-plain}
+# the release line's name and version the ISO's payload carries (CODENAME and
+# VERSION at the build), so the site can say "Ryoku Onogoro 0.56.0" over the
+# download instead of a bare tracking id.
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+name=${RYOKU_ISO_NAME:-$(tr -d '[:space:]' <"$root/CODENAME" 2>/dev/null || true)}
+version=${RYOKU_ISO_VERSION:-$(tr -d '[:space:]' <"$root/VERSION" 2>/dev/null || true)}
 commit=${RYOKU_ISO_COMMIT:-unknown}
 run_id=${RYOKU_ISO_RUN_ID:-}
 run_number=${RYOKU_ISO_RUN_NUMBER:-}
@@ -90,6 +96,8 @@ cat >"$manifest" <<JSON
   "schema": 1,
   "project": "ryoku",
   "channel": $(json_string "$channel"),
+  "name": $(json_string "$name"),
+  "version": $(json_string "$version"),
   "tracking_id": $(json_string "$tracking_id"),
   "variant": $(json_string "$variant"),
   "date": $(json_string "$iso_date"),

@@ -17,6 +17,7 @@ import (
 // db: which release that channel serves right now.
 type channelRelease struct {
 	Release string `json:"release"`
+	Name    string `json:"name"`
 	Channel string `json:"channel"`
 	Version string `json:"version"`
 	Commit  string `json:"commit"`
@@ -32,6 +33,7 @@ type releaseLedger struct {
 
 type ledgerRelease struct {
 	Tag     string `json:"tag"`
+	Name    string `json:"name"`
 	Version string `json:"version"`
 	Commit  string `json:"commit"`
 	Date    string `json:"date"`

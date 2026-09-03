@@ -179,8 +179,12 @@ log "checking release naming and channel handling"
 [[ -f /etc/ryoku-release ]] || die "ryoku-desktop did not ship /etc/ryoku-release"
 grep -qE '^RELEASE=local-[0-9]' /etc/ryoku-release || die "unexpected /etc/ryoku-release: $(cat /etc/ryoku-release)"
 grep -qE '^CHANNEL=local$' /etc/ryoku-release || die "hand build must be marked CHANNEL=local"
+name=$(tr -d '[:space:]' < "$REPO/CODENAME")
+grep -qx "NAME=$name" /etc/ryoku-release || die "ryoku-desktop did not carry the line's name ($name) into /etc/ryoku-release"
 ver=$(runuser -u "$TESTUSER" -- env "HOME=/home/$TESTUSER" ryoku version)
 [[ $ver == local-* ]] || die "ryoku version should print the release marker, got: $ver"
+pretty=$(runuser -u "$TESTUSER" -- env "HOME=/home/$TESTUSER" ryoku version --pretty)
+[[ $pretty == "$name local-"* ]] || die "ryoku version --pretty should lead with the name, got: $pretty"
 cat >>/etc/pacman.conf <<EOF
 
 [ryoku]

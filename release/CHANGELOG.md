@@ -3,6 +3,15 @@
 ## Unreleased
 
 ### Added
+- **Release lines have names.** `CODENAME` holds the current line's name
+  (Onogoro before 1.0; Amaterasu for 1.0) and `release/names.md` tells each
+  name's story. `build-repo.sh` writes the name into `release.json`, the
+  ryoku-desktop package into `/etc/ryoku-release` (`NAME=`), the publish into
+  `releases/index.json`; the Stable Release summary and the Release Notes
+  workflow title the release "Ryoku <name> <version>", and a line's first
+  release opens its notes with the story (`bin/ryoku-release-notes --intro`).
+  The ISO manifests (`<iso>.json`, `latest.json`) carry `name` and `version`
+  too, so the site can title the download (`bin/ryoku-iso-manifest`).
 - **The `[ryoku]` repo publishes named releases and a testing channel.** Under
   the one bucket mount (`repo.ryoku.dev/stable/`), `x86_64/` is the stable
   pointer every installed box already has, `releases/<tag>/x86_64/` is one

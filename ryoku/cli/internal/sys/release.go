@@ -169,6 +169,7 @@ func WriteRootFile(path, contents, mode string) error {
 // by the ryoku-desktop package from what build-repo.sh was told at publish.
 type Release struct {
 	Release string // v0.55.7-beta.19 on stable, v0.55.9.dev.412+gabc1234 on testing, local-* for a hand build
+	Name    string // the line's name (CODENAME at the build, see release/names.md)
 	Channel string // stable, testing, local
 	Version string // the pacman pkgver
 	Commit  string
@@ -192,6 +193,8 @@ func ReadRelease() Release {
 		switch strings.TrimSpace(k) {
 		case "RELEASE":
 			r.Release = v
+		case "NAME":
+			r.Name = v
 		case "CHANNEL":
 			r.Channel = v
 		case "VERSION":

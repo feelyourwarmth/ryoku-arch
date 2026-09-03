@@ -601,7 +601,7 @@ func Rollback(args []string) error {
 	if sys.ResolveRepo() == "" {
 		rel := sys.ReadRelease()
 		if rel.Release != "" {
-			fmt.Printf("running:   %s (%s)\n", rel.Release, orDash(sys.PackagedChannel()))
+			fmt.Printf("running:   %s%s (%s)\n", withSpace(rel.Name), rel.Release, orDash(sys.PackagedChannel()))
 		}
 		if l := ledger(); len(l.Releases) > 0 {
 			fmt.Println("releases (newest first); `ryoku rollback --to <tag>` pins the box to one:")
@@ -610,7 +610,7 @@ func Rollback(args []string) error {
 				if r.Tag == rel.Release {
 					mark = "* "
 				}
-				fmt.Printf("  %s%-24s %s  %s\n", mark, r.Tag, r.Date[:min(10, len(r.Date))], r.Version)
+				fmt.Printf("  %s%-24s %s  %-10s %s\n", mark, r.Tag, r.Date[:min(10, len(r.Date))], r.Name, r.Version)
 			}
 			fmt.Println()
 		}
@@ -762,9 +762,9 @@ func Status(args []string) error {
 	fmt.Printf("channel:       %s\n", orDash(r.Channel))
 	if r.Release != "" {
 		if r.ChannelRelease != "" && r.ChannelRelease != r.Release {
-			fmt.Printf("release:       %s -> %s\n", r.Release, r.ChannelRelease)
+			fmt.Printf("release:       %s%s -> %s%s\n", withSpace(r.ReleaseName), r.Release, withSpace(r.ChannelReleaseName), r.ChannelRelease)
 		} else {
-			fmt.Printf("release:       %s\n", r.Release)
+			fmt.Printf("release:       %s%s\n", withSpace(r.ReleaseName), r.Release)
 		}
 	}
 	fmt.Printf("installed:     %s\n", orDash(r.Installed))
@@ -802,8 +802,18 @@ type statusReport struct {
 	// packaged boxes: the release this box runs (/etc/ryoku-release) and the
 	// one its channel serves now (release.json beside the channel's db), so
 	// the island and the Hub can say "v0.55.7 -> v0.55.9" instead of a sha.
-	Release        string `json:"release,omitempty"`
-	ChannelRelease string `json:"channelRelease,omitempty"`
+	Release            string `json:"release,omitempty"`
+	ReleaseName        string `json:"releaseName,omitempty"`
+	ChannelRelease     string `json:"channelRelease,omitempty"`
+	ChannelReleaseName string `json:"channelReleaseName,omitempty"`
+}
+
+// withSpace is a release name as a prefix: "Onogoro " or "" when unnamed.
+func withSpace(name string) string {
+	if name == "" {
+		return ""
+	}
+	return name + " "
 }
 
 // buildStatus is the full Updates report: the Ryoku channel (baseStatus) plus
@@ -827,6 +837,8 @@ func buildStatus() statusReport {
 // checkout, else the [ryoku] repo package versions on a packaged install.
 func baseStatus() statusReport {
 	if r, ok := channelStatus(); ok {
+		// a checkout has no release, but it runs a named line (CODENAME)
+		r.ReleaseName = ReleaseName()
 		return r
 	}
 	installed := sys.InstalledVersion()
@@ -848,16 +860,18 @@ func packagedStatus(installed, latest string) statusReport {
 	latestSha := shortCommit(latest)
 
 	r := statusReport{
-		Installed: installedSha,
-		Latest:    latestSha,
-		Updates:   []updateItem{}, // non-nil, so a current box marshals [] like the git path
-		Recent:    []updateItem{}, // non-nil, so the JSON stays stable when nothing is fetched
-		Channel:   ryokuChannel(),
-		Snapshots: snapshotCount(),
-		Release:   sys.ReadRelease().Release,
+		Installed:   installedSha,
+		Latest:      latestSha,
+		Updates:     []updateItem{}, // non-nil, so a current box marshals [] like the git path
+		Recent:      []updateItem{}, // non-nil, so the JSON stays stable when nothing is fetched
+		Channel:     ryokuChannel(),
+		Snapshots:   snapshotCount(),
+		Release:     sys.ReadRelease().Release,
+		ReleaseName: ReleaseName(),
 	}
 	if ch := sys.PackagedChannel(); ch != "" {
-		r.ChannelRelease = channelServes(ch).Release
+		serves := channelServes(ch)
+		r.ChannelRelease, r.ChannelReleaseName = serves.Release, serves.Name
 	}
 	// up to date: nothing incoming, but list the recent history the installed
 	// version contains (best-effort, newest-first) so the Hub's Updates page

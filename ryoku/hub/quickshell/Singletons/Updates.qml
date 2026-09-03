@@ -13,6 +13,10 @@ Singleton {
     property bool available: false
     property string currentVersion: ""
     property string latestVersion: ""
+    // the release line's name ("Onogoro") for the box and for what the
+    // channel serves; "" on a checkout or a box that predates naming.
+    property string currentName: ""
+    property string latestName: ""
     property string branch: "main"
     property int behind: 0
 
@@ -52,6 +56,8 @@ Singleton {
             var named = !!(o.release && o.channelRelease);
             root.currentVersion = named ? o.release : (o.installedVersion || "");
             root.latestVersion = named ? o.channelRelease : (o.latestVersion || "");
+            root.currentName = o.releaseName || "";
+            root.latestName = o.channelReleaseName || "";
             root.branch = o.channel || "main";
             root.behind = o.pendingUpdates || 0;
             root.updates = o.updates || [];

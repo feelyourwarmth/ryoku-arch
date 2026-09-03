@@ -87,6 +87,7 @@ jobs:
           {
             echo "### Stable release"
             echo
+            echo "- Name: \`$(tr -d '[:space:]' < CODENAME)\`"
             echo "- Version: \`$version\`"
             echo "- Tag: \`$tag\`"
             echo "- Stage: \`${{ inputs.release_stage }}\`"

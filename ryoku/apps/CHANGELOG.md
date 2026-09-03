@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+- `fastfetch/`: **the OS line carries the release name** ("Ryoku Onogoro
+  v0.56.0-beta.19") via `ryoku version --pretty` (`config.jsonc`).
+
 ### Fixed
 - `ryostore/`: **An installed theme now carries the store's preview image, so
   the Color-scheme picker shows it.** The install wrote `scheme.json` and

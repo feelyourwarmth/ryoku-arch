@@ -91,8 +91,11 @@ log "Monorepo package version -> $RYOKU_PKGVER"
 # gets a local marker, never a name that looks like a published release.
 : "${RYOKU_RELEASE:=local-$RYOKU_PKGVER}"
 : "${RYOKU_CHANNEL:=local}"
-export RYOKU_RELEASE RYOKU_CHANNEL
-log "Release -> $RYOKU_RELEASE ($RYOKU_CHANNEL)"
+# the line's name (CODENAME, see release/names.md): every release in a line
+# carries it, and a box shows it next to the release it runs.
+RYOKU_NAME=$(tr -d '[:space:]' < "$RELEASE_DIR/../CODENAME")
+export RYOKU_RELEASE RYOKU_CHANNEL RYOKU_NAME
+log "Release -> $RYOKU_NAME $RYOKU_RELEASE ($RYOKU_CHANNEL)"
 # makepkg's VCS sources (imgborders clones from Codeberg) make a build only as
 # reliable as that host, and a Codeberg 5xx has repeatedly aborted the whole
 # publish. Retry a failed build with backoff so a transient fetch outage rides
@@ -184,8 +187,8 @@ done
 #    reads it from the channel to name the release a box would move to, and
 #    publish-repo.yml copies its version into releases/index.json.
 commit=$(git -C "$RELEASE_DIR/.." rev-parse HEAD 2>/dev/null || echo unknown)
-printf '{"schema":1,"release":"%s","channel":"%s","version":"%s","commit":"%s","date":"%s"}\n' \
-  "$RYOKU_RELEASE" "$RYOKU_CHANNEL" "$RYOKU_PKGVER" "$commit" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+printf '{"schema":1,"release":"%s","name":"%s","channel":"%s","version":"%s","commit":"%s","date":"%s"}\n' \
+  "$RYOKU_RELEASE" "$RYOKU_NAME" "$RYOKU_CHANNEL" "$RYOKU_PKGVER" "$commit" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   > "$ARCH_DIR/release.json"
 
 log "Repo ready at $ARCH_DIR"
