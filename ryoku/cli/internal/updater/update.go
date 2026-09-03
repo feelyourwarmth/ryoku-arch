@@ -356,6 +356,11 @@ func rashinReindex() {
 	if err := sys.Run(pkgBin("ryoku-rashin"), "index"); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: rashin reindex failed: %v\n", err)
 	}
+	// Re-wire every agent after the index: the shipped ryoku skill and Prowl's
+	// skills may have moved or grown with this update, and wire is idempotent.
+	if err := sys.Run(pkgBin("ryoku-rashin"), "wire"); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: rashin wire failed: %v\n", err)
+	}
 }
 
 // prowlRefresh keeps a dev box's prowl-agent current after an update. A packaged

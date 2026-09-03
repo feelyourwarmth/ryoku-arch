@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+- **The Rashin chat's skill list now shows the `ryoku` skill.** The sidebar
+  listed slash-able skills by walking `~/.hermes/skills`, which does not follow
+  the symlink `wire` lays for the shipped skill, so Hermes had the skill but the
+  chat never offered it. The walk reads through symlinked skill dirs and their
+  bundles; `ryoku update` also re-runs `ryoku-rashin wire` after every reindex,
+  so an existing box picks up Prowl's skills for Hermes (`rashin/backend/chatcli.go`,
+  `cli/internal/updater/update.go`).
+
 ### Added
 - **A bar plugin can open a panel under its glyph.** A plugin that ships
   `entryPoints.panel` (a `content/Panel.qml`) opens it in a shared
