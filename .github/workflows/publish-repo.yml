@@ -175,12 +175,16 @@ jobs:
           # testing, so a name published there is promoted rather than rebuilt,
           # and the release carries the bytes testing users ran. read from the
           # bucket, not the public domain: Cloudflare 403s datacenter runners.
+          # ryoku-desktop is the one channel-specific package: it carries
+          # /etc/ryoku-release naming the channel and the release, so a
+          # stable build never adopts testing's copy (same commit, same
+          # filename, wrong marker); it is a plain file copy to rebuild.
           mirror="$GITHUB_WORKSPACE/.published-mirror"
           mkdir -p "$mirror"
           rclone copy "Ryoku:$R2_BUCKET/$PREFIX/x86_64/" "$mirror/" --include '*.pkg.tar.zst' || true
           if [[ $CHANNEL == stable ]]; then
             rclone copy "Ryoku:$R2_BUCKET/x86_64/" "$mirror/" --include '*.pkg.tar.zst' --ignore-existing || true
-            rclone copy "Ryoku:$R2_BUCKET/channels/testing/x86_64/" "$mirror/" --include '*.pkg.tar.zst' --ignore-existing || true
+            rclone copy "Ryoku:$R2_BUCKET/channels/testing/x86_64/" "$mirror/" --include '*.pkg.tar.zst' --exclude 'ryoku-desktop-*' --ignore-existing || true
           fi
 
       - name: Verify hard dependencies exist in the official repos or [ryoku]
