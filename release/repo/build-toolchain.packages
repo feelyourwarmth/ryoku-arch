@@ -77,3 +77,8 @@ nodejs
 
 # gnupg signs every built package and the repo db.
 gnupg
+
+# ryotunes (Tauri + libmpv): WebKitGTK and libmpv headers, the tray dlopen target.
+webkit2gtk-4.1
+mpv
+libappindicator-gtk3

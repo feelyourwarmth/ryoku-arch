@@ -3,6 +3,19 @@
 ## Unreleased
 
 ### Added
+- `ryotunes` joins the signed repository at 2.4.1: the Ryoku music app (Tauri +
+  WebKitGTK + libmpv, built from `neur0map/ryotunes` at a pinned commit, the
+  Ryostore submission adopted as the official app). `ryoku-desktop` depends on
+  it and no longer installs the Chromium app-window wrapper of the same name;
+  the package takes over `/usr/bin/ryotunes`, the `.desktop` entry and the icon
+  in the same `pacman -Syu`, so existing boxes switch on `ryoku update`. The
+  desktop follows it over `org.mpris.MediaPlayer2.ryotunes` exactly as before
+  (now-playing widget, dock pill, media keys), and the Hyprland float rule and
+  `ryoku-music-toggle` match its `ryotunes` window class. The build toolchain
+  list gains `webkit2gtk-4.1`, `mpv` and `libappindicator-gtk3`. The old
+  Chromium profile at `~/.config/ryotunes` is left in place; delete it by hand
+  to reclaim the space.
+
 - `blesh` joins the signed repository at 0.4.0-devel3, and `ryoku-desktop` depends on
   it plus Zsh and the official Zsh editing plugins. The package now materializes
   the managed Bash/Zsh adapters and their shared terminal environment beside the

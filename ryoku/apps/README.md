@@ -29,14 +29,16 @@ maps to a place under `~/.config` (except the small helper script noted below).
 
 ## GUI apps
 
-These are full applications, not `~/.config` seeds. Three shapes live here:
+These are full applications, not `~/.config` seeds. Two shapes live here:
 
 - a **Quickshell app** ships its `quickshell/` tree as `qs -c <name>`
   (`ryovm`, `ryostore`);
-- a **wrapped app** brings no QML of its own and single-instances somebody
-  else's binary (`ryotunes`, a Chromium app window);
 - a **compiled Qt app** builds from a `CMakeLists.txt` to `/usr/bin/<name>`.
   The packaging supports it; nothing uses it today.
+
+The music app is not here: `ryotunes` is its own repository
+(github.com/neur0map/ryotunes, Tauri + libmpv) packaged from a pinned commit
+under `release/packages/ryotunes/`, like `ryomotion`.
 
 A shell *surface* is a fourth thing and does not live here. `ryoshot` and
 `welcome` launch the same single-instance way but ship inside the shell at
@@ -56,8 +58,6 @@ A shell *surface* is a fourth thing and does not live here. `ryoshot` and
   GPU-passthrough gaming VM is still configured from Ryoku Settings > GPU, not here.
 - `ryostore/` The store: discover and install lockscreens, rices, bar styles,
   plugins and bundles. Engine: the `ryostore` Go backend.
-- `ryotunes/` YouTube Music as its own Chromium app window and profile, wired to
-  the desktop now-playing widget.
 
 ## Single-instance launch
 
@@ -103,8 +103,7 @@ the binary name.
 | `CMakeLists.txt`    | a compiled Qt app at `/usr/bin/<name>`                        |
 
 The loop only looks at a directory holding `quickshell/` or `CMakeLists.txt`.
-Anything else is invisible to it and needs its own install lines, which is why
-`ryotunes` has them.
+Anything else is invisible to it and needs its own install lines.
 
 Two things to know before testing by hand. `~/.config/quickshell` is wholly
 Ryoku-owned: `ryoku materialize` converges it against the shipped tree and

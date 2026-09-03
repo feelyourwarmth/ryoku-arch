@@ -6,8 +6,8 @@
 #
 #   ryoku-music-toggle "<launch command...>"
 #
-# The window is matched from the launch command (Spotify, the ryotunes YouTube
-# Music app-window, else the command's own binary name). Uses the Ryoku Lua
+# The window is matched from the launch command (Spotify, Ryotunes, else the
+# command's own binary name). Uses the Ryoku Lua
 # dispatch API (hl.dsp.*); this Hyprland has no plain-string dispatch syntax.
 set -uo pipefail
 
@@ -18,8 +18,8 @@ lc="$(printf '%s' "$cmd" | tr '[:upper:]' '[:lower:]')"
 case "$lc" in
   *spotify*)
     match="spotify" ;;
-  *ryotunes*|*music.youtube*|*youtube-music*)
-    match="chrome-music\\.youtube|youtube-music|ryotunes" ;;
+  *ryotunes*)
+    match="^ryotunes$" ;;
   *)
     first="${cmd%% *}"; first="${first##*/}"; match="^${first}\$" ;;
 esac

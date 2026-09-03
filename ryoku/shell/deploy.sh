@@ -471,13 +471,14 @@ if [[ -x "$here/../lockscreen/install-qylock" ]]; then
   fi
 fi
 
-# ryotunes: YouTube Music as a Chromium app-window (apps/ryotunes). Not a
-# quickshell app, so it ships explicitly like the other non-qs launchers: the
-# wrapper on PATH, its .desktop, and its icon into the hicolor set.
-install -m755 "$here/../apps/ryotunes/bin/ryotunes" "$bindir/ryotunes"
-install -Dm644 "$here/../apps/ryotunes/ryotunes.desktop" "$appshare/applications/ryotunes.desktop"
-install -Dm644 "$here/../apps/ryotunes/ryotunes.svg" "$appshare/icons/hicolor/scalable/apps/ryotunes.svg"
-say "installed ryotunes launcher"
+# ryotunes is a [ryoku] package now (release/packages/ryotunes), not a wrapper
+# this script lays into ~/.local/bin. A wrapper left there from an earlier
+# deploy shadows /usr/bin/ryotunes on PATH, so retire it.
+if [[ -f "$bindir/ryotunes" ]] && grep -q 'music.youtube.com' "$bindir/ryotunes" 2>/dev/null; then
+  rm -f "$bindir/ryotunes" "$appshare/applications/ryotunes.desktop" \
+    "$appshare/icons/hicolor/scalable/apps/ryotunes.svg"
+  say "retired the ryotunes chromium wrapper"
+fi
 
 # ryoku-canvas: a spicetify extension (apps/spicetify) that relays the playing
 # track's Spotify Canvas to the shell so the music widget can show it. Landed in
