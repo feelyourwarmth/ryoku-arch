@@ -99,6 +99,11 @@
   placement; `validate <dir>` checks a local tree (`plugin.go`, `main.go`).
 
 ### Fixed
+- **Doctor ignores Zen launcher-wrapper directories.** Zen installations must
+  carry Firefox's `application.ini` marker before the policy reconciler treats
+  them as an install root, so a `/usr/bin/zen-browser` wrapper no longer makes
+  doctor try to create `/usr/bin/distribution/policies.json`
+  (`internal/doctor/reconcile_zen.go`).
 - **`ryoku track` takes effect without a relogin.** The channel it persists
   to `environment.d` now wins over the live `RYOKU_CHANNEL`, which the session
   captured at login and kept reporting after a switch (`ryoku status` and the

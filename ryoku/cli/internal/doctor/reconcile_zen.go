@@ -102,7 +102,7 @@ func reconcileZenInto(roots []string, checkOnly bool) recResult {
 	var present, pending, did []string
 	seen := map[string]bool{}
 	for _, root := range roots {
-		if root == "" || seen[root] || !sys.Exists(root) {
+		if root == "" || seen[root] || !sys.Exists(filepath.Join(root, "application.ini")) {
 			continue
 		}
 		seen[root] = true

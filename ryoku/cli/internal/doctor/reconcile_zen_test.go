@@ -22,6 +22,9 @@ func TestReconcileZen(t *testing.T) {
 	}
 
 	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "application.ini"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	dst := filepath.Join(root, "distribution", "policies.json")
 
 	// Check-only reports the pending apply and writes nothing.
@@ -70,6 +73,21 @@ func TestReconcileZen(t *testing.T) {
 	}
 	if r := reconcileZenInto([]string{root}, false); r.status != recFixed {
 		t.Fatalf("stale rewrite: status %v, want fixed", r.status)
+	}
+}
+
+func TestReconcileZenIgnoresLauncherDirectory(t *testing.T) {
+	root := t.TempDir()
+	launcher := filepath.Join(root, "zen-browser")
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nexec /opt/zen/zen-bin \"$@\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if r := reconcileZenInto([]string{root}, false); r.status != recOK {
+		t.Fatalf("launcher directory: status %v, want ok", r.status)
+	}
+	if _, err := os.Stat(filepath.Join(root, "distribution")); !os.IsNotExist(err) {
+		t.Fatal("launcher directory was modified as if it were a Zen install")
 	}
 }
 
