@@ -39,13 +39,17 @@ permissions:
   contents: read
   actions: write
 
-# one publish per channel at a time, never cancelled mid-flight: two
-# interleaved uploads can leave run A's packages under run B's db, exactly the
-# skew the packages-first-db-last ordering below exists to prevent. stable and
-# testing write different prefixes, so they may run side by side.
+# one publish per channel at a time: two interleaved uploads can leave run A's
+# packages under run B's db, exactly the skew the packages-first-db-last
+# ordering below exists to prevent. stable and testing write different
+# prefixes, so they may run side by side. a stable run is never cancelled; a
+# testing run is superseded by the next push, since only the newest matters
+# and the upload order keeps a cut-off run harmless (the old db keeps its
+# packages until the new db is live, and the prune only removes what neither
+# lists).
 concurrency:
   group: publish-repo-${{ github.ref_type == 'tag' && 'stable' || 'testing' }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
   # gate: build the packages, install ryoku-desktop, and materialize a full
