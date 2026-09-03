@@ -921,7 +921,7 @@ func baseSource(s string) string {
 // (installation/backend/lib/deploy.sh ryoku_repo_pacman_conf). doctor re-adds
 // this exact block when a pacnew merge or a hand-edit drops it, so a package box
 // does not silently fall off the update channel.
-const ryokuRepoStanza = "\n[ryoku]\nSigLevel = Required\nServer = https://repo.ryoku.dev/stable/$arch\n"
+const ryokuRepoStanza = "\n[ryoku]\nSigLevel = Required\nServer = " + sys.RepoBase + "/$arch\n"
 
 func reconcileRyokuChannel(checkOnly bool) recResult {
 	if !sys.PkgInstalled("ryoku-desktop") {
@@ -938,7 +938,20 @@ func reconcileRyokuChannel(checkOnly bool) recResult {
 			withFix("sudo pacman -S ryoku-keyring, then run ryoku doctor")
 	}
 	if strings.Contains(string(conf), "[ryoku]") {
-		return okRes("ryoku package channel configured")
+		// the Server line is the channel. name it, and flag a server Ryoku
+		// does not publish without touching it: a local build-repo.sh tree or
+		// a private mirror is deliberate, but it means no release reaches here.
+		switch ch := sys.ChannelOfServer(sys.RyokuServer()); {
+		case ch == sys.ChannelStable:
+			return okRes("ryoku package channel: stable (named releases)")
+		case ch == sys.ChannelTesting:
+			return okRes("ryoku package channel: testing (every unstable-dev push); `ryoku track stable` returns to releases")
+		case sys.IsReleaseTag(ch):
+			return okRes("ryoku package channel: pinned to release %s; `ryoku track stable` follows releases again", ch)
+		default:
+			return warnRes("the [ryoku] repo points at %s, which Ryoku does not publish; releases will not arrive from it", sys.RyokuServer()).
+				withFix("ryoku track stable")
+		}
 	}
 	// the keyring is here but the repo stanza is gone (a pacnew merge or a
 	// hand-edit dropped it): re-add it so `ryoku update` reaches the package

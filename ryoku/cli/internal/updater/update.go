@@ -54,9 +54,13 @@ var (
 // the update island and Hub show real, determinate progress.
 func Update(args []string) error {
 	stage2 := len(args) >= 2 && args[0] == "--stage2"
+	channelSwitch := false
 	for _, a := range args {
 		if a == "-v" || a == "--verbose" {
 			verboseLog = true
+		}
+		if a == "--channel-switch" {
+			channelSwitch = true
 		}
 	}
 
@@ -129,6 +133,19 @@ func Update(args []string) error {
 		e := fmt.Errorf("pacman -Syu failed; %s: %w", hint, err)
 		progress.fail(e)
 		return e
+	}
+	// `ryoku track` just repointed the [ryoku] repo. -Syu only moves up, so a
+	// box leaving testing for stable, or pinning an earlier release, still
+	// holds the newer set; an explicit -S of the umbrella installs the
+	// channel's version, and its exact-version depends bring the whole Ryoku
+	// set along, down as well as up.
+	if channelSwitch {
+		progress.logf("Moving the Ryoku set to what %s serves", sys.PackagedChannel())
+		if err := runInhibited("System", "Ryoku channel switch", channelSwitchArgs()); err != nil {
+			e := fmt.Errorf("channel switch failed: %w", err)
+			progress.fail(e)
+			return e
+		}
 	}
 
 	if sys.Has("yay") {
@@ -242,6 +259,14 @@ func runSystemUpgrade() error {
 func systemUpgradeArgs() []string {
 	return []string{"sudo", "env", "SNAP_PAC_SKIP=y", "pacman", "-Syu", "--noconfirm",
 		"--overwrite", "/usr/bin/ryoku-*,/usr/share/polkit-1/rules.d/*ryoku*.rules"}
+}
+
+// channelSwitchArgs installs the [ryoku] channel's ryoku-desktop explicitly,
+// which pacman honours in either direction (a downgrade warns and proceeds),
+// pulling the umbrella's exact-version depends with it.
+func channelSwitchArgs() []string {
+	return []string{"sudo", "env", "SNAP_PAC_SKIP=y", "pacman", "-S", "--noconfirm",
+		"--overwrite", "/usr/bin/ryoku-*,/usr/share/polkit-1/rules.d/*ryoku*.rules", "ryoku-desktop"}
 }
 
 // runAURUpgrade runs `yay -Sua` under the same sleep inhibitor.
@@ -533,16 +558,52 @@ func runFreshDoctor() {
 	_ = sys.Run(pkgBin("ryoku"), "doctor")
 }
 
-// Rollback guides restoring a snapshot. Ryoku pins the root subvolume on the
-// kernel cmdline and in fstab (rootflags=subvol=@), and `snapper rollback`
-// cannot serve that layout: it works by flipping the btrfs default subvolume,
-// which a pinned subvol= simply ignores -- limine-snapper-sync's own tooling
-// states the layout is "not compatible with 'snapper rollback'". The supported
-// restore is the boot menu: boot the snapshot entry (whose matching kernels
-// limine-snapper-sync staged on the ESP), then `limine-snapper-restore` copies
-// it back onto @. So this command teaches that flow instead of running a
+// Rollback puts a packaged box back on an earlier release, or guides a
+// snapshot restore. `--to <tag>` pins the [ryoku] repo at that frozen release
+// directory and runs the update, so the Ryoku set moves back in one pacman
+// transaction while Arch stays current; `ryoku track stable` follows releases
+// again afterwards. Without --to it lists the releases the ledger knows and
+// the snapshots on disk.
+//
+// The snapshot path is a boot-menu restore, not a live one: Ryoku pins the
+// root subvolume on the kernel cmdline and in fstab (rootflags=subvol=@), and
+// `snapper rollback` cannot serve that layout, since it works by flipping the
+// btrfs default subvolume, which a pinned subvol= simply ignores;
+// limine-snapper-sync's own tooling states the layout is "not compatible with
+// 'snapper rollback'". So the command teaches that flow instead of running a
 // snapper command that cannot restore the system.
 func Rollback(args []string) error {
+	to := ""
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--to" && i+1 < len(args) {
+			to = args[i+1]
+			i++
+		}
+	}
+	if to != "" {
+		if !sys.IsReleaseTag(to) {
+			return fmt.Errorf("--to takes a release tag (see `ryoku rollback` for the list), got %q", to)
+		}
+		fmt.Printf("==> Rolling the Ryoku set back to release %s\n", to)
+		return Track(to)
+	}
+	if sys.ResolveRepo() == "" {
+		rel := sys.ReadRelease()
+		if rel.Release != "" {
+			fmt.Printf("running:   %s (%s)\n", rel.Release, orDash(sys.PackagedChannel()))
+		}
+		if l := ledger(); len(l.Releases) > 0 {
+			fmt.Println("releases (newest first); `ryoku rollback --to <tag>` pins the box to one:")
+			for _, r := range l.Releases {
+				mark := "  "
+				if r.Tag == rel.Release {
+					mark = "* "
+				}
+				fmt.Printf("  %s%-24s %s  %s\n", mark, r.Tag, r.Date[:min(10, len(r.Date))], r.Version)
+			}
+			fmt.Println()
+		}
+	}
 	id := "<id>"
 	if len(args) == 0 {
 		fmt.Println("Snapshots (pick an id, or choose one under Snapshots in the Limine boot menu):")
@@ -688,6 +749,13 @@ func Status(args []string) error {
 
 	fmt.Printf("config base:   %s\n", sys.BaseConfigDir())
 	fmt.Printf("channel:       %s\n", orDash(r.Channel))
+	if r.Release != "" {
+		if r.ChannelRelease != "" && r.ChannelRelease != r.Release {
+			fmt.Printf("release:       %s -> %s\n", r.Release, r.ChannelRelease)
+		} else {
+			fmt.Printf("release:       %s\n", r.Release)
+		}
+	}
 	fmt.Printf("installed:     %s\n", orDash(r.Installed))
 	if r.Available {
 		fmt.Printf("available:     %s\n", orDash(r.Latest))
@@ -720,6 +788,11 @@ type statusReport struct {
 	Channel   string       `json:"channel"`
 	Snapshots int          `json:"snapshots"`
 	Packages  []updateItem `json:"packages"`
+	// packaged boxes: the release this box runs (/etc/ryoku-release) and the
+	// one its channel serves now (release.json beside the channel's db), so
+	// the island and the Hub can say "v0.55.7 -> v0.55.9" instead of a sha.
+	Release        string `json:"release,omitempty"`
+	ChannelRelease string `json:"channelRelease,omitempty"`
 }
 
 // buildStatus is the full Updates report: the Ryoku channel (baseStatus) plus
@@ -770,6 +843,10 @@ func packagedStatus(installed, latest string) statusReport {
 		Recent:    []updateItem{}, // non-nil, so the JSON stays stable when nothing is fetched
 		Channel:   ryokuChannel(),
 		Snapshots: snapshotCount(),
+		Release:   sys.ReadRelease().Release,
+	}
+	if ch := sys.PackagedChannel(); ch != "" {
+		r.ChannelRelease = channelServes(ch).Release
 	}
 	// up to date: nothing incoming, but list the recent history the installed
 	// version contains (best-effort, newest-first) so the Hub's Updates page

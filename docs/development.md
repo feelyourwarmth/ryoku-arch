@@ -82,7 +82,9 @@ Where a change lives decides whether, and how, it reaches an installed machine.
 
 - **Desktop config and binaries (`ryoku/`)** reach users through `ryoku update`:
   config is re-laid by `ryoku materialize` (override-safe), binaries come from the
-  signed `[ryoku]` repo. They land only after a tagged release rebuilds that repo.
+  signed `[ryoku]` repo. They reach the testing channel on every push to
+  `unstable-dev` and stable when a release is tagged (`docs/updates.md`,
+  "Publishing: releases and channels").
 - **The installer (`installation/`)** runs once from the ISO. Fixes here reach
   only new installs from a new ISO, never an existing machine.
 - **Package-set additions (`system/packages/`)** are pacstrapped at install.

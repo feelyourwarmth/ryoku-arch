@@ -38,6 +38,13 @@ func Version(args []string) error {
 		fmt.Println(base)
 		return nil
 	}
+	// a packaged box names the release it runs (/etc/ryoku-release, written
+	// by the ryoku-desktop package at publish); the bare core version is the
+	// fallback for a box installed before releases were named.
+	if rel := sys.ReadRelease(); rel.Release != "" && sys.ResolveRepo() == "" {
+		fmt.Println(rel.Release)
+		return nil
+	}
 	fmt.Printf("v%s\n", base)
 	return nil
 }

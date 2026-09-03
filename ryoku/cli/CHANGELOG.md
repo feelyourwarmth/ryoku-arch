@@ -3,6 +3,23 @@
 ## Unreleased
 
 ### Added
+- **Package channels: `ryoku track stable | testing | v<tag>` and
+  `ryoku rollback --to v<tag>`.** On a packaged box the channel is the
+  `[ryoku]` `Server` line and nothing else; `track` rewrites it and runs an
+  update that moves the Ryoku set to what the channel serves, down as well as
+  up (`pacman -Syu`, then an explicit `-S ryoku-desktop` whose exact-version
+  depends bring the set along). A release tag pins the box to that frozen
+  release; `rollback --to` is `track` onto one, so the Ryoku set goes back in
+  one pacman transaction while Arch stays current. Bare `ryoku rollback` lists
+  the release ledger and the snapshots. `ryoku version` prints the release
+  from `/etc/ryoku-release`; `ryoku status` gains `release` and
+  `channelRelease` (what the channel serves, read from its `release.json`,
+  cached ten minutes), which the update island and the Hub show instead of a
+  commit pair. The doctor names the channel it finds and warns, without
+  touching it, when `[ryoku]` points at a mirror Ryoku does not publish.
+  Checkout boxes keep `ryoku track main | unstable-dev` (`internal/sys/release.go`,
+  `internal/updater/release.go`, `track.go`).
+
 - **`ryoku plugin new` scaffolds a plugin in the right place, and `validate`
   audits it.** `new <id> [--bar|--desktop|--popout]` writes a working plugin
   under `~/Documents/ryoku-plugins/<id>/` (manifest, service, view, bar panel

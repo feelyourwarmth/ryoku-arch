@@ -47,8 +47,11 @@ Singleton {
     function apply(t) {
         try {
             var o = JSON.parse(t);
-            root.currentVersion = o.installedVersion || "";
-            root.latestVersion = o.latestVersion || "";
+            // a packaged box on a named release: show the release names,
+            // else the commit pair a checkout reports.
+            var named = !!(o.release && o.channelRelease);
+            root.currentVersion = named ? o.release : (o.installedVersion || "");
+            root.latestVersion = named ? o.channelRelease : (o.latestVersion || "");
             root.branch = o.channel || "main";
             root.behind = o.pendingUpdates || 0;
             root.updates = o.updates || [];

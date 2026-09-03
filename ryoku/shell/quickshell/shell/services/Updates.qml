@@ -15,8 +15,12 @@ Singleton {
     readonly property bool available: root.frame.available === true
     readonly property int pending: root.frame.pendingUpdates || 0
     readonly property string channel: root.frame.channel || ""
-    readonly property string installed: root.frame.installedVersion || ""
-    readonly property string latest: root.frame.latestVersion || ""
+    // a packaged box on a named release reports the release it runs and the
+    // one its channel serves; show those, and fall back to the commit pair a
+    // checkout (or a box that predates release naming) reports.
+    readonly property bool named: !!(root.frame.release && root.frame.channelRelease)
+    readonly property string installed: root.named ? root.frame.release : (root.frame.installedVersion || "")
+    readonly property string latest: root.named ? root.frame.channelRelease : (root.frame.latestVersion || "")
     readonly property var commits: root.frame.updates || []
     readonly property var packages: root.frame.packages || []
 

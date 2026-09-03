@@ -108,7 +108,9 @@ repo-relative path lives under `release/media/`:
     Note: New: redesigned wallpaper picker | release/media/wallpaper.gif
 
 A note only reaches a release if its commit reaches the tag intact, so `main`
-advances by fast-forward from `unstable-dev`. Never squash-merge into a release
+advances by fast-forward from `unstable-dev`, and a release is the **Stable
+Release** workflow run on `main` (`bump_type: none` tags the version `main`
+carries). Never squash-merge into a release
 branch: squashing collapses commits and drops their notes.
 
 ## Pull requests
