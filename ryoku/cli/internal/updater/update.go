@@ -86,6 +86,14 @@ func Update(args []string) error {
 			"(an update that runs out of disk can leave the system half-upgraded)", free)
 	}
 
+	// Cache the sudo credential once, on the terminal, before any step needs it.
+	// The pre-snapshot, pacman, yay and the post snapshot all escalate, several
+	// through pipes or RunOut where a prompt cannot be seen; one prompt up front is
+	// what users were doing by hand with `sudo -v && ryoku update`.
+	primeSudo()
+	stopKeepalive := sudoKeepalive()
+	defer stopKeepalive()
+
 	checkout := sys.ResolveRepo() != ""
 	if checkout {
 		progress.begin(gitSteps)
@@ -231,6 +239,46 @@ func humanBytes(n uint64) string {
 	}
 }
 
+// primeSudo caches the sudo credential once, up front, on the real terminal, so
+// every escalation the rest of the update makes finds it instead of prompting.
+// Several of those prompts cannot be seen or answered: the pre-snapshot runs
+// through RunOut (no tty), pacman's runs through the curated output pipe, and yay
+// and flatpak escalate on their own -- an unseen prompt there is exactly why users
+// learned to run `sudo -v` by hand first. No tty -> skip (a GUI or timer run has
+// no terminal to prompt on); a NOPASSWD box sees nothing. Best-effort.
+func primeSudo() {
+	if !sys.StdinIsTTY() {
+		return
+	}
+	_ = sys.Run("sudo", "-v")
+}
+
+// sudoKeepalive refreshes the cached credential every minute so a long
+// transaction (a large AUR compile) cannot let it lapse mid-run and re-prompt
+// where the prompt is invisible. `-n` never prompts, so once the credential is
+// gone this is a silent no-op, and RunOut keeps its "a password is required" off
+// the terminal. The returned stop func ends the refresher; the stage1->stage2
+// exec replaces the process, so a stop it never reaches leaks nothing.
+func sudoKeepalive() func() {
+	if !sys.StdinIsTTY() {
+		return func() {}
+	}
+	stop := make(chan struct{})
+	go func() {
+		t := time.NewTicker(time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				_, _ = sys.RunOut("sudo", "-n", "-v")
+			}
+		}
+	}()
+	return func() { close(stop) }
+}
+
 // snapshotDesc labels the pre-update snapshot (and its Limine boot-menu entry)
 // with the version being updated from, so a user restoring after a bad update can
 // tell the snapshots apart instead of a row of identical "ryoku-update".
@@ -340,6 +388,12 @@ func finishRun() error {
 // so it re-begins the packaged step list and marks the pre-handoff steps done
 // to keep one continuous progress bar.
 func updateStage2(pre string) error {
+	// A fresh process after the exec handoff: re-cache the credential (a no-op
+	// inside the timeout) so materialize, the post snapshot and doctor never
+	// prompt where it cannot be seen.
+	primeSudo()
+	stopKeepalive := sudoKeepalive()
+	defer stopKeepalive()
 	progress.begin(pkgSteps)
 	progress.setSnapshot(pre)
 	progress.markDone("snapshot", "packages")

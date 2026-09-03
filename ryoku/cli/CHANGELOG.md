@@ -138,6 +138,16 @@
   placement; `validate <dir>` checks a local tree (`plugin.go`, `main.go`).
 
 ### Fixed
+- **`ryoku update` no longer needs a manual `sudo -v` first.** The first
+  escalation, the pre-update snapshot, ran through `sudo` with no terminal
+  attached, so on a fresh credential it could not prompt and the snapshot was
+  silently skipped; the only priming lived inside the pacman renderer and never
+  covered the snapshot, yay's own escalation, or the stage2 process. The update
+  now caches the credential once up front on the terminal (a single prompt, in the
+  hand-run terminal and the one-click kitty window alike) and refreshes it for the
+  duration, so the snapshot, pacman, yay, the post snapshot and doctor all run off
+  it. `sudo -v && ryoku update` is no longer needed (`internal/updater/update.go`,
+  `internal/updater/upgradelog.go`).
 - **`ryoku update` no longer aborts on the Plymouth splash theme.** Once
   `ryoku-desktop` began owning `/usr/share/plymouth/themes/ryoku/`, boxes whose
   ISO installer had seeded that theme unowned hit
