@@ -32,11 +32,18 @@ func csFixtureServer(t *testing.T) *httptest.Server {
 				`"surface":"#242424","preview":"`+"http://"+r.Host+`/colorschemes/ADW/preview.png",`, 1)
 			reg = strings.Replace(reg, "https://raw.githubusercontent.com/HANCORE-linux/omarchy-kanso-theme/master/preview.png",
 				"http://"+r.Host+"/colorschemes/hancore-kanso/missing.png", 1)
+			// ADW carries two wallpapers: one the fixture serves, one it 404s.
+			reg = strings.Replace(reg, `"surface":"#242424",`,
+				`"surface":"#242424","wallpapers":["http://`+r.Host+`/walls/one.jpg","http://`+r.Host+`/walls/gone.jpg"],`, 1)
 			_, _ = w.Write([]byte(reg))
 			return
 		}
 		if r.URL.Path == "/colorschemes/ADW/preview.png" {
 			_, _ = w.Write([]byte("\x89PNG\r\n\x1a\nfixture"))
+			return
+		}
+		if r.URL.Path == "/walls/one.jpg" {
+			_, _ = w.Write([]byte("\xff\xd8wallpaper"))
 			return
 		}
 		http.NotFound(w, r)
@@ -55,9 +62,10 @@ func testColorschemeProvider(t *testing.T, srv *httptest.Server, active string) 
 			dir:    filepath.Join(root, "cache"),
 			memo:   map[string]memoEntry{},
 		},
-		base:       srv.URL,
-		libraryDir: filepath.Join(root, "themes"),
-		activeName: func() string { return active },
+		base:         srv.URL,
+		libraryDir:   filepath.Join(root, "themes"),
+		wallpaperDir: filepath.Join(root, "walls"),
+		activeName:   func() string { return active },
 	}
 }
 
@@ -113,6 +121,19 @@ func TestColorschemeInstallWritesPreviewArt(t *testing.T) {
 	}
 	if !strings.HasSuffix(string(art), "fixture") {
 		t.Fatalf("preview.png is not the catalogue art: %q", art)
+	}
+
+	// The reachable wallpaper lands in the library under the scheme's name; the
+	// 404 one is simply absent. Remove takes the landed one back out.
+	walls, _ := filepath.Glob(filepath.Join(p.wallpaperDir, "noctalia-adw-*"))
+	if len(walls) != 1 || filepath.Base(walls[0]) != "noctalia-adw-1.jpg" {
+		t.Fatalf("wallpapers landed = %v, want [noctalia-adw-1.jpg]", walls)
+	}
+	if err := p.Remove(ctx, "noctalia-adw"); err != nil {
+		t.Fatal(err)
+	}
+	if walls, _ := filepath.Glob(filepath.Join(p.wallpaperDir, "noctalia-adw-*")); len(walls) != 0 {
+		t.Fatalf("remove left wallpapers behind: %v", walls)
 	}
 
 	// An unreachable preview must not fail the install: the scheme still lands,

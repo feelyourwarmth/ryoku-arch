@@ -20,16 +20,18 @@ import (
 const colorschemeRegistryPath = "colorschemes/registry.json"
 
 type colorschemeEntry struct {
-	ID       string          `json:"id"`
-	Name     string          `json:"name"`
-	Provider string          `json:"provider"`
-	Path     string          `json:"path"`
-	Accent   string          `json:"accent,omitempty"`
-	Surface  string          `json:"surface,omitempty"`
-	Source   string          `json:"source,omitempty"`
-	Preview  string          `json:"preview,omitempty"`
-	Dark     json.RawMessage `json:"dark,omitempty"`
-	Light    json.RawMessage `json:"light,omitempty"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Provider string `json:"provider"`
+	Path     string `json:"path"`
+	Accent   string `json:"accent,omitempty"`
+	Surface  string `json:"surface,omitempty"`
+	Source   string `json:"source,omitempty"`
+	Preview  string `json:"preview,omitempty"`
+	// Wallpapers the scheme was drawn for (raw URLs, pinned to a commit).
+	Wallpapers []string        `json:"wallpapers,omitempty"`
+	Dark       json.RawMessage `json:"dark,omitempty"`
+	Light      json.RawMessage `json:"light,omitempty"`
 }
 
 type colorschemeRegistry struct {
@@ -38,10 +40,11 @@ type colorschemeRegistry struct {
 }
 
 type colorschemeProvider struct {
-	cache      *Cache
-	base       string
-	libraryDir string
-	activeName func() string
+	cache        *Cache
+	base         string
+	libraryDir   string
+	wallpaperDir string
+	activeName   func() string
 }
 
 func newColorschemeProvider(cache *Cache) colorschemeProvider {
@@ -52,7 +55,9 @@ func newColorschemeProvider(cache *Cache) colorschemeProvider {
 		cache:      cache,
 		base:       cache.base,
 		libraryDir: filepath.Join(dataHome(), "ryoku", "themes"),
-		activeName: activeSchemeName,
+		// The still-wallpaper pool the picker scans (flat), shared with rices.
+		wallpaperDir: filepath.Join(os.Getenv("HOME"), "Pictures", "Wallpapers"),
+		activeName:   activeSchemeName,
 	}
 }
 
@@ -180,24 +185,71 @@ func (p colorschemeProvider) Install(ctx context.Context, id string) error {
 	// one and draws the palette pills otherwise. Fetched through the asset cache,
 	// so the store's own card and the install share one download, and a failure
 	// (offline, upstream 404) still installs the scheme; only the art is missing.
-	if remoteAsset(entry.Preview) {
-		cached := cachedAssetPath(entry.Preview)
-		if !isRegularFile(cached) {
-			if err := os.MkdirAll(assetCacheDir(), 0o755); err != nil {
-				cached = ""
-			} else if err := downloadAsset(ctx, p.cache.client, entry.Preview, cached); err != nil {
-				cached = ""
-			}
-		}
-		if cached != "" {
-			if ext := strings.ToLower(filepath.Ext(cached)); ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" {
-				if b, err := os.ReadFile(cached); err == nil {
-					_ = atomicWrite(filepath.Join(stage, "preview"+ext), b, 0o644)
-				}
+	if cached := p.fetchCached(ctx, entry.Preview); cached != "" {
+		if ext := imageExt(cached); ext != "" {
+			if b, err := os.ReadFile(cached); err == nil {
+				_ = atomicWrite(filepath.Join(stage, "preview"+ext), b, 0o644)
 			}
 		}
 	}
-	return replaceTree(stage, dst, nil)
+	if err := replaceTree(stage, dst, nil); err != nil {
+		return err
+	}
+	// The scheme's own wallpapers land in the wallpaper library the picker
+	// scans (flat; a subfolder would be invisible to it), named after the scheme
+	// so Remove can take them back out and so they read as a set in Super+W.
+	// Best-effort like the preview: a wall that fails to fetch is simply absent.
+	for i, u := range entry.Wallpapers {
+		cached := p.fetchCached(ctx, u)
+		if cached == "" {
+			continue
+		}
+		ext := imageExt(cached)
+		if ext == "" {
+			continue
+		}
+		if err := os.MkdirAll(p.wallpaperDir, 0o755); err != nil {
+			break
+		}
+		wall := filepath.Join(p.wallpaperDir, fmt.Sprintf("%s-%d%s", id, i+1, ext))
+		if isRegularFile(wall) {
+			continue
+		}
+		if b, err := os.ReadFile(cached); err == nil {
+			_ = atomicWrite(wall, b, 0o644)
+		}
+	}
+	return nil
+}
+
+// fetchCached returns the asset-cache path of a remote image, downloading it
+// on a miss, or "" when the URL is not remote or the fetch fails.
+func (p colorschemeProvider) fetchCached(ctx context.Context, url string) string {
+	if !remoteAsset(url) {
+		return ""
+	}
+	cached := cachedAssetPath(url)
+	if isRegularFile(cached) {
+		return cached
+	}
+	if err := os.MkdirAll(assetCacheDir(), 0o755); err != nil {
+		return ""
+	}
+	if err := downloadAsset(ctx, p.cache.client, url, cached); err != nil {
+		return ""
+	}
+	return cached
+}
+
+// imageExt is the lower-cased extension of an image path the pickers can show,
+// or "" for anything else.
+func imageExt(path string) string {
+	switch ext := strings.ToLower(filepath.Ext(path)); ext {
+	case ".jpg", ".jpeg", ".png", ".webp":
+		return ext
+	default:
+		return ""
+	}
 }
 
 func (p colorschemeProvider) Remove(ctx context.Context, id string) error {
@@ -213,7 +265,17 @@ func (p colorschemeProvider) Remove(ctx context.Context, id string) error {
 		return err
 	}
 	defer unlock()
-	return os.RemoveAll(dst)
+	if err := os.RemoveAll(dst); err != nil {
+		return err
+	}
+	// The wallpapers the install landed go with it; anything the user saved
+	// under another name stays.
+	if walls, err := filepath.Glob(filepath.Join(p.wallpaperDir, id+"-[0-9]*.*")); err == nil {
+		for _, w := range walls {
+			_ = os.Remove(w)
+		}
+	}
+	return nil
 }
 
 // activeSchemeName reads the applied scheme (shell.json theme.theme). It is empty

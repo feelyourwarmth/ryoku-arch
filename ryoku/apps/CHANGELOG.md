@@ -14,6 +14,18 @@
   reads that instead of guessing a filename, so `.png` and `.jpg` sources both
   show (`backend/provider_colorschemes.go`, `shell/ipc/usertheme.go`,
   `ryogami/wall-ui/.../WallpaperSelector.qml`).
+- `ryostore/`: **A theme's own wallpapers come with it.** Every HANCORE scheme
+  ships the backgrounds it was drawn for; the catalogue now lists them
+  (`wallpapers`, pinned to a commit) and the install lands them in
+  `~/Pictures/Wallpapers` as `<id>-N.<ext>`, where the picker shows them beside
+  the rest. Remove takes exactly those files back out.
+- `ryogami/`: **The picker refreshes live.** The Themes and Rices strips were
+  read once and cached for the picker's lifetime, so a scheme installed while
+  Super+W was open never appeared until a reopen. Both are reloaded on every
+  open and re-read when their library folders change (a native folder watch,
+  no external tool). The wallpaper strip's own watcher execs `inotifywait`,
+  which nothing declared: `ryogami` now depends on `inotify-tools`, so a wall
+  that lands while the picker is open shows up on user boxes too.
 
 ### Removed
 - `ryotunes/`: **The Chromium app-window wrapper is gone; Ryotunes is now a real

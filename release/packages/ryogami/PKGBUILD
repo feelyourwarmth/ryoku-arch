@@ -22,8 +22,11 @@ license=('MIT')
 # quickshell (the wall-ui). Video wallpapers play through the bundled
 # ryogami-live, built here from ryoku/shell/livewall. The wall-ui source
 # browser fetches remote wallpapers (Wallhaven, MoeWalls, MotionBGs, GitHub,
-# Steam) with curl, so it is a hard runtime need too.
-depends=('imagemagick' 'ffmpeg' 'quickshell' 'curl')
+# Steam) with curl, so it is a hard runtime need too. The wall-ui's wallpaper
+# folder watcher execs inotifywait (inotify-tools); without it a wallpaper that
+# lands while the picker is open (a store install, a download) never shows
+# until the picker is reopened.
+depends=('imagemagick' 'ffmpeg' 'quickshell' 'curl' 'inotify-tools')
 makedepends=('go' 'wayland' 'wayland-protocols')
 source=()
 

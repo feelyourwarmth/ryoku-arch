@@ -6,6 +6,7 @@ import QtQuick.Shapes
 import QtQuick.Effects
 import QtQuick.Controls
 import QtMultimedia
+import Qt.labs.folderlistmodel
 import ".."
 import "../services"
 
@@ -156,22 +157,52 @@ Scope {
   ListModel { id: themeModel }
   ListModel { id: riceModel }
 
+  // The theme and rice strips are read from the shell's library on every open
+  // and again whenever their folders change while the picker is up, so a scheme
+  // or rice installed from Ryostore appears without closing and reopening.
+  // FolderListModel watches the directory natively (no inotifywait dependency);
+  // its count flips as entries land or leave, and the debounce lets an install
+  // finish its stage-and-rename before the catalog is asked.
   function _loadThemes() {
-    if (_themeProc.running || themeModel.count > 0) return
+    if (_themeProc.running) return
     _themeBuf = ""
     _themeProc.running = true
   }
   function _loadRices() {
-    if (_riceProc.running || riceModel.count > 0) return
+    if (_riceProc.running) return
     _riceBuf = ""
     _riceProc.running = true
   }
-
   function _reloadRices() {
     riceModel.clear()
-    _riceBuf = ""
-    _riceProc.running = true
+    _loadRices()
   }
+
+  readonly property string _dataHome: {
+    var x = Quickshell.env("XDG_DATA_HOME")
+    return (x && x.length > 0) ? x : (Quickshell.env("HOME") + "/.local/share")
+  }
+  readonly property string _configHome: {
+    var x = Quickshell.env("XDG_CONFIG_HOME")
+    return (x && x.length > 0) ? x : (Quickshell.env("HOME") + "/.config")
+  }
+  FolderListModel {
+    id: themeLibrary
+    folder: "file://" + wallpaperSelector._dataHome + "/ryoku/themes"
+    showFiles: false
+    showDirs: true
+    showDotAndDotDot: false
+    onCountChanged: if (wallpaperSelector.showing) _themeReload.restart()
+  }
+  FolderListModel {
+    id: riceLibrary
+    folder: "file://" + wallpaperSelector._configHome + "/ryoku/rices"
+    showFiles: false
+    showDirs: true
+    showDotAndDotDot: false
+    onCountChanged: if (wallpaperSelector.showing) _riceReload.restart()
+  }
+  Timer { id: _themeReload; interval: 600; onTriggered: wallpaperSelector._loadThemes() }
   function _captureRice(name) {
     Quickshell.execDetached(["ryoku-hub", "rice", "capture", name, "all"])
     _riceReload.restart()
