@@ -3,6 +3,20 @@
 ## Unreleased
 
 ### Added
+- **The shell daemon records a good boot for the boot guard.** Once the shell
+  surface has stayed up 45 s (past the supervisor's crash window) the daemon
+  writes the boot id to `/var/lib/ryoku/boot/ok-<uid>`; `ryoku boot-guard`
+  reads it on the next boot to tell an update that came back from one that
+  did not. Best effort: a box whose `ryoku` package predates the directory
+  simply records nothing (`ipc/bootok.go`).
+- **A dev checkout takes its packaged externals from the `[ryoku]` channel its
+  branch publishes to.** `deploy.sh` trusts the release key from the checkout,
+  adds or repoints the `[ryoku]` stanza (`unstable-dev` -> testing, `main` ->
+  stable, a foreign server left alone) and installs `ryotunes` with
+  `pacman -Syu --needed`, retiring the locally built copy, so a dev box runs
+  the same signed package a user gets instead of a minutes-long local build
+  that could differ from it (`deploy.sh`).
+
 - **QS Bar Settings has an Identity tab again.** The launcher mark (wordmark or
   glyph, with the full word and glyph grids drawn as the bar draws them) and
   the workspaces (count, marker style, live preview) were folded into two rows
