@@ -4,7 +4,7 @@
 // rather than reimplementing them.
 //
 //	ryoku update            snapshot -> channel pull or pacman -Syu -> deploy -> reload
-//	ryoku rollback [id]     guide restoring a snapshot from the boot menu (or list them)
+//	ryoku rollback          list releases + snapshots; --to <tag> moves back to a release; [id] guides a snapshot restore
 //	ryoku snapshots         list snapper snapshots
 //	ryoku status            version, commits behind the channel, snapshot count
 //	ryoku materialize       lay the base configs into ~/.config (override-safe)
@@ -49,6 +49,8 @@ func main() {
 		err = updater.Reset(os.Args[2:])
 	case "rollback":
 		err = updater.Rollback(os.Args[2:])
+	case "boot-guard":
+		err = updater.BootGuard(os.Args[2:])
 	case "snapshots":
 		err = updater.Snapshots()
 	case "status":
@@ -91,8 +93,9 @@ func usage() {
 	fmt.Print(`Usage: ryoku <command>
 
   update         apply channel commits (or pacman -Syu), redeploy, reload
-  track <chan>   switch update channel to main (stable) or unstable-dev (source)
-  rollback [id]  guide restoring a snapshot from the boot menu (no id: list them)
+  track <chan>   packaged box: stable, testing, or a release tag (pins it); checkout: main or unstable-dev
+  rollback       list releases and snapshots; --to <tag> puts the Ryoku set back on that release
+  rollback [id]  guide restoring snapshot <id> from the boot menu
   snapshots      list snapper snapshots
   status         version, commits behind the channel, snapshot count
   version        print the running version (--branch = channel · sha)

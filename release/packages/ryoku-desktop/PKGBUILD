@@ -167,6 +167,12 @@ depends=(
   # the [ryoku] repo). The shell's record island opens it for a studio capture or
   # to import a clip; ships in the ISO and reaches boxes on `ryoku update`.
   'ryomotion'
+  # Ryotunes: the music app (Tauri + libmpv, built for the [ryoku] repo from
+  # neur0map/ryotunes). The desktop now-playing widget, the dock pill and the
+  # music toggle follow its MPRIS name; ships in the ISO and reaches boxes on
+  # `ryoku update`, where it takes over /usr/bin/ryotunes from the Chromium
+  # app-window wrapper this package used to install.
+  'ryotunes'
   # ryoshot Beautify's HD export and ryowalls Enhance AI-upscale on the GPU with
   # this. official repo (extra), so a hard depend ships it in the ISO install and
   # reaches existing boxes on `ryoku update` -- an optdepend never installs on -Syu,
@@ -271,6 +277,20 @@ _repo="$startdir/../../.."
 
 package() {
   local cfg="$pkgdir/usr/share/ryoku/config"
+
+  # /etc/ryoku-release: the named state this build is. build-repo.sh exports
+  # RYOKU_RELEASE (a release tag on stable, the dev version on testing, a
+  # local-* marker for a hand build) and RYOKU_CHANNEL; `ryoku version`,
+  # `ryoku status`, the update island and the doctor read this file, and it is
+  # pacman-owned so it always names the release actually installed.
+  install -Dm644 /dev/stdin "$pkgdir/etc/ryoku-release" <<EOF
+RELEASE=${RYOKU_RELEASE:-local-$pkgver}
+NAME=$(tr -d '[:space:]' < "$_repo/CODENAME")
+CHANNEL=${RYOKU_CHANNEL:-local}
+VERSION=$pkgver
+COMMIT=$(git -C "$_repo" rev-parse HEAD 2>/dev/null || echo unknown)
+DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+EOF
 
   # --- base configs under /usr/share/ryoku/config, mirroring ~/.config -------
   # `ryoku materialize` copies this tree verbatim into the user's ~/.config.
@@ -435,15 +455,6 @@ package() {
     "$pkgdir/usr/share/applications/ryoku-hub.desktop"
   install -Dm644 "$_repo/ryoku/assets/brand/logo.svg" \
     "$pkgdir/usr/share/icons/hicolor/scalable/apps/ryoku-hub.svg"
-  # ryotunes: YouTube Music as a Chromium app-window wired to the desktop
-  # now-playing widget over MPRIS. Not a quickshell app, so it ships explicitly:
-  # the wrapper on PATH, its .desktop, and its icon. chromium comes from
-  # base.packages, so the wrap always has an engine.
-  install -Dm755 "$_repo/ryoku/apps/ryotunes/bin/ryotunes" "$pkgdir/usr/bin/ryotunes"
-  install -Dm644 "$_repo/ryoku/apps/ryotunes/ryotunes.desktop" \
-    "$pkgdir/usr/share/applications/ryotunes.desktop"
-  install -Dm644 "$_repo/ryoku/apps/ryotunes/ryotunes.svg" \
-    "$pkgdir/usr/share/icons/hicolor/scalable/apps/ryotunes.svg"
   # ryoku-canvas spicetify extension (apps/spicetify): the source asset for the
   # music widget's Spotify Canvas backdrop. `ryoku doctor` (reconcileSpicetifyCanvas)
   # drops it into a Spotify user's spicetify Extensions and applies it, and stays
@@ -519,9 +530,6 @@ package() {
   done
   # the app-role resolver the keybinds launch by bare name (SUPER+B -> browser, ...)
   install -Dm755 "$_repo/ryoku/hyprland/scripts/ryoku-app" "$pkgdir/usr/bin/ryoku-app"
-  # the desktop music widget's corner button: launch / minimise / restore.
-  install -Dm755 "$_repo/ryoku/hyprland/scripts/ryoku-music-toggle" \
-    "$pkgdir/usr/bin/ryoku-music-toggle"
   # the single-instance window summoner the keybinds call by bare name (ryovm).
   install -Dm755 "$_repo/ryoku/hyprland/scripts/ryoku-summon" "$pkgdir/usr/bin/ryoku-summon"
   for s in "$_repo"/system/hardware/*/ryoku-*; do

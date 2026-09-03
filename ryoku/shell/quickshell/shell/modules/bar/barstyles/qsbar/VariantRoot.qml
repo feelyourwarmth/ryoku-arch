@@ -250,6 +250,7 @@ Item {
     NetworkPanel { root: theme }
     BluetoothPanel { root: theme }
     BatteryPanel { root: theme }
+    PluginPanel { root: theme }
     BrightnessPanel { root: theme }
     MprisPanel { root: theme }
     WorkspacePanel { root: theme }

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed
+- `iso/build.sh`: **A release ISO bakes from its frozen release directory.**
+  `RYOKU_ISO_REPO_URL` (the `repo_url` input of the ISO workflows, which
+  `publish-repo.yml` passes for a tagged release) now reaches
+  `offline-repo.sh` too, so the live media's `[ryoku]` and the offline closure
+  agree on which release the ISO installs; without it both fall back to the
+  stable pointer as before.
+- `tests/container-install.sh`: asserts the `/etc/ryoku-release` marker, that
+  `ryoku version` prints it, and that `ryoku track` refuses to move a box whose
+  `[ryoku]` points at a mirror Ryoku does not publish.
+
 A ground-up hardening of the installer for real hardware. Granular backend and
 ISO detail live in `backend/CHANGELOG.md` and `iso/CHANGELOG.md`.
 

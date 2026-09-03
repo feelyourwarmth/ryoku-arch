@@ -657,9 +657,17 @@ func (d *daemon) supervise(name string) {
 		if parkable(name) {
 			d.markHidden(name)
 		}
+		exited := make(chan struct{})
+		if name == "shell" {
+			// A shell that stays up past its crash window is the desktop coming
+			// back after a boot; record it for the boot guard (ryoku boot-guard),
+			// which reverts an update whose next boots never get here.
+			go recordBootOK(exited)
+		}
 
 		start := time.Now()
 		_ = cmd.Wait()
+		close(exited)
 		if name == "shell" && d.keypress != nil {
 			d.keypress.configure(false, d.keypress.currentMode())
 		}

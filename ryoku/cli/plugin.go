@@ -62,6 +62,8 @@ func cmdPlugin(args []string) error {
 		return pluginUsage()
 	}
 	switch args[0] {
+	case "new":
+		return cmdPluginNew(args[1:])
 	case "add":
 		return cmdPluginAdd(args[1:])
 	case "remove":
@@ -77,17 +79,25 @@ func cmdPlugin(args []string) error {
 	case "-h", "--help", "help":
 		return pluginUsage()
 	}
-	return fmt.Errorf("unknown plugin command %q (use: add, remove, list, validate, export, share)", args[0])
+	return fmt.Errorf("unknown plugin command %q (use: new, add, remove, list, validate, export, share)", args[0])
 }
 
 func pluginUsage() error {
 	fmt.Print(`Usage: ryoku plugin <command>
 
-  add <git-url|dir> [--bar] [--yes]  fetch, validate, and install a plugin;
-                                     --bar puts it on the QS Bar
+  new <id> [--bar|--desktop|--popout] [--name N] [--author "N <m>"] [--to <dir>]
+                                     scaffold a new plugin folder and git-init it
+                                     (--bar is the default host; adds a panel)
+  add <git-url|dir> [--bar] [--yes] [--allow-findings]
+                                     fetch, validate, audit, and install a plugin;
+                                     --bar puts it on the QS Bar;
+                                     --allow-findings installs despite blocking audit findings
   remove <id>                        uninstall a plugin and drop its placement
-  list [--json]                      installed plugins with host and enabled state
-  validate <dir>                     check a local plugin tree's manifest
+  list [--json]                      installed plugins (--json adds capabilities)
+  validate <dir> [--json] [--allow <rule>,...]
+                                     check a local plugin's manifest and run the
+                                     static security audit; --allow downgrades a
+                                     blocking rule to a warning for this run
   export <id> [--to <dir>]           copy an installed plugin out as a Ryostore
                                      folder (product manifest + registry entry)
   share <id> [--from <dir>]          export, then open the Ryostore pull request
@@ -229,13 +239,15 @@ func firstSymlink(dir string) (string, error) {
 
 func cmdPluginAdd(args []string) error {
 	url := ""
-	bar, yes := false, false
+	bar, yes, allowFindings := false, false, false
 	for _, a := range args {
 		switch {
 		case a == "--bar":
 			bar = true
 		case a == "--yes" || a == "-y":
 			yes = true
+		case a == "--allow-findings":
+			allowFindings = true
 		case strings.HasPrefix(a, "-"):
 			return fmt.Errorf("unknown flag %q", a)
 		default:
@@ -246,7 +258,7 @@ func cmdPluginAdd(args []string) error {
 		}
 	}
 	if url == "" {
-		return fmt.Errorf("usage: ryoku plugin add <git-url|dir> [--bar] [--yes]")
+		return fmt.Errorf("usage: ryoku plugin add <git-url|dir> [--bar] [--yes] [--allow-findings]")
 	}
 	// A local folder (a widget written on this desktop, by hand or by an agent)
 	// is copied; anything else is a git URL and is cloned.
@@ -290,6 +302,16 @@ func cmdPluginAdd(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// The same static audit `validate` runs. Blocking findings refuse the install
+	// unless --allow-findings; warnings are printed and never block.
+	res := auditPlugin(src, nil)
+	if len(res.Blocking) > 0 || len(res.Warnings) > 0 {
+		printAudit(res, false)
+	}
+	if len(res.Blocking) > 0 && !allowFindings {
+		return fmt.Errorf("%d blocking audit finding(s); fix them or re-run with --allow-findings", len(res.Blocking))
+	}
 	if sys.Exists(filepath.Join(pluginsInstallRoot(), m.ID)) || pluginHasReceipt(m.ID) {
 		return fmt.Errorf("plugin %q is already installed (remove it first)", m.ID)
 	}
@@ -330,28 +352,67 @@ func cmdPluginRemove(args []string) error {
 }
 
 func cmdPluginValidate(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: ryoku plugin validate <dir>")
+	dir := ""
+	asJSON := false
+	allow := map[string]bool{}
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--json":
+			asJSON = true
+		case a == "--allow":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("--allow needs a rule list")
+			}
+			addAllowed(allow, args[i])
+		case strings.HasPrefix(a, "--allow="):
+			addAllowed(allow, strings.TrimPrefix(a, "--allow="))
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("unknown flag %q", a)
+		default:
+			if dir != "" {
+				return fmt.Errorf("give one directory")
+			}
+			dir = a
+		}
 	}
-	m, err := validateManifest(args[0], reservedIDs())
-	if err != nil {
-		return err
+	if dir == "" {
+		return fmt.Errorf("usage: ryoku plugin validate <dir> [--json] [--allow <rule>,...]")
 	}
-	fmt.Printf("%s %s (id=%s version=%s hosts=%s)\n", sys.Green("ok"), m.Name, m.ID, m.Version, strings.Join(m.Hosts, ", "))
+	_, mErr := validateManifest(dir, reservedIDs())
+	res := auditPlugin(dir, allow)
+	printAudit(res, asJSON)
+	if mErr != nil {
+		return mErr
+	}
+	if len(res.Blocking) > 0 {
+		return fmt.Errorf("%d blocking finding(s); fix them or re-run with --allow", len(res.Blocking))
+	}
 	return nil
+}
+
+// addAllowed splits a comma-separated rule list into the allow set.
+func addAllowed(allow map[string]bool, list string) {
+	for _, r := range strings.Split(list, ",") {
+		if r = strings.TrimSpace(r); r != "" {
+			allow[r] = true
+		}
+	}
 }
 
 // pluginRow is one `plugin list` element. source is "store" for a receipt-owned
 // install and "dev" for a RYOSTORE_PLUGINS_DIR override.
 type pluginRow struct {
-	ID      string   `json:"id"`
-	Name    string   `json:"name"`
-	Version string   `json:"version"`
-	Hosts   []string `json:"hosts"`
-	Dir     string   `json:"dir"`
-	Enabled bool     `json:"enabled"`
-	Host    string   `json:"host"`
-	Source  string   `json:"source"`
+	ID           string         `json:"id"`
+	Name         string         `json:"name"`
+	Version      string         `json:"version"`
+	Hosts        []string       `json:"hosts"`
+	Dir          string         `json:"dir"`
+	Enabled      bool           `json:"enabled"`
+	Host         string         `json:"host"`
+	Source       string         `json:"source"`
+	Capabilities map[string]any `json:"capabilities,omitempty"`
 }
 
 func cmdPluginList(args []string) error {
@@ -398,10 +459,12 @@ func pluginListRows() []pluginRow {
 			version = manifestString(m, "version")
 		}
 		st := state[id]
+		caps, _ := m["capabilities"].(map[string]any)
 		rows = append(rows, pluginRow{
 			ID: id, Name: manifestName(m, id), Version: version,
 			Hosts: manifestHosts(m), Dir: dir,
 			Enabled: st.enabled, Host: st.host, Source: source,
+			Capabilities: caps,
 		})
 	}
 	for _, dir := range devPluginDirs() {

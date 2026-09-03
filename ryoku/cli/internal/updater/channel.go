@@ -33,6 +33,13 @@ func ryokuChannel() string {
 	if c := strings.TrimSpace(os.Getenv("RYOKU_CHANNEL")); c != "" {
 		return c
 	}
+	// a packaged box's channel is the [ryoku] repo directory it points at:
+	// stable, testing, or a pinned release tag.
+	if sys.ResolveRepo() == "" {
+		if c := sys.PackagedChannel(); c != "" {
+			return c
+		}
+	}
 	return "main"
 }
 

@@ -3,6 +3,61 @@
 ## Unreleased
 
 ### Added
+- **`ryoku version --pretty` leads with the release line's name** ("Onogoro
+  v0.56.0-beta.19"; fastfetch's OS line uses it), and the name reaches
+  `ryoku status` (text and `releaseName`/`channelReleaseName` in the JSON the
+  island and the Hub read) and the `ryoku rollback` release list. It comes
+  from `/etc/ryoku-release` (`NAME=`) on a packaged box and the checkout's
+  `CODENAME` on a dev box (`internal/updater/version.go`,
+  `internal/sys/release.go`).
+- **Package channels: `ryoku track stable | testing | v<tag>` and
+  `ryoku rollback --to v<tag>`.** On a packaged box the channel is the
+  `[ryoku]` `Server` line and nothing else; `track` rewrites it and runs an
+  update that moves the Ryoku set to what the channel serves, down as well as
+  up (`pacman -Syu`, then an explicit `-S ryoku-desktop` whose exact-version
+  depends bring the set along). A release tag pins the box to that frozen
+  release; `rollback --to` is `track` onto one, so the Ryoku set goes back in
+  one pacman transaction while Arch stays current. Bare `ryoku rollback` lists
+  the release ledger and the snapshots. `ryoku version` prints the release
+  from `/etc/ryoku-release`; `ryoku status` gains `release` and
+  `channelRelease` (what the channel serves, read from its `release.json`,
+  cached ten minutes), which the update island and the Hub show instead of a
+  commit pair. The doctor names the channel it finds and warns, without
+  touching it, when `[ryoku]` points at a mirror Ryoku does not publish.
+  Checkout boxes keep `ryoku track main | unstable-dev` (`internal/sys/release.go`,
+  `internal/updater/release.go`, `track.go`).
+- **A boot guard reverts a packaged update whose boots fail.** After a
+  release moves the box, stage2 arms `/var/lib/ryoku/update-pending.json`
+  (previous release, new release, pre-update snapshot, the boot it ran in).
+  `ryoku-boot-guard.service` runs `ryoku boot-guard` early in every boot as
+  root: a boot the shell daemon recorded as good (`/var/lib/ryoku/boot/ok-<uid>`,
+  written once the shell stays up 45 s) disarms it; otherwise it counts, and
+  on the second failed boot tracks the previous release back (the Ryoku set
+  only; Arch untouched), re-materializes every user's config from it, and
+  leaves a notice the doctor shows once. On a third it points the Limine boot
+  menu at the pre-update snapshot entry. The unit and its tmpfiles ship with
+  the `ryoku` package; the doctor enables the unit on every update so boxes
+  installed before it get it, and `sudo ryoku boot-guard --disarm` clears a
+  marker by hand (`internal/updater/bootguard.go`, `systemd/`,
+  `internal/doctor/reconcile_bootguard.go`).
+
+
+- **`ryoku plugin new` scaffolds a plugin in the right place, and `validate`
+  audits it.** `new <id> [--bar|--desktop|--popout]` writes a working plugin
+  under `~/Documents/ryoku-plugins/<id>/` (manifest, service, view, bar panel
+  for `--bar`, README, LICENSE, and an `AGENTS.md` carrying the eleven plugin
+  rules so any agent opening the folder follows them) and git-inits it as the
+  author. `validate <dir>` now runs a static audit beside the manifest checks:
+  blocking rules `symlink`, `escalation` (sudo/doas/su, or pkexec not declared
+  in `capabilities.privileged`), `pipe-shell`, `internal-import`,
+  `config-write`, `secret`, `binary`; warnings `undeclared-command`,
+  `undeclared-host`, `dynamic-shell`, `outside-write`, `large-tree`. Findings
+  print as `rule  path:line  message` (`--json` for machines; `--allow <rule>`
+  to downgrade one); `add` refuses blocking findings unless `--allow-findings`.
+  `list --json` carries each plugin's `capabilities` (`plugin_audit.go`,
+  `plugin_new.go`, `plugin_template/`).
+
+### Added
 - **`ryoku plugin add` takes a folder, and `export` / `share` carry a widget
   to Ryostore.** `add <dir>` copies a plugin written on this desktop (by hand or
   by Rashin) through the same validation and store transaction a git URL gets,
@@ -24,6 +79,14 @@
   without a manual step. It stays a no-op when the skill is not installed or the
   links are already in place, and never wires a box that left Rashin off
   (`internal/doctor/reconcile_rashin_daemon.go`).
+- **`ryoku update` keeps prowl-agent current, and doctor flags it when
+  missing.** After the post-update Rashin reindex, `ryoku update` refreshes
+  prowl-agent: on a dev box (on PATH but not owned by a pacman package) it runs
+  `prowl-agent update`, and on a packaged box it logs that the binary is managed
+  by pacman (the system upgrade already delivered it). A new doctor reconciler
+  reports a rashin-enabled box that lacks the binary with the fix
+  `sudo pacman -S prowl-agent` (`internal/updater/update.go`,
+  `internal/doctor/reconcile_rashin_daemon.go`, `internal/doctor/doctor.go`).
 - **`ryoku debug` prints a shareable diagnostic bundle.** The bug issue
   template asked reporters to attach `ryoku-debug` output, but no such command
   existed. `ryoku debug` now prints the same read-only, secrets-free report as
@@ -75,6 +138,11 @@
   placement; `validate <dir>` checks a local tree (`plugin.go`, `main.go`).
 
 ### Fixed
+- **Doctor ignores Zen launcher-wrapper directories.** Zen installations must
+  carry Firefox's `application.ini` marker before the policy reconciler treats
+  them as an install root, so a `/usr/bin/zen-browser` wrapper no longer makes
+  doctor try to create `/usr/bin/distribution/policies.json`
+  (`internal/doctor/reconcile_zen.go`).
 - **`ryoku track` takes effect without a relogin.** The channel it persists
   to `environment.d` now wins over the live `RYOKU_CHANNEL`, which the session
   captured at login and kept reporting after a switch (`ryoku status` and the

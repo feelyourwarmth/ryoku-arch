@@ -62,9 +62,9 @@ const (
 // 4K height at/above which an image is already sharp and enhancing is pure GPU
 // burn for no gain.
 const (
-	waifu2xModel        = "/usr/share/waifu2x-ncnn-vulkan/models-cunet"
+	waifu2xModel         = "/usr/share/waifu2x-ncnn-vulkan/models-cunet"
 	waifu2xImageSharpCap = 2160
-	defaultUpscaleScale = 2
+	defaultUpscaleScale  = 2
 )
 
 // Per-phase ceilings. A single image is usually quick; a full frame-by-frame
@@ -653,14 +653,6 @@ func (u *Upscaler) writeState(path, val string) {
 	}
 	_ = os.MkdirAll(u.stateDir, 0o755)
 	_ = os.WriteFile(path, []byte(val), 0o644)
-}
-
-// upscaleStateDir mirrors ryowalls' XDG_STATE_HOME resolution.
-func upscaleStateDir() string {
-	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
-		return d
-	}
-	return filepath.Join(home(), ".local", "state")
 }
 
 func fileNonEmpty(path string) bool {

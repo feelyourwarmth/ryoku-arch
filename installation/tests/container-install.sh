@@ -168,4 +168,49 @@ log "linting the materialized QML for load failures"
 "$REPO/bin/ryoku-dev-lint-qml" "$cfg/quickshell/shell" "$cfg/quickshell/hub" \
   || die "shipped QML cannot load (see above); a user's desktop would come up broken"
 
+# 7. release naming and channels. the package must carry the /etc/ryoku-release
+#    marker (a hand build names itself local-<pkgver>), the CLI must read it
+#    and report the channel from the [ryoku] Server line, and `ryoku track`
+#    must refuse to move a box whose [ryoku] points at a mirror Ryoku does not
+#    publish (this local repo), instead of rewriting it into a channel it
+#    cannot serve. the live switch itself (stable -> testing -> a pinned
+#    release) needs the published channels and runs in the VM install test.
+log "checking release naming and channel handling"
+[[ -f /etc/ryoku-release ]] || die "ryoku-desktop did not ship /etc/ryoku-release"
+grep -qE '^RELEASE=local-[0-9]' /etc/ryoku-release || die "unexpected /etc/ryoku-release: $(cat /etc/ryoku-release)"
+grep -qE '^CHANNEL=local$' /etc/ryoku-release || die "hand build must be marked CHANNEL=local"
+name=$(tr -d '[:space:]' < "$REPO/CODENAME")
+grep -qx "NAME=$name" /etc/ryoku-release || die "ryoku-desktop did not carry the line's name ($name) into /etc/ryoku-release"
+ver=$(runuser -u "$TESTUSER" -- env "HOME=/home/$TESTUSER" ryoku version)
+[[ $ver == local-* ]] || die "ryoku version should print the release marker, got: $ver"
+pretty=$(runuser -u "$TESTUSER" -- env "HOME=/home/$TESTUSER" ryoku version --pretty)
+[[ $pretty == "$name local-"* ]] || die "ryoku version --pretty should lead with the name, got: $pretty"
+cat >>/etc/pacman.conf <<EOF
+
+[ryoku]
+SigLevel = Never
+Server = file://$OUT
+EOF
+if runuser -u "$TESTUSER" -- env "HOME=/home/$TESTUSER" ryoku track testing 2>/tmp/track.err; then
+  die "ryoku track must refuse a [ryoku] repo Ryoku does not publish"
+fi
+grep -q "does not publish" /tmp/track.err || die "unexpected track refusal: $(cat /tmp/track.err)"
+grep -q "^Server = file://$OUT" /etc/pacman.conf || die "track rewrote a foreign [ryoku] Server line"
+
+# 8. the boot guard. the ryoku package ships the unit and the tmpfiles entry
+#    for the sessions' boot records; `ryoku boot-guard` with nothing pending is
+#    a no-op, and a marker whose desktop was proven up in another boot is
+#    disarmed rather than counted.
+log "checking the boot guard"
+[[ -f /usr/lib/systemd/system/ryoku-boot-guard.service ]] || die "ryoku did not ship ryoku-boot-guard.service"
+[[ -f /usr/lib/tmpfiles.d/ryoku.conf ]] || die "ryoku did not ship its tmpfiles entry"
+systemd-tmpfiles --create /usr/lib/tmpfiles.d/ryoku.conf
+[[ -d /var/lib/ryoku/boot ]] || die "tmpfiles did not create /var/lib/ryoku/boot"
+[[ $(stat -c %a /var/lib/ryoku/boot) == 1777 ]] || die "/var/lib/ryoku/boot must be 1777, got $(stat -c %a /var/lib/ryoku/boot)"
+ryoku boot-guard || die "boot-guard with nothing pending must succeed"
+printf '{"from":"v0.0.1","to":"v0.0.2","armedBoot":"armed-boot","boots":0,"at":"x"}\n' >/var/lib/ryoku/update-pending.json
+runuser -u "$TESTUSER" -- sh -c "echo later-boot >/var/lib/ryoku/boot/ok-$(id -u "$TESTUSER")" || die "a session cannot record its boot"
+ryoku boot-guard | grep -q "disarmed" || die "a proven boot must disarm the guard"
+[[ ! -e /var/lib/ryoku/update-pending.json ]] || die "disarm left the marker behind"
+
 log "container-install: OK -- ryoku-desktop delivered the full config to $cfg"

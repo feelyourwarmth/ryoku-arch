@@ -20,7 +20,7 @@ func writeShareablePlugin(t *testing.T) string {
   "hosts": ["topbarGlyph"],
   "defaults": { "host": "topbarGlyph", "icon": "vpn_lock" },
   "entryPoints": { "main": "service/Main.qml", "content": "content/Widget.qml" }
-}`, "service/Main.qml", "content/Widget.qml", "content/Row.qml", "README.md", "assets/preview-widget.png", "assets/shot-2.png")
+}`, "service/Main.qml", "content/Widget.qml", "content/Row.qml", "README.md", "assets/preview-widget.png", "assets/preview-desktop.png", "assets/shot-2.png")
 	script := filepath.Join(dir, "bin", "ryoku-vpn-probe")
 	if err := os.MkdirAll(filepath.Dir(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -37,7 +37,7 @@ func TestBuildProductManifestClassifiesFiles(t *testing.T) {
 	if preview != "assets/preview-widget.png" {
 		t.Fatalf("preview = %q", preview)
 	}
-	if strings.Join(shots, ",") != "assets/preview-widget.png,assets/shot-2.png" {
+	if strings.Join(shots, ",") != "assets/preview-widget.png,assets/preview-desktop.png,assets/shot-2.png" {
 		t.Fatalf("screenshots = %v", shots)
 	}
 	raw, err := buildProductManifest(dir, "vpn", "1.0.0", preview, shots)
@@ -65,14 +65,15 @@ func TestBuildProductManifestClassifiesFiles(t *testing.T) {
 		mode    string
 		install bool
 	}{
-		"manifest.json":             {"0644", true},
-		"service/Main.qml":          {"0644", true},
-		"content/Widget.qml":        {"0644", true},
-		"content/Row.qml":           {"0644", true},
-		"bin/ryoku-vpn-probe":       {"0755", true},
-		"README.md":                 {"0644", false},
-		"assets/preview-widget.png": {"0644", false},
-		"assets/shot-2.png":         {"0644", false},
+		"manifest.json":              {"0644", true},
+		"service/Main.qml":           {"0644", true},
+		"content/Widget.qml":         {"0644", true},
+		"content/Row.qml":            {"0644", true},
+		"bin/ryoku-vpn-probe":        {"0755", true},
+		"README.md":                  {"0644", false},
+		"assets/preview-widget.png":  {"0644", false},
+		"assets/preview-desktop.png": {"0644", false},
+		"assets/shot-2.png":          {"0644", false},
 	}
 	for src, want := range cases {
 		f, ok := got[src]

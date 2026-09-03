@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Foreign-file pointer blocks are fenced with these markers so wiring is
@@ -157,6 +160,7 @@ func WireAll() int {
 	// Also link the always-created homes (~/.agents, ~/.hermes) and every
 	// hermes profile; the per-agent links were made by Wire above.
 	_, _ = WireSkill()
+	wireProwlSkills()
 	return n
 }
 
@@ -455,4 +459,58 @@ func removeSkillLinkIfOurs(link string) {
 	if isOurSkillLink(link) {
 		_ = os.Remove(link)
 	}
+}
+
+// ---- prowl-agent skills -----------------------------------------------------
+//
+// `ryoku-rashin wire` also installs prowl-agent's own agent skills for the
+// clients rashin detects, so an agent gets Prowl's code-intelligence skill in
+// the same pass it gets the ryoku skill. Non-interactive and best effort: a
+// no-op when prowl-agent is absent, when no known client is present, or when the
+// installed prowl-agent predates the `--yes` apply.
+
+// prowlSkillClients are the prowl-agent client ids rashin detects present, among
+// the ones prowl knows: the claude and omp coding agents, plus hermes.
+func prowlSkillClients() []string {
+	var cs []string
+	for _, a := range DetectAgents() {
+		if a.Present && (a.ID == "claude" || a.ID == "omp") {
+			cs = append(cs, a.ID)
+		}
+	}
+	if _, ok := FindHermes(); ok {
+		cs = append(cs, "hermes")
+	}
+	return cs
+}
+
+// wireProwlSkills runs `prowl-agent skills --yes --clients <detected>` for the
+// detected clients. Best effort; skipped when prowl-agent is absent, no client
+// is present, or the installed prowl-agent has no non-interactive apply.
+func wireProwlSkills() {
+	bin, ok := findProwl()
+	if !ok {
+		return
+	}
+	clients := prowlSkillClients()
+	if len(clients) == 0 {
+		return
+	}
+	if !prowlSkillsSupportsYes(bin) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "skills", "--yes", "--clients", strings.Join(clients, ","))
+	_ = cmd.Run()
+}
+
+// prowlSkillsSupportsYes reports whether the installed prowl-agent supports the
+// non-interactive `--yes` apply, detected from `prowl-agent skills --help`
+// mentioning it (older builds preview only).
+func prowlSkillsSupportsYes(bin string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, bin, "skills", "--help").CombinedOutput()
+	return strings.Contains(string(out), "--yes")
 }

@@ -3,6 +3,49 @@
 ## Unreleased
 
 ### Added
+- **Release lines have names.** `CODENAME` holds the current line's name
+  (Onogoro before 1.0; Amaterasu for 1.0) and `release/names.md` tells each
+  name's story. `build-repo.sh` writes the name into `release.json`, the
+  ryoku-desktop package into `/etc/ryoku-release` (`NAME=`), the publish into
+  `releases/index.json`; the Stable Release summary and the Release Notes
+  workflow title the release "Ryoku <name> <version>", and a line's first
+  release opens its notes with the story (`bin/ryoku-release-notes --intro`).
+  The ISO manifests (`<iso>.json`, `latest.json`) carry `name` and `version`
+  too, so the site can title the download (`bin/ryoku-iso-manifest`).
+- **The `[ryoku]` repo publishes named releases and a testing channel.** Under
+  the one bucket mount (`repo.ryoku.dev/stable/`), `x86_64/` is the stable
+  pointer every installed box already has, `releases/<tag>/x86_64/` is one
+  frozen copy per release tag (never rewritten; the publish refuses an existing
+  directory), `releases/index.json` is the ledger, and
+  `channels/testing/x86_64/` is rebuilt on every push to `unstable-dev`. A
+  push to `main` publishes nothing: a release is the Stable Release workflow
+  run on `main` (`bump_type: none` tags the version `main` carries), which
+  publishes the frozen directory, moves the stable pointer onto it, records
+  the ledger, and dispatches the release ISO from that directory (the ISO
+  workflows take a `repo_url`, threaded into `offline-repo.sh`). A stable
+  publish mirrors testing first, so a name testing already served is promoted
+  rather than rebuilt. `build-repo.sh` writes `release.json` beside the db and
+  `ryoku-desktop` ships `/etc/ryoku-release` naming the build. Existing boxes
+  need no change: their `Server` line is the stable pointer, and the next
+  update lands the client that understands channels.
+
+- `ryotunes` joins the signed repository at 2.4.1: the Ryoku music app (Tauri +
+  WebKitGTK + libmpv, built from `neur0map/ryotunes` at a pinned commit, the
+  Ryostore submission adopted as the official app). `ryoku-desktop` depends on
+  it and no longer installs the Chromium app-window wrapper of the same name;
+  the package takes over `/usr/bin/ryotunes`, the `.desktop` entry and the icon
+  in the same `pacman -Syu`, so existing boxes switch on `ryoku update`. The
+  desktop follows it over `org.mpris.MediaPlayer2.ryotunes` exactly as before
+  (now-playing widget, dock pill, media keys), and the Hyprland float rule and
+  `ryoku-music-toggle` match its `ryotunes` window class. The build toolchain
+  list gains `webkit2gtk-4.1`, `mpv` and `libappindicator-gtk3`. The package
+  `conflicts`/`replaces` every side-by-side build the author shipped before
+  (`ryotunes-v1.4` through `ryotunes-v2.4`, AUR `ryotunes-bin`), so a box that
+  installed one of those gets it removed in the same `pacman -Syu`, leaving one
+  launcher entry, one `/usr/bin/ryotunes` and no replacement hook. The old
+  Chromium profile at `~/.config/ryotunes` is left in place; delete it by hand
+  to reclaim the space.
+
 - `blesh` joins the signed repository at 0.4.0-devel3, and `ryoku-desktop` depends on
   it plus Zsh and the official Zsh editing plugins. The package now materializes
   the managed Bash/Zsh adapters and their shared terminal environment beside the

@@ -326,3 +326,35 @@ func TestE2EFavouriteSurvivesRescan(t *testing.T) {
 		t.Fatalf("favourites filter returned %v", res["count"])
 	}
 }
+
+// Regression: ryogami owns the wallpaper now, but rice capture, the overview
+// backdrop and the Super+W on-air dot still read ~/.local/state/ryoku-wallpaper.
+// A `wall.apply` must write that legacy state file with the applied path, or
+// those readers see a stale wallpaper (a saved rice grabs the wrong wall).
+func TestE2EWallApplyWritesLegacyState(t *testing.T) {
+	d := startDaemon(t)
+	img := filepath.Join(d.root, "Pictures", "Wallpapers", "b.png")
+	writeE2EPNG(t, img)
+
+	reply := d.send(fmt.Sprintf(`{"method":"wall.apply","params":{"path":%q,"type":"static"},"id":21}`, img))
+	if !strings.Contains(reply, `"applied"`) {
+		t.Fatalf("apply replied: %s", reply)
+	}
+	statePath := filepath.Join(d.root, ".local", "state", "ryoku-wallpaper")
+	deadline := time.Now().Add(5 * time.Second)
+	var got string
+	for {
+		if b, err := os.ReadFile(statePath); err == nil {
+			if got = strings.TrimSpace(string(b)); got != "" {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("state file %s never held the applied wallpaper (got %q)", statePath, got)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if got != img {
+		t.Fatalf("state file = %q, want %q", got, img)
+	}
+}

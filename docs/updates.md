@@ -25,6 +25,32 @@ ordered steps, the current label, a live log tail, and, on failure, the error
 and the pre-update snapshot), so the update island and the Hub's Updates page
 render a determinate run and a one-click rollback.
 
+After the desktop is back, the update refreshes the agent OS when it is present:
+`ryoku-rashin index` regenerates the vault and re-indexes the config mirror with
+Prowl, then `prowl-agent` is brought current. On a dev box (Prowl on PATH but
+not owned by a pacman package) it runs `prowl-agent update`; a packaged box
+already got the new build from `pacman -Syu`, so the step just logs that the
+binary is managed by pacman. Both are best effort and never fail an update.
+
+### The boot guard
+
+A packaged update that moves the box to another release arms a boot guard:
+stage2 writes `/var/lib/ryoku/update-pending.json` (previous release, new
+release, the pre-update snapshot, the boot it ran in). `ryoku-boot-guard.service`
+runs `ryoku boot-guard` as root early in every boot, before the display
+manager, and only while that marker exists. The shell daemon records a good
+boot once the shell has stayed up 45 s (`/var/lib/ryoku/boot/ok-<uid>`, the boot
+id); a record from any boot other than the one the update ran in disarms the
+guard. Without one, the boot counts: on the second, the guard tracks the
+previous release back (`ryoku track <from>` plus `pacman -Syu`; the Ryoku set
+only, Arch untouched), re-materializes every user's config from it, and leaves
+a notice `ryoku doctor` shows once. On a third it points the Limine boot menu
+at the pre-update snapshot entry, for the case where the packages were not what
+broke. `sudo ryoku boot-guard --disarm` clears a marker by hand. The `ryoku`
+package ships the unit and its tmpfiles entry; the doctor enables the unit and
+prepares the record directory on every update, so boxes installed before it get
+it on their next update.
+
 ## materialize: the config a user receives
 
 `ryoku materialize` lays the package's base config (`/usr/share/ryoku/config`,
@@ -112,14 +138,70 @@ as `.broken`, puts back every shipped file the live tree no longer matches, and
 restarts the shell. When the shipped file is itself at fault it says so and names
 `ryoku update` and `ryoku rollback`, the two things that help.
 
-## Publishing: how a commit becomes a user update
+## Publishing: releases and channels
 
-The `[ryoku]` repo publishes on a push to `main` (or a release tag). `main`
-advances only when a maintainer fast-forwards it from `unstable-dev` or runs the
-stable release. Each advance rebuilds the packages with a strictly increasing
-version (`core.r<commit-count>.g<sha>`) that `pacman -Syu` upgrades to.
+The `[ryoku]` repo is published into named states, all under the one bucket
+mount the repo domain serves (`repo.ryoku.dev/stable/<key>` is bucket object
+`<key>`; the `stable` path segment is the mount, not the channel):
 
-**Work on `unstable-dev` does not reach users until `main` fast-forwards.**
+| Directory | Channel | Written when |
+|---|---|---|
+| `x86_64/` | **stable**: the URL every installed box has | a release tag is published: a byte copy of that release |
+| `releases/<tag>/x86_64/` | one frozen release; never rewritten | the tag is published (`publish-repo.yml` refuses an existing directory) |
+| `releases/index.json` | the release ledger, newest first | after each release |
+| `channels/testing/x86_64/` | **testing** | every push to `unstable-dev` |
+
+So a box on stable moves between named releases, and can be put back on any
+earlier one. Each build carries a strictly increasing package version
+(`core.r<commit-count>.g<sha>`) that `pacman -Syu` upgrades to, and the
+`ryoku-desktop` package writes `/etc/ryoku-release` (`RELEASE=`, `CHANNEL=`,
+`VERSION=`, `COMMIT=`) so a box can say which release it runs; `release.json`
+beside each channel's db says which one the channel serves.
+
+A release is a tag: `main` advances only by fast-forward from `unstable-dev`,
+and publishing nothing on that push. The maintainer runs **Stable Release**
+(`bump_type: none` tags the `VERSION` main already carries; a bump rewrites it
+first), which tags `main`, publishes `releases/<tag>/`, moves the stable
+pointer onto it, records the ledger entry, and dispatches the release ISO from
+that frozen directory. Arch itself keeps rolling between releases; only the
+Ryoku set is frozen.
+
+**Work on `unstable-dev` reaches testing on every push, and stable only when a
+release is tagged.**
+
+On a packaged box the channel is nothing but the `Server` line of the `[ryoku]`
+stanza, so there is no second state to drift from it:
+
+- `ryoku track stable | testing | v<tag>` rewrites that line and runs an update
+  that moves the Ryoku set to what the channel serves, down as well as up
+  (`pacman -Syu`, then an explicit `-S ryoku-desktop`, whose exact-version
+  depends bring the whole set along). A tag pins the box to that release until
+  it is tracked away.
+- `ryoku rollback --to v<tag>` is `track` onto a frozen release: the Ryoku set
+  goes back in one pacman transaction while Arch stays current. Bare
+  `ryoku rollback` lists the ledger and the snapshots.
+- `ryoku status` reports `release` (this box) and `channelRelease` (what the
+  channel serves); `ryoku version` prints the release tag.
+- The doctor names the channel it finds and warns, without touching it, when
+  `[ryoku]` points at a mirror Ryoku does not publish.
+
+A checkout box (`ryoku track main | unstable-dev`) tracks git branches instead
+and rebuilds from source; see `docs/development.md`.
+
+### Release names
+
+Every release line has a name from the creation stories Ryoku draws on (the
+Kojiki and the Theogony), in the order those stories tell them; `CODENAME`
+holds the current one and `release/names.md` tells each name's story. The
+name changes when a line begins (the pre-1.0 line is Onogoro, the first
+island; 1.0 is Amaterasu) and every release inside the line keeps it. It
+travels with the release: `build-repo.sh` writes it into `release.json` and
+the ryoku-desktop package into `/etc/ryoku-release` (`NAME=`), the publish
+copies it into `releases/index.json`, the Stable Release and Release Notes
+workflows title the tag and the GitHub release with it (a line's first release
+opens with its story), and a box shows it in `ryoku version --pretty` (which
+fastfetch's OS line uses), `ryoku status`, `ryoku rollback`, the update
+island (when the channel serves the next line) and the Hub's Updates page.
 
 ## The contract
 
@@ -169,8 +251,9 @@ version (`core.r<commit-count>.g<sha>`) that `pacman -Syu` upgrades to.
   `ryoku-shell` bound to the dead compositor; `start` then does nothing and the
   login lands on bare Hyprland. The autostart reloads units, clears a start
   limit, and `restart`s the shell and wallpaper daemons every session.
-- **A change reaches users only after `main` fast-forwards.** Keep the gap small;
-  the delivery check reports it on every push.
+- **A change reaches stable only when a release is tagged**, and testing on
+  every `unstable-dev` push. Keep the gap small; the delivery check reports it
+  on every push.
 
 ## Checks
 

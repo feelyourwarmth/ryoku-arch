@@ -705,6 +705,12 @@ Item {
         else if (name === "dashboard") dashboardBarX = x
         else if (name === "launcher") launcherBarX = x
         else if (name === "trayMenu") trayMenuX = x
+        else if (name.indexOf("plugin:") === 0) {
+            var next = {}
+            for (var k in pluginBarX) next[k] = pluginBarX[k]
+            next[name.substring(7)] = x
+            pluginBarX = next
+        }
     }
 
     function applyActiveBarAnchors() {
@@ -765,6 +771,7 @@ Item {
         if (except !== "storageVisible") storageVisible = false
         if (except !== "trayVisible") trayVisible = false
         if (except !== "trayMenuVisible") trayMenuVisible = false
+        if (except !== "pluginPanelVisible") pluginPanelId = ""
         hideTooltip()
         _closingPopups = false
     }
@@ -3499,6 +3506,29 @@ Item {
     // ── Tray context-menu state (themed menu, rendered by TrayMenu.qml) ──
     property bool trayMenuVisible: false
     onTrayMenuVisibleChanged: popupOpened("trayMenuVisible")
+
+    // ── plugin bar panels ──
+    // A bar plugin that ships entryPoints.panel opens it under its glyph in the
+    // shared PluginPanel window, one at a time, closing the built-in panels the
+    // way they close each other. The opening slot hands over its api (the
+    // service instance, settings, dir) so the panel talks to the same service
+    // the glyph does. pluginBarX carries each plugin's bar x from the slot
+    // anchors, keyed by id, replaced whole so bindings re-derive.
+    property string pluginPanelId: ""
+    property var pluginPanelApi: null
+    property var pluginBarX: ({})
+    readonly property bool pluginPanelVisible: pluginPanelId !== ""
+    onPluginPanelVisibleChanged: popupOpened("pluginPanelVisible")
+    function openPluginPanel(id, api) {
+        if (!id) return
+        pluginPanelApi = api
+        pluginPanelId = id
+    }
+    function closePluginPanel() { pluginPanelId = "" }
+    function togglePluginPanel(id, api) {
+        if (pluginPanelId === id) closePluginPanel()
+        else openPluginPanel(id, api)
+    }
     property string trayMenuService: ""  // service key of the clicked item; menu resolved live from Tray.items
     property real trayMenuX: 0           // global x to anchor the menu under the icon
     property string trayMenuTitle: ""

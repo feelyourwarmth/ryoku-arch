@@ -115,7 +115,7 @@ func runDaemon() error {
 	// returns the written path. upscale.* is a cancellable job like optimize.*:
 	// its finished event rescans so an enhanced image/clip refreshes the catalog.
 	d.grader = NewGrader(cfg.cacheDir())
-	d.upscaler = NewUpscaler(upscaleStateDir(), func(ev string, data map[string]interface{}) {
+	d.upscaler = NewUpscaler(stateHome(), func(ev string, data map[string]interface{}) {
 		d.broadcast(ev, data)
 		if strings.HasSuffix(ev, ".finished") {
 			go d.rescan(true)

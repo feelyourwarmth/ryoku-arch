@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+### Added
+- `fastfetch/`: **the OS line carries the release name** ("Ryoku Onogoro
+  v0.56.0-beta.19") via `ryoku version --pretty` (`config.jsonc`).
+
+### Fixed
+- `ryostore/`: **An installed theme now carries the store's preview image, so
+  the Color-scheme picker shows it.** The install wrote `scheme.json` and
+  `meta.json` and nothing else, while Ryogami's Themes tab looked for
+  `preview.jpg` beside them and fell back to palette pills for every store
+  theme. The install now fetches the catalogue's preview (through the store's
+  asset cache, so the card and the install share one download) and writes it
+  as `preview.<ext>`; an unreachable preview still installs the scheme. The
+  shell's `theme catalog` reports the art it finds (`preview`) and the picker
+  reads that instead of guessing a filename, so `.png` and `.jpg` sources both
+  show (`backend/provider_colorschemes.go`, `shell/ipc/usertheme.go`,
+  `ryogami/wall-ui/.../WallpaperSelector.qml`).
+- `ryostore/`: **A theme's own wallpapers come with it.** Every HANCORE scheme
+  ships the backgrounds it was drawn for; the catalogue now lists them
+  (`wallpapers`, pinned to a commit) and the install lands them in
+  `~/Pictures/Wallpapers` as `<id>-N.<ext>`, where the picker shows them beside
+  the rest. Remove takes exactly those files back out.
+- `ryogami/`: **The picker refreshes live.** The Themes and Rices strips were
+  read once and cached for the picker's lifetime, so a scheme installed while
+  Super+W was open never appeared until a reopen. Both are reloaded on every
+  open and re-read when their library folders change (a native folder watch,
+  no external tool). The wallpaper strip's own watcher execs `inotifywait`,
+  which nothing declared: `ryogami` now depends on `inotify-tools`, so a wall
+  that lands while the picker is open shows up on user boxes too.
+
+### Removed
+- `ryotunes/`: **The Chromium app-window wrapper is gone; Ryotunes is now a real
+  app.** YouTube Music ran as a Chromium `--app` window in its own profile
+  because the Tauri/Electron clients of the time crashed on this compositor or
+  published no MPRIS. The Ryostore-submitted Ryotunes (Tauri + libmpv,
+  `neur0map/ryotunes`) does both, so it ships as the `ryotunes` package from the
+  `[ryoku]` repo (`release/packages/ryotunes/`) and the wrapper, its `.desktop`
+  and icon leave this tree. The desktop's music integration is unchanged: it
+  follows `org.mpris.MediaPlayer2.ryotunes`. Super+J now launches Ryotunes
+  directly (it is single-instance, so a second press focuses the window)
+  instead of toggling the `special:music` scratchpad, and the music widget's
+  corner button runs the music app the same way; the `ryoku-music-toggle`
+  script that tucked the window into that scratchpad is gone. A dev checkout
+  (git channel, which never publishes packages) gets the app too: `ryoku
+  deploy` builds `release/packages/ryotunes` with makepkg and lays the binary,
+  launcher and icons into `~/.local`, rebuilding only when the pinned commit
+  changes.
+
 ### Fixed
 - `ryowalls/`: **A download that returns an error page or a Git LFS pointer no
   longer poisons the wallpaper folder.** `curl` fetches those with a 200 and

@@ -439,13 +439,6 @@ SettingCard {
                         }
                     }
 
-                    // the workspaces widget keeps its live marker preview.
-                    CcWorkspacePreview {
-                        visible: wr.wid === "workspaces"
-                        width: parent.width
-                        root: list.root
-                        tk: list.tk
-                    }
                 }
             }
         }

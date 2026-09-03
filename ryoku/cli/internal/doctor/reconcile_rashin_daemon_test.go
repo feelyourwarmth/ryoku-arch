@@ -29,6 +29,28 @@ func TestRashinDaemonActions(t *testing.T) {
 	}
 }
 
+// prowlAgentNeeded is the pure core of reconcileProwlAgent: only an enabled
+// rashin box that lacks the binary should be told to install it. Pinned so the
+// finding never fires on a box that never opted into rashin.
+func TestProwlAgentNeeded(t *testing.T) {
+	cases := []struct {
+		name                   string
+		enabled, present, want bool
+	}{
+		{"disabled needs nothing", false, false, false},
+		{"disabled with prowl needs nothing", false, true, false},
+		{"enabled with prowl is fine", true, true, false},
+		{"enabled without prowl needs install", true, false, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := prowlAgentNeeded(c.enabled, c.present); got != c.want {
+				t.Fatalf("prowlAgentNeeded(enabled=%v, present=%v) = %v, want %v", c.enabled, c.present, got, c.want)
+			}
+		})
+	}
+}
+
 func TestRashinSkillLinksMissing(t *testing.T) {
 	h := t.TempDir()
 	t.Setenv("HOME", h)

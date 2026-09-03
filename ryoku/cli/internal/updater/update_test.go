@@ -188,3 +188,26 @@ func TestSystemUpgradeAdoptsSeededRyokuFiles(t *testing.T) {
 		}
 	}
 }
+
+// prowlDecide is the pure core of prowlRefresh: a dev install (on PATH, not
+// pacman-owned) self-updates; a pacman-owned copy is left to `pacman -Syu`; an
+// absent binary is a no-op. Pinned so the dev-vs-packaged branch cannot regress.
+func TestProwlDecide(t *testing.T) {
+	cases := []struct {
+		name        string
+		onPath      bool
+		pacmanOwned bool
+		want        prowlAction
+	}{
+		{"absent does nothing", false, false, prowlNoop},
+		{"packaged is left to pacman", true, true, prowlManaged},
+		{"dev install self-updates", true, false, prowlSelfUpdate},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := prowlDecide(c.onPath, c.pacmanOwned); got != c.want {
+				t.Fatalf("prowlDecide(onPath=%v, owned=%v) = %v, want %v", c.onPath, c.pacmanOwned, got, c.want)
+			}
+		})
+	}
+}

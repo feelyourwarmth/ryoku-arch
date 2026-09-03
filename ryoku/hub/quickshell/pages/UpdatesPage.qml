@@ -335,6 +335,17 @@ Item {
                             font.letterSpacing: Tokens.trackMark
                         }
 
+                        // the release line this box runs, and the next one when
+                        // the channel has moved on ("Onogoro -> Amaterasu").
+                        Text {
+                            visible: Updates.currentName !== ""
+                            text: "Ryoku " + Updates.currentName
+                                  + (Updates.available && Updates.latestName !== "" && Updates.latestName !== Updates.currentName
+                                     ? "  \u2192  " + Updates.latestName : "")
+                            color: Tokens.ink; font.family: Tokens.display
+                            font.pixelSize: Tokens.fHero; font.weight: Font.Medium
+                        }
+
                         // installed -> latest bump. a version is file-truth, so mono.
                         Row {
                             spacing: Tokens.s3

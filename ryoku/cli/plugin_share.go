@@ -183,9 +183,17 @@ func previewMedia(dir string) (string, []string) {
 	if len(images) == 0 {
 		return "", nil
 	}
+	// preview-widget.png is the catalogue's hero by convention; any other
+	// preview-*.png is a screenshot beside it.
 	preview := images[0]
 	for _, p := range images {
 		if strings.HasPrefix(filepath.Base(p), "preview") {
+			preview = p
+			break
+		}
+	}
+	for _, p := range images {
+		if strings.HasPrefix(filepath.Base(p), "preview-widget.") {
 			preview = p
 			break
 		}

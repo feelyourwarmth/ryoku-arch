@@ -1,0 +1,92 @@
+# Maintainer: Ryoku <releases@ryoku.dev>
+#
+# ryotunes: the Ryoku music app. A Tauri (WebKitGTK) client for YouTube Music
+# with native libmpv playback, built from github.com/neur0map/ryotunes at a
+# pinned commit. It publishes org.mpris.MediaPlayer2.ryotunes, which is what
+# the desktop now-playing widget, the dock pill and the media keys follow, and
+# it retints itself from the shell's theme files (~/.config/ryoku/theme.json,
+# ~/.cache/ryoku/colors.json) so it follows the wallpaper like the rest of the
+# desktop. It replaced the Chromium app-window wrapper of the same name.
+#
+# Build: pnpm bundles the Svelte UI into ui/build, then cargo compiles the
+# app with the frontend embedded (the fork defaults tauri's custom-protocol
+# feature on, so a plain release build is a production binary). Both fetch
+# their dependency trees at build time against committed lockfiles. Like
+# ryomotion, the source is a pinned git commit: bump _commit (and pkgrel, or
+# pkgver when src-tauri/tauri.conf.json's version moves) to ship a new build.
+pkgname=ryotunes
+pkgver=2.4.1
+pkgrel=1
+pkgdesc="Ryotunes: the Ryoku music app (YouTube Music client with native playback)"
+arch=('x86_64')
+url="https://github.com/neur0map/ryotunes"
+license=('GPL-3.0-or-later')
+# webkit2gtk-4.1 renders the UI; mpv is the audio engine (libmpv, linked);
+# libappindicator-gtk3 is dlopen'd for the tray icon.
+depends=('webkit2gtk-4.1' 'gtk3' 'mpv' 'libappindicator-gtk3' 'hicolor-icon-theme')
+makedepends=('git' 'rust' 'pnpm' 'nodejs')
+# Before it was packaged here, upstream shipped side-by-side builds named
+# ryotunes-vX.Y (and an AUR ryotunes-bin) whose install hooks symlinked
+# /usr/bin/ryotunes at themselves after every pacman transaction. A box that
+# tried one of those would otherwise keep two music apps and a hook fighting
+# this package for the launcher, so `pacman -Syu` swaps them out in the same
+# transaction that installs this one.
+_legacy=(ryotunes-bin ryotunes-v1.4 ryotunes-v1.5 ryotunes-v1.6 ryotunes-v1.7 ryotunes-v1.8
+         ryotunes-v1.9 ryotunes-v2.0 ryotunes-v2.1 ryotunes-v2.2 ryotunes-v2.3 ryotunes-v2.4)
+conflicts=("${_legacy[@]}")
+replaces=("${_legacy[@]}")
+# Rust already strips with the release profile; the debug split has nothing.
+options=('!lto' '!debug')
+_commit=7f9feedfa406516a4b4c712448af124592557f9c
+source=("$pkgname::git+https://github.com/neur0map/ryotunes.git#commit=$_commit")
+sha256sums=('SKIP')
+
+build() {
+  cd "$srcdir/$pkgname/ui"
+  export npm_config_cache="$srcdir/.npm-cache"
+  pnpm install --frozen-lockfile
+  pnpm build
+
+  cd "$srcdir/$pkgname"
+  export CARGO_HOME="$srcdir/.cargo"
+  cargo build --release --locked --package ryotunes
+}
+
+check() {
+  cd "$srcdir/$pkgname"
+  export CARGO_HOME="$srcdir/.cargo"
+  cargo test --locked --workspace
+}
+
+package() {
+  cd "$srcdir/$pkgname"
+  install -Dm755 target/release/ryotunes "$pkgdir/usr/bin/ryotunes"
+  install -Dm644 packaging/linux/dev.ryoku.ryotunes.metainfo.xml \
+    "$pkgdir/usr/share/metainfo/dev.ryoku.ryotunes.metainfo.xml"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 UPSTREAM.md "$pkgdir/usr/share/doc/$pkgname/UPSTREAM.md"
+
+  # Upstream's entry declares StartupWMClass=dev.ryoku.ryotunes, but the window
+  # maps with class "ryotunes" (verified with hyprctl clients); the desktop's
+  # music window rule and the dock match that, so the entry carries the real one.
+  install -Dm644 /dev/stdin "$pkgdir/usr/share/applications/ryotunes.desktop" <<'DESKTOP'
+[Desktop Entry]
+Type=Application
+Name=Ryotunes
+GenericName=Music Player
+Comment=The Ryoku music app, wired to the desktop now-playing widget
+Exec=ryotunes
+Icon=ryotunes
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;youtube;ytmusic;player;ryotunes;lyrics;
+StartupNotify=true
+StartupWMClass=ryotunes
+DESKTOP
+
+  install -Dm644 src-tauri/icons/32x32.png "$pkgdir/usr/share/icons/hicolor/32x32/apps/ryotunes.png"
+  install -Dm644 src-tauri/icons/64x64.png "$pkgdir/usr/share/icons/hicolor/64x64/apps/ryotunes.png"
+  install -Dm644 src-tauri/icons/128x128.png "$pkgdir/usr/share/icons/hicolor/128x128/apps/ryotunes.png"
+  install -Dm644 src-tauri/icons/128x128@2x.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/ryotunes.png"
+  install -Dm644 src-tauri/icons/icon.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/ryotunes.png"
+}

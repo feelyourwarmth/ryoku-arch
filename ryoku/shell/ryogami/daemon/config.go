@@ -38,6 +38,17 @@ func home() string {
 	return h
 }
 
+// stateHome resolves XDG_STATE_HOME (~/.local/state fallback): where Ryoku's
+// cross-process state files live, including the legacy ryoku-wallpaper path the
+// wallpaper readers (rice capture, the overview backdrop, the Super+W on-air
+// dot, the shell's palette bridge) watch to learn what is on screen.
+func stateHome() string {
+	if d := os.Getenv("XDG_STATE_HOME"); d != "" {
+		return d
+	}
+	return filepath.Join(home(), ".local", "state")
+}
+
 func ryokuConfigDir() string {
 	if d := os.Getenv("XDG_CONFIG_HOME"); d != "" {
 		return filepath.Join(d, "ryoku")

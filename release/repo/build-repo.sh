@@ -83,6 +83,19 @@ export PKGEXT='.pkg.tar.zst'
 : "${RYOKU_PKGVER:=$("$RELEASE_DIR/../bin/ryoku-release-version" --pkgver)}"
 export RYOKU_PKGVER
 log "Monorepo package version -> $RYOKU_PKGVER"
+
+# the named state this build is (publish-repo.yml sets both): a release tag on
+# the stable channel, or the dev version on testing. ryoku-desktop writes them
+# to /etc/ryoku-release so a box can say which release it runs; release.json
+# beside the db says which one the channel serves. a dev box building by hand
+# gets a local marker, never a name that looks like a published release.
+: "${RYOKU_RELEASE:=local-$RYOKU_PKGVER}"
+: "${RYOKU_CHANNEL:=local}"
+# the line's name (CODENAME, see release/names.md): every release in a line
+# carries it, and a box shows it next to the release it runs.
+RYOKU_NAME=$(tr -d '[:space:]' < "$RELEASE_DIR/../CODENAME")
+export RYOKU_RELEASE RYOKU_CHANNEL RYOKU_NAME
+log "Release -> $RYOKU_NAME $RYOKU_RELEASE ($RYOKU_CHANNEL)"
 # makepkg's VCS sources (imgborders clones from Codeberg) make a build only as
 # reliable as that host, and a Codeberg 5xx has repeatedly aborted the whole
 # publish. Retry a failed build with backoff so a transient fetch outage rides
@@ -170,5 +183,13 @@ done
 [[ -e $ARCH_DIR/$REPO_NAME.db ]]     || die "$REPO_NAME.db missing after repo-add"
 [[ -e $ARCH_DIR/$REPO_NAME.db.sig ]] || die "$REPO_NAME.db.sig missing; signing failed"
 
+# 7. release.json beside the db: what this directory serves. `ryoku status`
+#    reads it from the channel to name the release a box would move to, and
+#    publish-repo.yml copies its version into releases/index.json.
+commit=$(git -C "$RELEASE_DIR/.." rev-parse HEAD 2>/dev/null || echo unknown)
+printf '{"schema":1,"release":"%s","name":"%s","channel":"%s","version":"%s","commit":"%s","date":"%s"}\n' \
+  "$RYOKU_RELEASE" "$RYOKU_NAME" "$RYOKU_CHANNEL" "$RYOKU_PKGVER" "$commit" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  > "$ARCH_DIR/release.json"
+
 log "Repo ready at $ARCH_DIR"
-log "Serves: https://repo.ryoku.dev/stable/$REPO_ARCH/ (Server = https://repo.ryoku.dev/stable/\$arch)"
+log "Serves as stable at https://repo.ryoku.dev/stable/$REPO_ARCH/, as testing under channels/testing/, or frozen under releases/<tag>/ (publish-repo.yml)"

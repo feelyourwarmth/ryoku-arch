@@ -386,13 +386,14 @@ func syncFollowWallpaper(themeName string) {
 	if b, err := os.ReadFile(path); err == nil {
 		_ = json.Unmarshal(b, &doc)
 	}
-	// Only the Wallpaper variant drives the live pipeline. Default is the
-	// monochrome base (the shell's compiled palette -- the shipped default and
-	// the Appearance MONO card), and every named theme owns a fixed palette;
-	// none of them follow the wallpaper, so their shadow key is off. This matches
-	// the fresh-install state (theme.theme "Default", no theme.json -> Match
-	// wallpaper off) instead of fighting it the moment the picker is touched.
-	follow := themeName == "Wallpaper"
+	// Colours follow the wallpaper by default. Only a named static theme, or an
+	// explicit Light / Dark curated lock, pins a fixed palette; the plain base
+	// (Default or Wallpaper) always follows, so a fresh desktop -- and any box
+	// that lands back on Default -- tracks the wallpaper instead of the shipped
+	// brand palette. theme.theme is the master; this is its shadow.
+	scheme, _ := doc["scheme"].(string)
+	locked := scheme == "light" || scheme == "dark"
+	follow := !staticName(themeName) && !locked
 	if cur, ok := doc["followWallpaper"].(bool); ok && cur == follow {
 		return
 	}

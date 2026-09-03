@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -156,15 +157,19 @@ func copyMirrorFile(src, dst string) {
 }
 
 // indexSourceMirror sets up and refreshes prowl-agent inside the mirror, under a
-// single 90s budget across both calls. init builds the .prowl index (no
-// integrations, no prompts); overview refreshes it cheaply.
+// single 120s budget across both calls. init installs Prowl's AGENTS.md block,
+// MCP config, and skills into the mirror (integrations agents,agent-skills,
+// claude,omp) and builds the .prowl code index; overview refreshes it cheaply.
+// Best effort and logged: a missing prowl-agent or a slow init never fails the
+// reindex.
 func indexSourceMirror(root string) {
 	bin, ok := findProwl()
 	if !ok {
 		return
 	}
-	deadline := time.Now().Add(90 * time.Second)
-	runProwlAt(root, bin, deadline, "init", "--yes", "--no-input", "--integrations", "none")
+	fmt.Fprintln(os.Stderr, "ryoku-rashin: indexing the config mirror with prowl-agent")
+	deadline := time.Now().Add(120 * time.Second)
+	runProwlAt(root, bin, deadline, "init", "--yes", "--no-input", "--integrations", "agents,agent-skills,claude,omp")
 	runProwlAt(root, bin, deadline, "overview", "--json")
 }
 

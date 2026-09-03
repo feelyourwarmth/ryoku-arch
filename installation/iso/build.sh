@@ -101,6 +101,7 @@ stage_ryoku_repo() {
       || die "local [ryoku] repo $src has no ryoku-cursors package; rebuild it (release/repo/build-repo.sh) or repoint RYOKU_ISO_LOCAL_REPO"
   else
     local base=${RYOKU_ISO_REPO_URL:-https://repo.ryoku.dev/stable/$arch}
+    base=${base%/}
     log "Fetching [ryoku] db + ryoku-cursors from $base"
     curl -fsSL --retry 2 --max-time 30 -o "$dst/ryoku.db" "$base/ryoku.db" \
       || die "cannot reach the [ryoku] repo at $base -- publish the repo first, or set RYOKU_ISO_LOCAL_REPO to a build-repo.sh out/ tree"
@@ -218,9 +219,13 @@ RYOKU_BLOBS_BUILD="$STAGE_DIR/blobs-build" \
 #     reused across builds; RYOKU_OFFLINE_SKIP=1 builds a networked ISO instead.
 if [[ ${RYOKU_OFFLINE_SKIP:-0} != 1 ]]; then
   log "Baking offline package closure ($VARIANT) -> /usr/share/ryoku/offline/repo"
+  # the same [ryoku] source the live ISO's own stanza uses (RYOKU_ISO_REPO_URL,
+  # a frozen releases/<tag>/ directory for a release ISO), so the offline
+  # closure and the live media agree on which release this ISO is.
   RYOKU_OFFLINE_CACHE=${RYOKU_OFFLINE_CACHE:-$PROFILE_DIR/offline-cache-$VARIANT} \
   RYOKU_VARIANT="$VARIANT" \
-    "$PROFILE_DIR/offline-repo.sh" "$REPO_ROOT" "$AIROOTFS/usr/share/ryoku/offline/repo"
+    "$PROFILE_DIR/offline-repo.sh" "$REPO_ROOT" "$AIROOTFS/usr/share/ryoku/offline/repo" \
+      "${RYOKU_ISO_REPO_URL:-https://repo.ryoku.dev/stable/x86_64}"
 else
   log "RYOKU_OFFLINE_SKIP=1: skipping the offline repo bake (networked ISO)"
 fi

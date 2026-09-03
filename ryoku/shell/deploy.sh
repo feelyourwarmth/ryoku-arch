@@ -471,13 +471,61 @@ if [[ -x "$here/../lockscreen/install-qylock" ]]; then
   fi
 fi
 
-# ryotunes: YouTube Music as a Chromium app-window (apps/ryotunes). Not a
-# quickshell app, so it ships explicitly like the other non-qs launchers: the
-# wrapper on PATH, its .desktop, and its icon into the hicolor set.
-install -m755 "$here/../apps/ryotunes/bin/ryotunes" "$bindir/ryotunes"
-install -Dm644 "$here/../apps/ryotunes/ryotunes.desktop" "$appshare/applications/ryotunes.desktop"
-install -Dm644 "$here/../apps/ryotunes/ryotunes.svg" "$appshare/icons/hicolor/scalable/apps/ryotunes.svg"
-say "installed ryotunes launcher"
+# Packaged externals on a checkout box. ryotunes (and every other package
+# release/packages pins to an upstream commit) is a [ryoku] package users get
+# from pacman; a dev box takes the same signed package from the channel its
+# branch publishes to (unstable-dev -> testing, main -> stable) rather than
+# spending minutes on a local makepkg that could differ from what ships. The
+# release key is in the checkout (release/packages/ryoku-keyring), so trusting
+# it needs no network; the stanza is added once and repointed when the tracked
+# branch changes, and a [ryoku] that points somewhere Ryoku does not publish
+# (a private mirror) is left alone. Skipped cleanly without sudo (CI).
+# The Chromium wrapper this script once laid into ~/.local/bin is retired
+# first so it can never shadow the app.
+if [[ -f "$bindir/ryotunes" ]] && [[ "$(head -c 2 "$bindir/ryotunes" 2>/dev/null)" == '#!' ]] \
+   && grep -q 'music.youtube.com' "$bindir/ryotunes"; then
+  rm -f "$bindir/ryotunes" "$appshare/applications/ryotunes.desktop" \
+    "$appshare/icons/hicolor/scalable/apps/ryotunes.svg"
+  say "retired the ryotunes chromium wrapper"
+fi
+# a locally built copy from the interim makepkg path shadows the package on PATH
+if [[ -x "$bindir/ryotunes" ]] && [[ -f "$HOME/.local/share/ryoku/ryotunes.commit" ]]; then
+  rm -f "$bindir/ryotunes" "$appshare/applications/ryotunes.desktop" \
+    "$HOME/.local/share/ryoku/ryotunes.commit" "$appshare"/icons/hicolor/*/apps/ryotunes.png
+  say "retired the locally built ryotunes (the package takes over)"
+fi
+if command -v sudo >/dev/null 2>&1 && command -v pacman >/dev/null 2>&1; then
+  _rkey=EB6D3C0F55A7B3CABA6B2838847B274F025DD6E3
+  _rbase="https://repo.ryoku.dev/stable"
+  case "${RYOKU_CHANNEL:-$(sed -n 's/^RYOKU_CHANNEL=//p' "$HOME/.config/environment.d/ryoku.conf" 2>/dev/null)}" in
+    unstable-dev) _rserver="$_rbase/channels/testing/\$arch" ;;
+    *)            _rserver="$_rbase/\$arch" ;;
+  esac
+  _rcur="$(awk '/^\[ryoku\]/{f=1;next} /^\[/{f=0} f && /^Server/{sub(/^Server *= */,""); print; exit}' /etc/pacman.conf)"
+  if [[ -z "$_rcur" ]]; then
+    say "adding the [ryoku] repo ($_rserver) so packaged externals install from it"
+    sudo pacman-key --add "$repo_root/release/packages/ryoku-keyring/ryoku.gpg" >/dev/null 2>&1 || true
+    sudo pacman-key --lsign-key "$_rkey" >/dev/null 2>&1 || true
+    printf '\n[ryoku]\nSigLevel = Required\nServer = %s\n' "$_rserver" | sudo tee -a /etc/pacman.conf >/dev/null
+  elif [[ "$_rcur" != "$_rserver" ]] && [[ "$_rcur" == "$_rbase"/* ]]; then
+    say "repointing the [ryoku] repo at $_rserver"
+    sudo sed -i "/^\[ryoku\]/,/^\[/ s|^Server *=.*|Server = $_rserver|" /etc/pacman.conf
+  fi
+  # -Syu, not -Sy + -S: a refreshed db with an un-upgraded system is the
+  # partial-upgrade trap, and a packaged box upgrades on every update anyway.
+  _plog="$HOME/.cache/ryoku/deploy-pacman.log"
+  mkdir -p "$(dirname "$_plog")"
+  # the redirect is the user's file, which is the intent (shellcheck SC2024 is
+  # about root-owned targets); pacman's own output goes to the log for -v.
+  # shellcheck disable=SC2024
+  if sudo pacman -Syu --needed --noconfirm ryotunes >"$_plog" 2>&1; then
+    say "ryotunes from [ryoku]: $(pacman -Q ryotunes 2>/dev/null | awk '{print $2}')"
+  else
+    say "  ryotunes not installed from [ryoku] (channel unreachable or not published yet); see $_plog"
+  fi
+else
+  say "skipping packaged externals (sudo or pacman not available)"
+fi
 
 # ryoku-canvas: a spicetify extension (apps/spicetify) that relays the playing
 # track's Spotify Canvas to the shell so the music widget can show it. Landed in

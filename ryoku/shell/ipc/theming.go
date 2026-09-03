@@ -183,6 +183,10 @@ func (d *daemon) paintWorker() {
 					continue
 				}
 				_ = exec.Command("hyprctl", "reload", "config-only").Run()
+				// A hyprctl reload re-runs decoration.lua, which reverts
+				// col.active_border to the value it parses at config time; the
+				// eval is the only path that lands the live palette border.
+				applyHyprBorder()
 				select {
 				case d.ledsSig <- struct{}{}:
 				default:
@@ -203,8 +207,16 @@ func (d *daemon) paintWorker() {
 		}
 		if err := d.matugenApply(pic); err != nil {
 			fmt.Fprintf(os.Stderr, "paintWorker matugen: %v\n", err)
+			// Leave the last good palette in place rather than reloading onto
+			// decoration.lua's red fallback.
+			continue
 		}
 		_ = exec.Command("hyprctl", "reload", "config-only").Run()
+		// The reload reverts the window border to decoration.lua's parsed
+		// fallback (#e0563b when hypr-colors.lua is stale); eval lands the live
+		// wallpaper border over it. Lost when the wallpaper backend moved to the
+		// daemon, which is why the border kept snapping back to red.
+		applyHyprBorder()
 		select {
 		case d.ledsSig <- struct{}{}:
 		default:

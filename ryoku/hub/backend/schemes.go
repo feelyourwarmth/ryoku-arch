@@ -112,6 +112,12 @@ func selectShellTheme(name string) {
 // wallpaper (the reset); light/dark lock a curated preset that survives wallpaper
 // changes (themePaletteLocked keeps it). Reused by the Appearance control.
 func applyScheme(mode string) error {
+	// Mono and the Ryoku-default brand palette are retired as fixed looks: the
+	// desktop follows the wallpaper by default now, so a mono request lands on
+	// the follow path instead of pinning a palette that never tracks the wall.
+	if mode == "mono" {
+		mode = "follow"
+	}
 	switch mode {
 	case "follow":
 		selectShellTheme("Wallpaper")
@@ -127,7 +133,7 @@ func applyScheme(mode string) error {
 		// Explicit, not left to the theme patch: when theme.theme already read
 		// Wallpaper the patch is a no-op and nothing else would repaint.
 		_ = exec.Command("ryogami", "wallpaper", "repaint").Run()
-	case "light", "dark", "mono":
+	case "light", "dark":
 		pal, err := loadScheme(mode)
 		if err != nil {
 			return err
@@ -158,7 +164,7 @@ func applyScheme(mode string) error {
 		}
 		_ = exec.Command("ryoku-shell", "gtk", "apply", gtkMode).Run()
 	default:
-		return fmt.Errorf("unknown scheme %q (want follow|light|dark|mono)", mode)
+		return fmt.Errorf("unknown scheme %q (want follow|light|dark)", mode)
 	}
 	hyprReload()
 	_ = exec.Command("pkill", "-USR1", "-x", "kitty").Run()
@@ -336,8 +342,9 @@ func applyRyokuTheme() error {
 	// the Ryoku mark: the 力 glyph, no custom logo, tinted to the accent, so the
 	// signature brand reads as Ryoku (the desktop name is left as the user set it).
 	mergeBrandJSON(map[string]any{"markText": "力", "markImage": "", "markTint": true})
-	// grainy-mono palette + regen the border lua, reload hypr and kitty.
-	return applyScheme("mono")
+	// colours follow the wallpaper (mono is retired) + regen the border lua,
+	// reload hypr and kitty.
+	return applyScheme("follow")
 }
 
 // mergeShellJSON overlays keys onto shell.json, mergeBrandJSON onto brand.json;

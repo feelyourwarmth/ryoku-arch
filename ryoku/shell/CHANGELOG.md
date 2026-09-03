@@ -2,6 +2,58 @@
 
 ## Unreleased
 
+### Added
+- **The update island and the Hub's Updates page name the release line.**
+  The Hub shows "Ryoku Onogoro" over the version pair, and both say
+  "Onogoro v0.56.x -> Amaterasu v1.0.0" when the channel serves the next line
+  (`services/Updates.qml`, `hub/quickshell/Singletons/Updates.qml`,
+  `hub/quickshell/pages/UpdatesPage.qml`, `UpdateWidget.qml`).
+- **The shell daemon records a good boot for the boot guard.** Once the shell
+  surface has stayed up 45 s (past the supervisor's crash window) the daemon
+  writes the boot id to `/var/lib/ryoku/boot/ok-<uid>`; `ryoku boot-guard`
+  reads it on the next boot to tell an update that came back from one that
+  did not. Best effort: a box whose `ryoku` package predates the directory
+  simply records nothing (`ipc/bootok.go`).
+- **A dev checkout takes its packaged externals from the `[ryoku]` channel its
+  branch publishes to.** `deploy.sh` trusts the release key from the checkout,
+  adds or repoints the `[ryoku]` stanza (`unstable-dev` -> testing, `main` ->
+  stable, a foreign server left alone) and installs `ryotunes` with
+  `pacman -Syu --needed`, retiring the locally built copy, so a dev box runs
+  the same signed package a user gets instead of a minutes-long local build
+  that could differ from it (`deploy.sh`).
+
+- **QS Bar Settings has an Identity tab again.** The launcher mark (wordmark or
+  glyph, with the full word and glyph grids drawn as the bar draws them) and
+  the workspaces (count, marker style, live preview) were folded into two rows
+  of the Widgets list, which only had room for a handful of the options. They
+  are the bar's identity, so they sit in one route between Bar and Layout, and
+  the old `logo` / `spaces` route ids land there. The Launcher and Workspaces
+  rows in Widgets now point at it instead of carrying a cut-down copy
+  (`qsbar/controlcenter/routes/IdentityRoute.qml`, `kit/Routes.js`,
+  `core/widgets.json`).
+
+### Fixed
+- **The Rashin chat's skill list now shows the `ryoku` skill.** The sidebar
+  listed slash-able skills by walking `~/.hermes/skills`, which does not follow
+  the symlink `wire` lays for the shipped skill, so Hermes had the skill but the
+  chat never offered it. The walk reads through symlinked skill dirs and their
+  bundles; `ryoku update` also re-runs `ryoku-rashin wire` after every reindex,
+  so an existing box picks up Prowl's skills for Hermes (`rashin/backend/chatcli.go`,
+  `cli/internal/updater/update.go`).
+
+### Added
+- **A bar plugin can open a panel under its glyph.** A plugin that ships
+  `entryPoints.panel` (a `content/Panel.qml`) opens it in a shared
+  `PluginPanel` window on the same connected surface the built-in panels use:
+  one panel at a time, Escape or a click outside closes it, and opening
+  Network or Battery closes it the way they close each other. `pluginApi` gains
+  `stateDir` (`$XDG_STATE_HOME/ryoku/plugins/<id>`, created on load),
+  `saveSetting(key, value)` (through `ryoku-plugins-place`, so `plugins.json`
+  keeps its one writer), and on the bar `panelOpen`, `openPanel()`,
+  `closePanel()`, `togglePanel()`. A bar row now rebuilds only when its widget
+  order really changed, so a settings write no longer restarts every plugin on
+  the bar (`qsbar/panels/PluginPanel.qml`, `BarSlot.qml`, `Theme.qml`).
+
 ### Fixed
 - **QS Bar Settings: the head no longer overlaps, the last row is no longer
   buried, Depth lifts the bar, and every switch is its own size.** The route
@@ -66,6 +118,17 @@
   `search_code` answer on a packaged box with no checkout, not only on a dev
   machine (`rashin/backend/agents.go`, `index.go`, `vault.go`, `prowl.go`,
   `sourcemirror.go`, `skills/ryoku/`).
+- **Prowl ships with the desktop, and Rashin sets it up.** `prowl-agent` (the
+  code-intelligence indexer and MCP server the agent brain reads source with) is
+  now a signed `[ryoku]` package that `ryoku-rashin` depends on, so every rashin
+  box has it instead of a hand-install. `ryoku-rashin index` now runs
+  `prowl-agent init --integrations agents,agent-skills,claude,omp` in the config
+  mirror (was `none`, under a 120s budget), so the mirror carries Prowl's
+  `AGENTS.md` block, MCP config and skills next to its code index, and
+  `ryoku-rashin wire` also runs `prowl-agent skills --yes --clients <detected>`
+  for the claude, omp and hermes clients it detects (skipped on a Prowl without
+  the non-interactive `--yes`), installing Prowl's own skill beside the `ryoku`
+  one (`rashin/backend/sourcemirror.go`, `agents.go`).
 - **A wallpaper video engine toggle (`wallpaper.video_engine`).** Video
   wallpapers now play through one of two engines: `ryogami` (the default, the
   lightweight C player that decodes a cached transcode into `wl_shm` on its own

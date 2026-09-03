@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -175,6 +176,49 @@ func (d *daemon) saveOutputs(outputs []string, wpType, path string, mute map[str
 	}
 	_ = os.MkdirAll(cacheDir, 0o755)
 	saveJSON(filepath.Join(cacheDir, "outputs.json"), state)
+	syncWallState(state)
+}
+
+// wallStatePath is the legacy ~/.local/state/ryoku-wallpaper file: the absolute
+// path of the current default (broadcast) wallpaper, newline-terminated.
+// Ryogami owns wallpaper apply now, but rice capture, the overview backdrop, the
+// Super+W on-air dot, and the shell's palette bridge still read this file to
+// learn what is on screen. The old Go/C backend wrote it on every apply; when
+// ryogami took the wallpaper over the write was dropped, so those readers saw a
+// stale wallpaper (a saved rice and the overview showed the wrong wall). This
+// restores the write.
+func wallStatePath() string { return filepath.Join(stateHome(), "ryoku-wallpaper") }
+
+// defaultWallpaperFrom picks the broadcast wallpaper from the persisted outputs
+// map: the "*" entry when present, else the first per-output entry by sorted key
+// so the single-path legacy file names one stable wallpaper even in a per-output
+// setup. The stored path is the real file (a clip's own path for a live wall),
+// which is what the readers want to bundle or repaint.
+func defaultWallpaperFrom(state map[string]map[string]interface{}) string {
+	if e, ok := state["*"]; ok {
+		if p, _ := e["path"].(string); p != "" {
+			return p
+		}
+	}
+	keys := make([]string, 0, len(state))
+	for k := range state {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if p, _ := state[k]["path"].(string); p != "" {
+			return p
+		}
+	}
+	return ""
+}
+
+// syncWallState mirrors the persisted default wallpaper into the legacy state
+// file, so every apply and the startup restore keep the wallpaper readers honest.
+func syncWallState(state map[string]map[string]interface{}) {
+	dir := stateHome()
+	_ = os.MkdirAll(dir, 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "ryoku-wallpaper"), []byte(defaultWallpaperFrom(state)+"\n"), 0o644)
 }
 
 // restoreOutputs republishes the persisted wallpaper on startup so the shell
@@ -260,6 +304,7 @@ func (d *daemon) restoreOutputs() {
 		d.setCurrent(restored)
 		fmt.Fprintf(os.Stderr, "ryogami: auto-restored wallpaper: %s\n", restored)
 	}
+	syncWallState(state)
 }
 
 func fileExists(p string) bool {

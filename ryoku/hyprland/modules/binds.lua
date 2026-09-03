@@ -75,7 +75,7 @@ local ws_helper = (os.getenv("HOME") or "") .. "/.config/hypr/scripts/ryoku-work
 
 hl.bind(K(mod .. " + H"),          hl.dsp.exec_cmd(ws_helper .. " hide"))          -- hide the focused window in the scratchpad (press again on it to bring it back)
 hl.bind(K(mod .. " + ALT + H"),    hl.dsp.workspace.toggle_special("scratch"))     -- show or hide the scratchpad (special workspace)
-hl.bind(K(mod .. " + J"),          hl.dsp.workspace.toggle_special("music"))       -- toggle the music scratchpad (special workspace)
+hl.bind(K(mod .. " + J"),          hl.dsp.exec_cmd("ryotunes"))                    -- open Ryotunes (single-instance: a second press focuses it)
 hl.bind(K(mod .. " + mouse_up"),   hl.dsp.focus({ workspace = "r-1" }))            -- previous workspace
 hl.bind(K(mod .. " + mouse_down"), hl.dsp.focus({ workspace = "r+1" }))            -- next workspace
 for i = 1, 10 do

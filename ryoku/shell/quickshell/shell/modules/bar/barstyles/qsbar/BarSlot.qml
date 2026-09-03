@@ -798,6 +798,11 @@ PanelWindow {
     }
     // Fill baseCount base slots in order, then extra slots for anything beyond;
     // trailing base slots stay empty (the return targets an in-place drag uses).
+    // Rebuilding a row clears its ListModel, which destroys every slot in it
+    // (each widget's state, and a plugin's service and api with it). barLayout
+    // is a binding that re-derives on any plugin list change, a settings write
+    // included, so the rebuild has to be a no-op when the row already holds
+    // exactly these gids in this order.
     function buildModel(m, ids, baseCount) {
         ids = ids || []
         var gids = []
@@ -805,8 +810,17 @@ PanelWindow {
             var g = idToGid(ids[i])
             if (g) gids.push(g)
         }
-        m.clear()
         var n = Math.max(baseCount, gids.length)
+        if (m.count === n) {
+            var same = true
+            for (var j = 0; j < n; j++) {
+                var row = m.get(j)
+                var want = j < gids.length ? gids[j] : ""
+                if (row.gid !== want || row.extra !== (j >= baseCount)) { same = false; break }
+            }
+            if (same) return
+        }
+        m.clear()
         for (var k = 0; k < n; k++)
             m.append({ gid: k < gids.length ? gids[k] : "", extra: k >= baseCount })
     }
@@ -1651,6 +1665,11 @@ PanelWindow {
                             ? Math.max(1, pluginContentSlot.item.implicitWidth) + 12 : 0
                         implicitHeight: 32
 
+                        // The plugin's handle (docs/plugins.md "pluginApi"): the
+                        // service, its settings, its dirs, and on the bar the panel
+                        // it may open under its glyph. saveSetting persists through
+                        // the placement tool, the only writer of plugins.json, and
+                        // pluginSettings re-derives on that file's change.
                         property var api: QtObject {
                             readonly property var mainInstance: pluginServiceSlot.item
                             readonly property var pluginSettings: (pluginHostRoot.entry
@@ -1658,7 +1677,21 @@ PanelWindow {
                                 && pluginHostRoot.entry.placement.settings)
                                 ? pluginHostRoot.entry.placement.settings : ({})
                             readonly property string pluginDir: pluginHostRoot.entry ? pluginHostRoot.entry.dir : ""
+                            readonly property string stateDir: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state"))
+                                + "/ryoku/plugins/" + slot.pluginId
+                            readonly property bool panelOpen: barSlot.root.pluginPanelId === slot.pluginId
+                            readonly property bool hasPanel: !!(pluginHostRoot.entry && pluginHostRoot.entry.manifest
+                                && pluginHostRoot.entry.manifest.entryPoints
+                                && pluginHostRoot.entry.manifest.entryPoints.panel)
+                            function saveSetting(key, value) {
+                                var obj = ({}); obj[String(key)] = value
+                                barSlot.root._placePlugin([slot.pluginId, "settings", JSON.stringify(obj)])
+                            }
                             function saveSettings() {}
+                            function openPanel() { if (hasPanel) barSlot.root.openPluginPanel(slot.pluginId, this) }
+                            function closePanel() { if (panelOpen) barSlot.root.closePluginPanel() }
+                            function togglePanel() { if (hasPanel) barSlot.root.togglePluginPanel(slot.pluginId, this) }
+                            Component.onCompleted: Quickshell.execDetached(["mkdir", "-p", stateDir])
                         }
 
                         PluginObjectSlot {
@@ -2212,8 +2245,19 @@ PanelWindow {
                 launcher:     island.groupX("G1",  0.5)
             }
         }
-        onPanelAnchorsChanged: barSlot.root.publishBarAnchors(panelScreenName, panelAnchors)
-        Component.onCompleted: barSlot.root.publishBarAnchors(panelScreenName, panelAnchors)
+        // every bar plugin's glyph centre, so its panel can sit under it.
+        readonly property var pluginPanelAnchors: {
+            void(island.width); void(island.x)
+            void(leftRowItem.x); void(centerRowItem.x); void(rightRowItem.x)
+            void(leftRowItem.width); void(centerRowItem.width); void(rightRowItem.width)
+            var out = {}
+            var ids = barSlot.root.barPluginIds || []
+            for (var i = 0; i < ids.length; i++) out["plugin:" + ids[i]] = island.groupX("P:" + ids[i], 0.5)
+            return out
+        }
+        onPluginPanelAnchorsChanged: barSlot.root.publishBarAnchors(panelScreenName, Object.assign({}, panelAnchors, pluginPanelAnchors))
+        onPanelAnchorsChanged: barSlot.root.publishBarAnchors(panelScreenName, Object.assign({}, panelAnchors, pluginPanelAnchors))
+        Component.onCompleted: barSlot.root.publishBarAnchors(panelScreenName, Object.assign({}, panelAnchors, pluginPanelAnchors))
 
         // ── reactor / gap-stream layer (barAnim modes 1-8) ──
         // Runs = the widget clusters; the stream flows in the dead space between
