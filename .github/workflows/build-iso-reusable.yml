@@ -18,6 +18,10 @@ on:
         description: 'Public release stage: alpha, beta, or stable'
         type: string
         default: beta
+      repo_url:
+        description: '[ryoku] repo the ISO bakes its offline closure from; empty = the stable pointer'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -77,6 +81,10 @@ jobs:
     env:
       RELEASE_STAGE: ${{ inputs.release_stage }}
       RYOKU_VARIANT: ${{ inputs.variant }}
+      # a release ISO bakes from its frozen releases/<tag>/ directory, so the
+      # ISO named for a release installs exactly that release (publish-repo
+      # passes it); a dispatch without it bakes from the moving stable pointer.
+      RYOKU_ISO_REPO_URL: ${{ inputs.repo_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

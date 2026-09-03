@@ -3,6 +3,23 @@
 ## Unreleased
 
 ### Added
+- **The `[ryoku]` repo publishes named releases and a testing channel.** Under
+  the one bucket mount (`repo.ryoku.dev/stable/`), `x86_64/` is the stable
+  pointer every installed box already has, `releases/<tag>/x86_64/` is one
+  frozen copy per release tag (never rewritten; the publish refuses an existing
+  directory), `releases/index.json` is the ledger, and
+  `channels/testing/x86_64/` is rebuilt on every push to `unstable-dev`. A
+  push to `main` publishes nothing: a release is the Stable Release workflow
+  run on `main` (`bump_type: none` tags the version `main` carries), which
+  publishes the frozen directory, moves the stable pointer onto it, records
+  the ledger, and dispatches the release ISO from that directory (the ISO
+  workflows take a `repo_url`, threaded into `offline-repo.sh`). A stable
+  publish mirrors testing first, so a name testing already served is promoted
+  rather than rebuilt. `build-repo.sh` writes `release.json` beside the db and
+  `ryoku-desktop` ships `/etc/ryoku-release` naming the build. Existing boxes
+  need no change: their `Server` line is the stable pointer, and the next
+  update lands the client that understands channels.
+
 - `ryotunes` joins the signed repository at 2.4.1: the Ryoku music app (Tauri +
   WebKitGTK + libmpv, built from `neur0map/ryotunes` at a pinned commit, the
   Ryostore submission adopted as the official app). `ryoku-desktop` depends on
