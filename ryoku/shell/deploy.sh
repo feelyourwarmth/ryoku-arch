@@ -471,13 +471,49 @@ if [[ -x "$here/../lockscreen/install-qylock" ]]; then
   fi
 fi
 
-# ryotunes is a [ryoku] package now (release/packages/ryotunes), not a wrapper
-# this script lays into ~/.local/bin. A wrapper left there from an earlier
-# deploy shadows /usr/bin/ryotunes on PATH, so retire it.
-if [[ -f "$bindir/ryotunes" ]] && grep -q 'music.youtube.com' "$bindir/ryotunes" 2>/dev/null; then
+# ryotunes is a [ryoku] package (release/packages/ryotunes), which a packaged
+# box gets from pacman. A dev checkout tracks a branch that never publishes,
+# so build the same package here with makepkg (like the Hyprland plugins) and
+# lay its files into ~/.local, ahead of any /usr/bin copy on PATH. Rebuilt only
+# when the pinned _commit changes or the binary is missing: the build takes
+# minutes. Toolchain-gated on rust + pnpm; without them the launch degrades
+# to whatever /usr/bin holds. The old Chromium wrapper this script used to
+# put in ~/.local/bin is retired first so it can never shadow the app.
+if [[ -f "$bindir/ryotunes" ]] && [[ "$(head -c 2 "$bindir/ryotunes" 2>/dev/null)" == '#!' ]] \
+   && grep -q 'music.youtube.com' "$bindir/ryotunes"; then
   rm -f "$bindir/ryotunes" "$appshare/applications/ryotunes.desktop" \
     "$appshare/icons/hicolor/scalable/apps/ryotunes.svg"
   say "retired the ryotunes chromium wrapper"
+fi
+_rtpkg="$here/../../release/packages/ryotunes"
+_rtcommit="$(sed -n 's/^_commit=//p' "$_rtpkg/PKGBUILD" 2>/dev/null)"
+_rtstamp="$HOME/.local/share/ryoku/ryotunes.commit"
+if [[ -n "$_rtcommit" ]] && { [[ ! -x "$bindir/ryotunes" ]] || [[ "$(cat "$_rtstamp" 2>/dev/null)" != "$_rtcommit" ]]; }; then
+  if command -v makepkg >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1 && command -v pnpm >/dev/null 2>&1; then
+    say "building ryotunes (${_rtcommit:0:9}); this takes a few minutes the first time"
+    _tmp="$(mktemp -d)"
+    mkdir -p "$HOME/.cache/ryoku/ryotunes-src" "$(dirname "$_rtstamp")"
+    if ( cd "$_rtpkg" &&
+         env BUILDDIR="$_tmp/b" SRCDEST="$HOME/.cache/ryoku/ryotunes-src" PKGDEST="$_tmp" \
+             makepkg -f --nodeps --noconfirm --nocheck >"$_tmp/log" 2>&1 ); then
+      for _pkg in "$_tmp"/*.pkg.tar.*; do
+        [[ -e "$_pkg" ]] && bsdtar -xf "$_pkg" -C "$_tmp" usr 2>/dev/null || true
+      done
+      install -Dm755 "$_tmp/usr/bin/ryotunes" "$bindir/ryotunes"
+      install -Dm644 "$_tmp/usr/share/applications/ryotunes.desktop" "$appshare/applications/ryotunes.desktop"
+      for _png in "$_tmp"/usr/share/icons/hicolor/*/apps/ryotunes.png; do
+        [[ -e "$_png" ]] || continue
+        install -Dm644 "$_png" "$appshare/icons/hicolor/$(basename "$(dirname "$(dirname "$_png")")")/apps/ryotunes.png"
+      done
+      printf '%s\n' "$_rtcommit" > "$_rtstamp"
+      say "installed ryotunes -> $bindir/ryotunes"
+      rm -rf "$_tmp"
+    else
+      say "  ryotunes failed to build; see $_tmp/log"
+    fi
+  else
+    say "skipping ryotunes build (makepkg, cargo or pnpm not found)"
+  fi
 fi
 
 # ryoku-canvas: a spicetify extension (apps/spicetify) that relays the playing

@@ -14,7 +14,11 @@
   directly (it is single-instance, so a second press focuses the window)
   instead of toggling the `special:music` scratchpad, and the music widget's
   corner button runs the music app the same way; the `ryoku-music-toggle`
-  script that tucked the window into that scratchpad is gone.
+  script that tucked the window into that scratchpad is gone. A dev checkout
+  (git channel, which never publishes packages) gets the app too: `ryoku
+  deploy` builds `release/packages/ryotunes` with makepkg and lays the binary,
+  launcher and icons into `~/.local`, rebuilding only when the pinned commit
+  changes.
 
 ### Fixed
 - `ryowalls/`: **A download that returns an error page or a Git LFS pointer no
