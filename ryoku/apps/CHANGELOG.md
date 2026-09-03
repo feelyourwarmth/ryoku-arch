@@ -10,7 +10,11 @@
   `neur0map/ryotunes`) does both, so it ships as the `ryotunes` package from the
   `[ryoku]` repo (`release/packages/ryotunes/`) and the wrapper, its `.desktop`
   and icon leave this tree. The desktop's music integration is unchanged: it
-  follows `org.mpris.MediaPlayer2.ryotunes`.
+  follows `org.mpris.MediaPlayer2.ryotunes`. Super+J now launches Ryotunes
+  directly (it is single-instance, so a second press focuses the window)
+  instead of toggling the `special:music` scratchpad, and the music widget's
+  corner button runs the music app the same way; the `ryoku-music-toggle`
+  script that tucked the window into that scratchpad is gone.
 
 ### Fixed
 - `ryowalls/`: **A download that returns an error page or a Git LFS pointer no

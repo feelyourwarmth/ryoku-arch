@@ -516,9 +516,6 @@ package() {
   done
   # the app-role resolver the keybinds launch by bare name (SUPER+B -> browser, ...)
   install -Dm755 "$_repo/ryoku/hyprland/scripts/ryoku-app" "$pkgdir/usr/bin/ryoku-app"
-  # the desktop music widget's corner button: launch / minimise / restore.
-  install -Dm755 "$_repo/ryoku/hyprland/scripts/ryoku-music-toggle" \
-    "$pkgdir/usr/bin/ryoku-music-toggle"
   # the single-instance window summoner the keybinds call by bare name (ryovm).
   install -Dm755 "$_repo/ryoku/hyprland/scripts/ryoku-summon" "$pkgdir/usr/bin/ryoku-summon"
   for s in "$_repo"/system/hardware/*/ryoku-*; do

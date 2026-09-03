@@ -12,7 +12,11 @@
   desktop follows it over `org.mpris.MediaPlayer2.ryotunes` exactly as before
   (now-playing widget, dock pill, media keys), and the Hyprland float rule and
   `ryoku-music-toggle` match its `ryotunes` window class. The build toolchain
-  list gains `webkit2gtk-4.1`, `mpv` and `libappindicator-gtk3`. The old
+  list gains `webkit2gtk-4.1`, `mpv` and `libappindicator-gtk3`. The package
+  `conflicts`/`replaces` every side-by-side build the author shipped before
+  (`ryotunes-v1.4` through `ryotunes-v2.4`, AUR `ryotunes-bin`), so a box that
+  installed one of those gets it removed in the same `pacman -Syu`, leaving one
+  launcher entry, one `/usr/bin/ryotunes` and no replacement hook. The old
   Chromium profile at `~/.config/ryotunes` is left in place; delete it by hand
   to reclaim the space.
 

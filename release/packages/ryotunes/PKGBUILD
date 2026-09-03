@@ -25,6 +25,16 @@ license=('GPL-3.0-or-later')
 # libappindicator-gtk3 is dlopen'd for the tray icon.
 depends=('webkit2gtk-4.1' 'gtk3' 'mpv' 'libappindicator-gtk3' 'hicolor-icon-theme')
 makedepends=('git' 'rust' 'pnpm' 'nodejs')
+# Before it was packaged here, upstream shipped side-by-side builds named
+# ryotunes-vX.Y (and an AUR ryotunes-bin) whose install hooks symlinked
+# /usr/bin/ryotunes at themselves after every pacman transaction. A box that
+# tried one of those would otherwise keep two music apps and a hook fighting
+# this package for the launcher, so `pacman -Syu` swaps them out in the same
+# transaction that installs this one.
+_legacy=(ryotunes-bin ryotunes-v1.4 ryotunes-v1.5 ryotunes-v1.6 ryotunes-v1.7 ryotunes-v1.8
+         ryotunes-v1.9 ryotunes-v2.0 ryotunes-v2.1 ryotunes-v2.2 ryotunes-v2.3 ryotunes-v2.4)
+conflicts=("${_legacy[@]}")
+replaces=("${_legacy[@]}")
 # Rust already strips with the release profile; the debug split has nothing.
 options=('!lto' '!debug')
 _commit=7f9feedfa406516a4b4c712448af124592557f9c
