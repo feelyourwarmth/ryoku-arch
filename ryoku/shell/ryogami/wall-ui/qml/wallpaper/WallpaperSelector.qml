@@ -156,10 +156,6 @@ Scope {
   ListModel { id: themeModel }
   ListModel { id: riceModel }
 
-  function _themeSlug(id) {
-    return ("" + id).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
-  }
-
   function _loadThemes() {
     if (_themeProc.running || themeModel.count > 0) return
     _themeBuf = ""
@@ -198,11 +194,13 @@ Scope {
       themeModel.clear()
       var list = []
       try { list = JSON.parse(wallpaperSelector._themeBuf) || [] } catch (e) { list = [] }
-      var home = Quickshell.env("HOME")
       for (var i = 0; i < list.length; i++) {
         var t = list[i]
         if (t.dynamic === true) continue
-        var preview = home + "/.local/share/ryoku/themes/" + wallpaperSelector._themeSlug(t.id) + "/preview.jpg"
+        // The catalog reports the preview art beside an installed scheme (the
+        // store writes the catalogue's image there); an empty path leaves the
+        // card to its palette pills.
+        var preview = "" + (t.preview || "")
         themeModel.append({
           id: "" + t.id,
           name: "" + (t.label || t.id),

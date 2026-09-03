@@ -3,8 +3,9 @@
 // library (dataHome/ryoku/themes/<id>), where the shell daemon converts it into a
 // live palette and the Color-scheme picker (Super+W / Hub) applies it. Each
 // registry entry carries its Noctalia dark/light palette inline, so an install is
-// a cache-only copy that works offline; the entry's provider drives the store's
-// per-provider subtab strip.
+// a cache-only copy that works offline; the catalogue's preview art is fetched
+// best-effort beside it so the picker's card shows the same image the store did.
+// The entry's provider drives the store's per-provider subtab strip.
 package main
 
 import (
@@ -13,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 const colorschemeRegistryPath = "colorschemes/registry.json"
@@ -172,6 +174,28 @@ func (p colorschemeProvider) Install(ctx context.Context, id string) error {
 	}
 	if err := atomicWrite(filepath.Join(stage, "meta.json"), metaBytes, 0o644); err != nil {
 		return err
+	}
+	// The catalogue's preview art goes beside the scheme as preview.<ext>: the
+	// Color-scheme picker shows that image on the card when the folder carries
+	// one and draws the palette pills otherwise. Fetched through the asset cache,
+	// so the store's own card and the install share one download, and a failure
+	// (offline, upstream 404) still installs the scheme; only the art is missing.
+	if remoteAsset(entry.Preview) {
+		cached := cachedAssetPath(entry.Preview)
+		if !isRegularFile(cached) {
+			if err := os.MkdirAll(assetCacheDir(), 0o755); err != nil {
+				cached = ""
+			} else if err := downloadAsset(ctx, p.cache.client, entry.Preview, cached); err != nil {
+				cached = ""
+			}
+		}
+		if cached != "" {
+			if ext := strings.ToLower(filepath.Ext(cached)); ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".webp" {
+				if b, err := os.ReadFile(cached); err == nil {
+					_ = atomicWrite(filepath.Join(stage, "preview"+ext), b, 0o644)
+				}
+			}
+		}
 	}
 	return replaceTree(stage, dst, nil)
 }

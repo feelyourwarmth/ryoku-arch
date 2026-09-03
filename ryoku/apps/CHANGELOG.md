@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Fixed
+- `ryostore/`: **An installed theme now carries the store's preview image, so
+  the Color-scheme picker shows it.** The install wrote `scheme.json` and
+  `meta.json` and nothing else, while Ryogami's Themes tab looked for
+  `preview.jpg` beside them and fell back to palette pills for every store
+  theme. The install now fetches the catalogue's preview (through the store's
+  asset cache, so the card and the install share one download) and writes it
+  as `preview.<ext>`; an unreachable preview still installs the scheme. The
+  shell's `theme catalog` reports the art it finds (`preview`) and the picker
+  reads that instead of guessing a filename, so `.png` and `.jpg` sources both
+  show (`backend/provider_colorschemes.go`, `shell/ipc/usertheme.go`,
+  `ryogami/wall-ui/.../WallpaperSelector.qml`).
+
 ### Removed
 - `ryotunes/`: **The Chromium app-window wrapper is gone; Ryotunes is now a real
   app.** YouTube Music ran as a Chromium `--app` window in its own profile
