@@ -237,8 +237,6 @@ Item {
             shim.fpTyped = false;
             shim.fingerprintState = "idle";
             pam.pendingPassword = password;
-            // An empty submit with no sensor to arm would start a conversation
-            // that never gets a response and never completes; don't hang one.
             if (password === "" && !shim.fingerprintReady)
                 return;
             pam.start();
@@ -391,9 +389,7 @@ Item {
             if (!shim.armWhenReady)
                 return;
             shim.fingerprintState = "fail";
-            // A conversation the user typed into died without completing; tell
-            // the theme so its unlock flash clears instead of stranding. A bare
-            // sensor error just re-arms, silently.
+            // A typed conversation that died must clear the theme's unlock flash.
             if (shim.fpTyped || pam.pendingPassword !== "")
                 shim.sddm.loginFailed();
             shim.fpTyped = false;

@@ -346,16 +346,11 @@ var limineBrandedKeys = []string{
 	"term_foreground_bright:", "term_background_bright:",
 }
 
-// limineForcedKeys are the only branding globals the reconcilers still set on top
-// of whatever the box already carries: Ryoku's boot identity and the snapshot
-// hash-mismatch flag a snapshot entry needs to boot. Every other header key
-// (timeout, default_entry, remember_last_entry, and every colour/wallpaper) is
-// something a user may reasonably edit, so the merge seeds it only when absent
-// and never resets a value already in the file.
+// limineForcedKeys are the only globals set over a user's value: the boot
+// identity, and the flag a snapshot entry needs to boot at all. Everything
+// else is seeded when absent and never reset.
 var limineForcedKeys = []string{"interface_branding:", "hash_mismatch_panic:"}
 
-// limineLineKey is the option key of a trimmed config line ("timeout: 3" ->
-// "timeout:"), lowercased, or "" for a line that sets nothing.
 func limineLineKey(trimmed string) string {
 	if i := strings.IndexByte(trimmed, ':'); i >= 0 {
 		return strings.ToLower(trimmed[:i+1])
@@ -363,7 +358,6 @@ func limineLineKey(trimmed string) string {
 	return ""
 }
 
-// limineForcedKey reports whether a trimmed line carries a key Ryoku overrides.
 func limineForcedKey(trimmed string) bool {
 	k := limineLineKey(trimmed)
 	for _, f := range limineForcedKeys {
@@ -390,11 +384,6 @@ func mergeLimineConf(espConf, shadowConf string) string {
 	prelude, body := splitLimineConf(base)
 	body = stripLiminePlaceholderBody(body)
 
-	// Index the branding values the box already carries and collect its own
-	// non-branding prelude lines. A branded value already in the file is the
-	// user's to keep; only the forced keys and the keys missing entirely come
-	// from the canonical header, so an update never resets a colour, timeout,
-	// wallpaper, remember flag, or a global the user added by hand.
 	baseBranded := map[string]string{}
 	var extras []string
 	for _, line := range strings.Split(prelude, "\n") {
@@ -429,8 +418,6 @@ func mergeLimineConf(espConf, shadowConf string) string {
 		}
 		b.WriteString(line + "\n")
 	}
-	// carry over any branded value the box set that the header does not cover
-	// (wallpaper, the *_bright variants), so it survives rather than being dropped.
 	for _, k := range limineBrandedKeys {
 		kk := strings.ToLower(k)
 		if !emitted[kk] {
@@ -897,15 +884,10 @@ func limineNodeName(trimmed string) string {
 	return strings.TrimSpace(strings.TrimPrefix(strings.TrimLeft(trimmed, "/"), "+"))
 }
 
-// limineKernelPaths returns the Limine entry-paths ("<dir>/<kernel>") of every
-// bootable kernel nested under a top-level OS directory, in menu order, skipping
-// the "//Snapshots" submenu. Limine's numeric default_entry counts TOP-LEVEL
-// entries only, so on the limine-mkinitcpio-hook 1.37 layout -- where the OS
-// entry is a collapsed directory and each kernel is a "//<name>" sub-entry -- a
-// bare index lands on the sibling "/EFI fallback", which chainloads Limine again
-// and re-shows the menu: the countdown loop. An entry path (CONFIG.md:
-// default_entry may be a path like "OSes/Arch Linux") addresses a kernel leaf
-// directly and autoboots.
+// limineKernelPaths: the entry paths of the kernels under the OS directory,
+// in menu order. A numeric default_entry counts top-level entries only, so on
+// the collapsed layout a bare index lands on the EFI fallback and loops the
+// countdown; a path addresses the kernel and autoboots.
 func limineKernelPaths(conf string) []string {
 	var out []string
 	dir, inDir := "", false
@@ -925,8 +907,6 @@ func limineKernelPaths(conf string) []string {
 	return out
 }
 
-// limineFirstKernelPath is the first kernel in menu order, or "" on a flat menu
-// (the OS entry is a bootable leaf with no "//" child).
 func limineFirstKernelPath(conf string) string {
 	if paths := limineKernelPaths(conf); len(paths) > 0 {
 		return paths[0]
@@ -934,13 +914,8 @@ func limineFirstKernelPath(conf string) string {
 	return ""
 }
 
-// limineDefaultKernelPath is the kernel default_entry should autoboot: the
-// CachyOS kernel when the box carries one beside the stock linux fallback, else
-// the first kernel in menu order. The cachyos variant installs linux-cachyos to
-// be the boot default (system/packages/cachyos.packages,
-// installation/backend/lib/bootloader.sh) but limine-entry-tool lists "linux"
-// ahead of "linux-cachyos", so a bare first-kernel default silently booted the
-// stock Arch kernel on a CachyOS install (issue #140). "" on a flat menu.
+// limineDefaultKernelPath prefers linux-cachyos: the entry tool lists linux
+// first, which made a CachyOS install boot the stock kernel (#140).
 func limineDefaultKernelPath(conf string) string {
 	paths := limineKernelPaths(conf)
 	for _, p := range paths {
@@ -954,16 +929,8 @@ func limineDefaultKernelPath(conf string) string {
 	return ""
 }
 
-// limineEnsureAutoboot fixes only a default_entry that cannot autoboot, leaving a
-// deliberate one alone. A bare numeric index on the collapsed-directory layout
-// lands on the "/EFI fallback" (which re-launches Limine) and loops the
-// countdown, and the installer and older reconcilers wrote exactly that; an
-// absent default is the same gap. Either becomes the preferred kernel's entry
-// path (the CachyOS kernel when present, per limineDefaultKernelPath), or "1" on
-// a flat menu. A default that already names an entry path or title -- what Limine
-// records when you pick-and-remember a kernel -- is the user's and is left as is,
-// so an update never resets it; remember_last_entry is seeded only when missing.
-// Pure and idempotent: changed=false when the prelude already says exactly this.
+// limineEnsureAutoboot rewrites default_entry only when it is absent or a bare
+// index (the countdown loop); a path or title is the user's and stays.
 func limineEnsureAutoboot(conf string) (string, bool) {
 	prelude, body := splitLimineConf(conf)
 	current := strings.TrimSpace(limineDefaultEntry(conf))
@@ -1011,8 +978,6 @@ func limineEnsureAutoboot(conf string) (string, bool) {
 	return newPrelude + "\n" + body, changed
 }
 
-// limineIsNumeric reports whether s is a non-empty run of ASCII digits (a bare
-// Limine entry index).
 func limineIsNumeric(s string) bool {
 	if s == "" {
 		return false

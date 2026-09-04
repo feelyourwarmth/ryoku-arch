@@ -9,25 +9,15 @@ import (
 	"time"
 )
 
-// The startup restore (restoreOutputs) is a single best-effort pass, but two
-// things it depends on can lag the daemon at login: the file the stored choice
-// names (a home or media mount that is not ready yet) and the compositor
-// outputs a live wallpaper spans. A one-shot restore that met either left the
-// shell on the empty frame -- the grey default -- until the next manual set.
-// retryRestore closes the first gap by re-running until the choice applies;
-// watchOutputs closes the second by re-applying whenever Hyprland brings an
-// output up after the first pass ran.
+// At login the wallpaper file (a late mount) or the outputs (a late monitor)
+// can lag the daemon; a one-shot restore then left the grey default for the
+// session. retryRestore covers the first, watchOutputs the second.
 
 const (
 	restoreRetryWindow   = 30 * time.Second
 	restoreRetryInterval = 1 * time.Second
 )
 
-// retryRestore re-runs restoreOutputs until something is on screen or the window
-// elapses. It runs only when the first pass left the desktop bare (applied ==
-// 0) and stops the moment a frame lands, so a wallpaper already showing is never
-// re-revealed; a pass that still cannot apply publishes nothing, so the retries
-// are silent.
 func (d *daemon) retryRestore() {
 	deadline := time.Now().Add(restoreRetryWindow)
 	for time.Now().Before(deadline) {
@@ -38,11 +28,8 @@ func (d *daemon) retryRestore() {
 	}
 }
 
-// externalLiveStored reports whether the persisted choice is a live wall the
-// external ryogami-live engine plays. Only that wall needs re-placing when an
-// output appears: its player is spawned per output, where a static frame and
-// the in-shell video engine both ride the retained topic the shell repaints on
-// any new screen by itself.
+// Only the external live-wall player is spawned per output; a static frame
+// and the in-shell engine ride the retained topic the shell repaints itself.
 func (d *daemon) externalLiveStored() bool {
 	if wallPrefs().Engine == "in_shell" {
 		return false
@@ -57,12 +44,6 @@ func (d *daemon) externalLiveStored() bool {
 	return false
 }
 
-// watchOutputs re-spans the external live-wall player whenever Hyprland adds an
-// output. A static frame and the in-shell video engine ride the retained topic
-// the shell repaints on any new screen by itself, but the ryogami-live player is
-// spawned per output at restore time, so a monitor that appears after the first
-// pass (a login-time race, a hotplug, a DP-MST panel that enumerates late) keeps
-// no live wall until a re-apply. Mirrors ryoku-shell's hyprwatch.go event loop.
 func (d *daemon) watchOutputs() {
 	for {
 		sock := hyprEventSocket()
@@ -90,12 +71,8 @@ func (d *daemon) watchOutputs() {
 	}
 }
 
-// hyprEventSocket resolves Hyprland's event socket (.socket2.sock). It picks the
-// newest instance directory rather than trusting HYPRLAND_INSTANCE_SIGNATURE,
-// which a daemon (re)started from a lagging user-manager environment can inherit
-// stale. "" when no compositor has landed its socket yet, so the watcher backs
-// off and retries. The modern path is under XDG_RUNTIME_DIR; older Hyprland kept
-// it in /tmp.
+// hyprEventSocket picks the newest instance directory: a daemon restarted
+// from a lagging user-manager environment can inherit a stale signature.
 func hyprEventSocket() string {
 	best, bestMod := "", time.Time{}
 	for _, base := range hyprRunDirs() {
@@ -120,8 +97,6 @@ func hyprEventSocket() string {
 	return best
 }
 
-// hyprRunDirs lists the per-user directories Hyprland drops each instance's
-// sockets in, newest layout first.
 func hyprRunDirs() []string {
 	var dirs []string
 	if rt := os.Getenv("XDG_RUNTIME_DIR"); rt != "" {

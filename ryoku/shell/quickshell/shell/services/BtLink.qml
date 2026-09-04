@@ -124,17 +124,11 @@ Singleton {
             : (d.address || qsTr("Unknown"));
     }
 
-    // --- pairing ---------------------------------------------------------------
 
-    // Quickshell.Bluetooth drives BlueZ's Device1.Pair directly but registers no
-    // pairing agent, so BlueZ has nothing to authorise the bond and pairing a
-    // fresh device (a mouse, a keyboard) fails. This one-shot bluetoothctl brings
-    // its own NoInputNoOutput agent for the length of the call, which auto-accepts
-    // just-works pairing, then trusts and connects. The agent dies with the
-    // process, so nothing lingers. Exit codes from bluetoothctl are unreliable
-    // (0 even on failure), so success is read from its output and the last error
-    // line is echoed for the UI to show. Exit 0 paired+connected, 1 pair failed,
-    // 2 paired but connect failed.
+    // Device1.Pair registers no agent, so BlueZ cannot authorise a bond; this
+    // bluetoothctl brings its own for the call. Its exit code is unreliable,
+    // so success is read from the output. Exit 0 paired+connected, 1 pair
+    // failed, 2 connect failed.
     function pairCommand(mac) {
         const m = String(mac || "");
         const script = `

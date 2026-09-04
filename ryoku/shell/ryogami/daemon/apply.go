@@ -221,17 +221,12 @@ func syncWallState(state map[string]map[string]interface{}) {
 	_ = os.WriteFile(filepath.Join(dir, "ryoku-wallpaper"), []byte(defaultWallpaperFrom(state)+"\n"), 0o644)
 }
 
-// legacyWallStatePath is the pre-split ~/.local/state/ryoku-wallpaper.json: the
-// shell's own wallpaper backend recorded its choice there as {default, outputs}
-// before Ryogami owned the wallpaper. Nothing writes it now.
+// legacyWallStatePath: the shell's own choice from before Ryogami owned the
+// wallpaper. Nothing writes it now.
 func legacyWallStatePath() string { return filepath.Join(stateHome(), "ryoku-wallpaper.json") }
 
-// migrateLegacyOutputs seeds outputs.json once from the pre-split state file so a
-// box upgraded across the Ryogami split keeps its wallpaper. That box has the
-// legacy file but an empty outputs.json, so the startup restore found no choice
-// and left the grey default. It runs only while outputs.json names no wallpaper,
-// so a choice already set through Ryogami is never overwritten; the daemon stays
-// the single writer of outputs.json.
+// migrateLegacyOutputs seeds outputs.json from the pre-split state once,
+// only while no wallpaper is stored.
 func (d *daemon) migrateLegacyOutputs() {
 	cacheDir := d.config().cacheDir()
 	cur := map[string]map[string]interface{}{}
@@ -265,13 +260,8 @@ func (d *daemon) migrateLegacyOutputs() {
 	fmt.Fprintln(os.Stderr, "ryogami: migrated the pre-split wallpaper choice into outputs.json")
 }
 
-// restoreOutputs republishes the persisted wallpaper so the shell never sits on
-// the empty retained frame after a daemon restart. It reports how many stored
-// entries carry a wallpaper (want) and how many it could apply now (applied):
-// a login race can leave the file the choice names, or the outputs a live wall
-// spans, not yet present, and the caller retries while applied < want instead of
-// giving up on the one shot. Serialized so the startup pass, the bounded retry,
-// an output-added re-apply and a manual `wall.restore` never interleave.
+// restoreOutputs republishes the stored wallpaper; the caller retries while
+// applied < want, since the file or the outputs can lag at login.
 func (d *daemon) restoreOutputs() (want, applied int) {
 	d.restoreMu.Lock()
 	defer d.restoreMu.Unlock()

@@ -9,11 +9,7 @@ Item {
     required property var root
     readonly property color contentColor: root.widgetContentColor("G15", root.ink)
 
-    // State comes straight off Quickshell.Bluetooth (BlueZ over D-Bus). There is
-    // no polling and no bluetoothctl: when BlueZ is missing the module reports no
-    // adapter, so an adapterless machine never spawns a process. This replaced a
-    // bluetoothctl poll loop that, on a box without a controller, never resolved
-    // and orphaned one process per tick, leaking RAM into the hundreds (#143).
+    // BlueZ over D-Bus; a bluetoothctl poll here leaked a process per tick (#143).
     readonly property var adapter: Bluetooth.defaultAdapter
     readonly property bool hasAdapter: adapter !== null
     readonly property bool btOn: hasAdapter && adapter.enabled

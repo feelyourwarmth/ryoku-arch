@@ -89,9 +89,8 @@ func Materialize() error {
 	// files enter the manifest, so a later prune can never remove a seed either.
 	//
 	// A shipped file whose live bytes match neither what the last update laid
-	// nor what this one ships was edited by hand. Instead of throwing that
-	// away it becomes a fork under the overlay, which wins on top and is
-	// reported, so an edit to a shipped file never silently vanishes.
+	// nor what this one ships was edited by hand; it becomes a fork under the
+	// overlay instead of being thrown away.
 	laidHashes := readManifestHashes(state)
 	overlaid := map[string]bool{}
 	if rels, err := sys.UserEditFiles(); err == nil {
@@ -196,8 +195,6 @@ func Materialize() error {
 	if err := overlayUserEdits(dest); err != nil {
 		return err
 	}
-	// Record what the update left on disk, fork included, so the next one can
-	// tell a hand edit from the bytes it laid itself.
 	for _, rel := range managed {
 		if live, err := os.ReadFile(filepath.Join(dest, rel)); err == nil {
 			hashes[rel] = hashBytes(live)
@@ -220,9 +217,7 @@ func Materialize() error {
 	return nil
 }
 
-// forkable: shipped files a hand edit may legitimately fork. The quickshell
-// tree is the shell itself, replaced whole on every update, where a stale
-// fork would break it rather than customise it.
+// The quickshell tree is the shell itself; a stale fork there breaks it.
 func forkable(rel string) bool {
 	return !strings.HasPrefix(rel, "quickshell/") && !sys.IsLiveOwnedConfig(rel)
 }
@@ -268,9 +263,8 @@ func pruneEmptyParents(root, rel string) {
 	}
 }
 
-// The manifest is one line per laid file: the path, and since forks were
-// added a tab and the sha256 of the bytes laid. A line without a hash (an
-// older manifest) still prunes; it only cannot tell a hand edit apart.
+// Manifest lines are "path<TAB>sha256"; an older line without a hash still
+// prunes, it just cannot tell a hand edit apart.
 func readManifest(path string) []string {
 	b, err := os.ReadFile(path)
 	if err != nil {

@@ -12,36 +12,23 @@ import (
 )
 
 // ---- reconciler: limine per-kernel boot images -------------------------------
-
-// A limine box boots each installed kernel from a self-contained UKI on the ESP
-// (/boot/EFI/Linux/ryoku_<kernel>.efi), or, without the UKI design, from
-// /boot/initramfs-<kernel>.img beside vmlinuz-<kernel>. Either bundle has to
-// stay in step with /usr/lib/modules/<version>: when a kernel changes and its
-// image is NOT rebuilt (an interrupted update, a hook that never fired, a kernel
-// package removed out from under its entry), the entry still boots a kernel
-// whose module tree is gone from the root filesystem, and systemd drops to an
-// emergency shell right after switch-root. That is the linux-cachyos "emergency
-// mode" bug (#140): the cachyos entry alone went stale while the stock linux
-// entry stayed current, so the box booted linux (reporting Arch, which is just
-// /etc/os-release) and the hand-picked cachyos entry died.
 //
-// The generator does not catch this -- a missing module is only an mkinitcpio
-// warning, so the UKI build still "succeeds" -- and nothing else on `ryoku
-// update` re-checks per-kernel freshness. This reconciler does: for every
-// installed kernel it rebuilds an image that is missing, older than the kernel,
-// or built for a version no longer installed; and it reports (and prunes) a
-// boot entry for a kernel the box no longer has, instead of leaving a dead
-// second entry that only ever boots into emergency mode.
+// Each installed kernel boots from its own image on the ESP (a UKI under
+// /boot/EFI/Linux, or an initramfs beside vmlinuz). An image left behind by
+// an interrupted update, a hook that never fired, or a kernel removed under
+// its entry still boots, then drops to an emergency shell after switch-root
+// because its module tree is gone: the linux-cachyos "emergency mode" of #140.
+// mkinitcpio only warns about a missing module, so nothing upstream catches
+// it. This rebuilds a stale or missing image for every installed kernel and
+// prunes the entry of a kernel the box no longer has.
 
 type installedKernel struct {
 	version string
 	vmlinuz time.Time
 }
 
-// limineBootKernel is one tool-generated "//<name>" kernel sub-entry: the kernel
-// it names, the version its image was built for (the "Kernel version" comment),
-// and the ESP path of the image it boots, enriched with that image's on-disk
-// state.
+// limineBootKernel is one generated "//<name>" kernel entry and the state of
+// the image it boots.
 type limineBootKernel struct {
 	name        string
 	version     string
@@ -50,9 +37,8 @@ type limineBootKernel struct {
 	imageOlder  bool
 }
 
-// installedKernelVersions maps each installed kernel's pkgbase name to its
-// module-tree version and vmlinuz mtime. A module tree with no vmlinuz is not
-// bootable and is skipped, so it never masquerades as an installed kernel.
+// installedKernelVersions: pkgbase -> module-tree version and vmlinuz mtime.
+// A module tree without a vmlinuz is not a kernel and is skipped.
 func installedKernelVersions() map[string]installedKernel {
 	out := map[string]installedKernel{}
 	pkgbases, _ := filepath.Glob("/usr/lib/modules/*/pkgbase")
@@ -71,11 +57,8 @@ func installedKernelVersions() map[string]installedKernel {
 	return out
 }
 
-// gatherLimineBootKernels reads the "//<name>" kernel sub-entries directly under
-// a top-level OS directory (skipping the "//Snapshots" submenu and the snapshot
-// kernels nested deeper), pulling each entry's declared kernel version and the
-// image it boots, then stats that image. esp is where boot():/ resolves (the ESP
-// mount, /boot).
+// gatherLimineBootKernels reads the kernel entries directly under the OS
+// directory, skipping the Snapshots submenu. esp is where boot():/ resolves.
 func gatherLimineBootKernels(conf, esp string, installed map[string]installedKernel) []limineBootKernel {
 	var out []limineBootKernel
 	var cur *limineBootKernel
@@ -126,9 +109,8 @@ func gatherLimineBootKernels(conf, esp string, installed map[string]installedKer
 	return out
 }
 
-// limineEntryImagePath resolves the boot image a kernel entry body line names:
-// the UKI "path:" or the regular "module_path:" (the initramfs). "" for any
-// other line.
+// limineEntryImagePath: the image a body line names (a UKI "path:" or an
+// initramfs "module_path:"), or "".
 func limineEntryImagePath(bodyLine, esp string) string {
 	for _, key := range []string{"path: ", "module_path: "} {
 		if v := strings.TrimPrefix(bodyLine, key); v != bodyLine {
@@ -138,9 +120,8 @@ func limineEntryImagePath(bodyLine, esp string) string {
 	return ""
 }
 
-// resolveLimineBootPath turns a "boot():/EFI/Linux/ryoku_linux.efi#<hash>" value
-// into the absolute path on the running system (boot() is the ESP, mounted at
-// esp). "" when the value is not a boot()-relative path.
+// resolveLimineBootPath turns "boot():/EFI/Linux/x.efi#<hash>" into a path
+// under esp, or "" when the value is not boot()-relative.
 func resolveLimineBootPath(raw, esp string) string {
 	rest := strings.TrimPrefix(raw, "boot():")
 	if rest == raw || !strings.HasPrefix(rest, "/") {
@@ -152,12 +133,9 @@ func resolveLimineBootPath(raw, esp string) string {
 	return strings.TrimRight(esp, "/") + rest
 }
 
-// planLimineKernelImages compares the tool-generated kernel entries against the
-// installed kernels. stale: an installed kernel whose entry is missing, names a
-// different version than the one installed, or whose image is gone or older than
-// the kernel -- each boots into an emergency shell and needs a rebuild. stray:
-// an entry for a kernel that is not installed -- a dead menu item. pure and
-// order-stable so the decision is unit-testable.
+// planLimineKernelImages: stale is an installed kernel whose entry is missing,
+// names another version, or whose image is gone or older than the kernel;
+// stray is an entry for a kernel that is not installed.
 func planLimineKernelImages(installed map[string]installedKernel, entries []limineBootKernel) (stale, stray []string) {
 	seen := map[string]bool{}
 	for _, e := range entries {
@@ -181,8 +159,8 @@ func planLimineKernelImages(installed map[string]installedKernel, entries []limi
 	return stale, stray
 }
 
-// pruneLimineStrayImages removes the orphaned boot images for kernels the box no
-// longer has, then regenerates the menu so their dead entries drop out.
+// pruneLimineStrayImages removes the images of kernels the box no longer has
+// and regenerates the menu so their entries drop out.
 func pruneLimineStrayImages(names []string) error {
 	want := map[string]bool{}
 	for _, n := range names {
@@ -217,11 +195,7 @@ func pruneLimineStrayImages(names []string) error {
 	return nil
 }
 
-// reconcileLimineKernelImages keeps every installed kernel's boot image current
-// and reports a boot entry for a kernel the box no longer has. Runs on every
-// `ryoku update`, so a box whose cachyos entry went stale heals without a
-// reinstall; idempotent -- a box whose images all match its kernels is a no-op
-// (no costly rebuild).
+// reconcileLimineKernelImages: a no-op while every image matches its kernel.
 func reconcileLimineKernelImages(checkOnly bool) recResult {
 	if !sys.PkgInstalled("limine") {
 		return okRes("not a limine-managed boot on this box")

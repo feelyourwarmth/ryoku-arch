@@ -363,10 +363,7 @@ Rectangle {
     Timer { id: boomTriggerTimer; interval: 1450; onTriggered: { boomSequence.start() } }
     function startLoginSequence() {
         if (isWindup) return
-        // An empty field has nothing to submit: the shim cannot feed an empty
-        // key to PAM, so running the reveal blast would strand the surface on a
-        // white flash that never clears. Keep the field; the fingerprint sensor,
-        // when enrolled, keeps scanning on its own.
+        // PAM never answers an empty key; the reveal blast would strand white.
         if (passInput.text.length === 0) {
             errText.text = ""
             passInput.forceActiveFocus()
@@ -386,11 +383,7 @@ Rectangle {
     // boomTriggerTimer at 1450ms). boomSequence.stop() kills the animation.
     property bool _unlocked: false
     function doLogin() { if (_unlocked) return; _unlocked = true; root.authInfo = ""; var uname = (userHelper.currentItem && userHelper.currentItem.uLogin) ? userHelper.currentItem.uLogin : (typeof userModel !== "undefined" ? userModel.lastUser : "user"); if (typeof sddm !== "undefined") sddm.login(uname, passInput.text, root.sessionIndex); authWatchdog.restart() }
-    // The unlock flash (windup jitter and the white boom) stays raised until
-    // auth resolves. If PAM never answers -- an empty submit, a dead
-    // conversation -- nothing lowers it and the surface strands on the blast.
-    // clearUnlockFlash returns to the login state; the watchdog calls it when
-    // auth goes silent so a stuck conversation can never hold the screen.
+    // The flash stays up until auth answers; the watchdog lowers it if it never does.
     function clearUnlockFlash() {
         _unlocked = false; isWindup = false
         windupAnim.stop(); boomTriggerTimer.stop(); boomSequence.stop()

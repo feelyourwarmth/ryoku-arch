@@ -23,17 +23,11 @@ PanelWindow {
     readonly property int barBottom: root.v2BarHeight
     readonly property int gap: 6
 
-    // Everything is live off Quickshell.Bluetooth (BlueZ over D-Bus): no
-    // bluetoothctl polling, and device names come from BlueZ rather than a parsed
-    // `bluetoothctl devices` line, which used to leave them blank (#144).
     readonly property var adapter: Bluetooth.defaultAdapter
     readonly property bool btOn: adapter !== null && adapter.enabled
     readonly property bool scanning: btOn && adapter.discovering
 
     readonly property var allDevices: (btOn && Bluetooth.devices) ? Bluetooth.devices.values : []
-    // Every device BlueZ remembers or has a name for, which mirrors the old
-    // `bluetoothctl devices` list (paired, trusted or previously seen). While a
-    // scan runs BlueZ adds freshly discovered ones and they flow in the same way.
     readonly property var devices: {
         var out = []
         for (var i = 0; i < allDevices.length; i++) {
@@ -58,7 +52,6 @@ PanelWindow {
         return n
     }
 
-    // Address currently mid-pair, and the last pairing failure to surface.
     property string pairingAddr: ""
     property string pairError: ""
     readonly property bool busy: pairProc.running
@@ -83,9 +76,6 @@ PanelWindow {
         btPanel.pair(device)
     }
 
-    // Pairing shells one bluetoothctl that brings its own agent (see BtLink), then
-    // trusts and connects; the module's Device1.Pair alone has no agent so BlueZ
-    // cannot authorise the bond and a fresh mouse never pairs (#144).
     function pair(device) {
         if (!device || pairProc.running) return
         var mac = String(device.address || "")
@@ -283,7 +273,6 @@ PanelWindow {
                 }
             }
 
-            // ── pairing error ──
             UiText {
                 visible: btPanel.pairError.length > 0
                 width: parent.width; horizontalAlignment: Text.AlignHCenter
@@ -491,7 +480,6 @@ PanelWindow {
         }
     }
 
-    // ── pairing: agent + pair + trust + connect, failure text surfaced ──
     Process {
         id: pairProc
         running: false
@@ -511,7 +499,6 @@ PanelWindow {
         }
     }
 
-    // ── auto-stop a scan the user forgot about, and drop it when the panel hides ──
     Timer { id: scanStop; interval: 30000; onTriggered: btPanel.stopScan() }
     onScanningChanged: { if (scanning) scanStop.restart(); else scanStop.stop() }
 

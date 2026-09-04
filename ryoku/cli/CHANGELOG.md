@@ -14,6 +14,13 @@
   (`internal/updater/materialize.go`).
 
 ### Fixed
+- **Zen scrolls and switches workspaces smoothly.** The shipped Zen policy
+  already turned on WebRender and hardware decoding; it now also sets the
+  Wayland vsync prefs that issue zen-browser/desktop#5588 identifies as the
+  scroll and compositing fix (`layout.frame_rate` -1,
+  `widget.wayland.vsync.enabled`, `keep-firing-at-idle`,
+  `fractional-scale.enabled`), as unlocked defaults a user can still override
+  (`internal/doctor/zen_policies.json`).
 - **A package you removed stays removed.** The doctor installed
   spotify-launcher, spicetify-cli and asusctl on its own whenever it saw a
   reason (a flatpak Spotify, an ASUS laptop), so removing them by hand lasted
