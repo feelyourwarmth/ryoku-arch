@@ -3,6 +3,13 @@
 ## Unreleased
 
 ### Fixed
+- **A package you removed stays removed.** The doctor installed
+  spotify-launcher, spicetify-cli and asusctl on its own whenever it saw a
+  reason (a flatpak Spotify, an ASUS laptop), so removing them by hand lasted
+  until the next `ryoku update`. It now records what it provisioned
+  (`~/.local/state/ryoku/provisioned`) and treats a recorded package that is
+  gone as your decision; delete its line to let the doctor bring it back
+  (`internal/doctor/provision.go`).
 - **The Zen policy lands on a packaged Zen.** The doctor wrote
   `<root>/distribution/policies.json` as the user, which fails with
   "permission denied" under `/opt/zen-browser-bin` and `/usr/lib/zen-browser`
