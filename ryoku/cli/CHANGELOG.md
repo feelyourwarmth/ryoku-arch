@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Fixed
+- **Ryotunes opens the packaged app on every box.** A Chromium YouTube Music
+  wrapper or a locally built copy left in `~/.local/bin` shadowed
+  `/usr/bin/ryotunes` on PATH, so Super+J and the dock kept opening the old
+  Chrome window. The `ryotunes` reconciler removes that copy and its desktop
+  entry, installs the package on a box whose channel switch never did, and
+  flags an unowned `/usr/bin/ryotunes` (`internal/doctor/reconcile_ryotunes.go`).
 - **The login screen keeps its mouse pointer.** The SDDM greeter runs on a
   weston kiosk, and where the greeter or weston falls back to the freedesktop
   cursor theme literally named `default` (SDDM's Wayland greeter ignores

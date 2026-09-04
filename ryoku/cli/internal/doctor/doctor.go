@@ -159,6 +159,7 @@ func reconcilers() []reconciler {
 		{"login screen cursor", reconcileGreeterCursor},
 		{"fastfetch readout emblem", reconcileFastfetchEmblem},
 		{"rice fastfetch emblem", reconcileRiceEmblem},
+		{"ryotunes", reconcileRyotunes},
 		{"fastfetch OS line", reconcileFastfetchOSLine},
 		{"brand mark image", reconcileBrandLogo},
 		{"decor art", reconcileRyodecors},

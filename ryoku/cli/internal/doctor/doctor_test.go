@@ -2465,3 +2465,25 @@ func TestUpgradeFastfetchOSLine(t *testing.T) {
 		t.Fatalf("a Hub-saved config (JSON-escaped >) must be upgraded too:\n%s", got)
 	}
 }
+
+func TestStaleUserRyotunesSpotsTheWrapperOnly(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "share"))
+	bin := filepath.Join(dir, "ryotunes")
+	os.WriteFile(bin, []byte("#!/usr/bin/env bash\nexec chromium --app=https://music.youtube.com\n"), 0o755)
+	if got := staleUserRyotunes(bin); got != "the Chromium YouTube Music wrapper" {
+		t.Fatalf("wrapper not recognised: %q", got)
+	}
+	os.WriteFile(bin, []byte("\x7fELF..."), 0o755)
+	if got := staleUserRyotunes(bin); got != "" {
+		t.Fatalf("a user's own binary must be left alone, got %q", got)
+	}
+	os.MkdirAll(filepath.Join(dir, "share", "ryoku"), 0o755)
+	os.WriteFile(filepath.Join(dir, "share", "ryoku", "ryotunes.commit"), []byte("abc\n"), 0o644)
+	if got := staleUserRyotunes(bin); got != "a locally built ryotunes" {
+		t.Fatalf("dev-deploy build not recognised: %q", got)
+	}
+	if got := staleUserRyotunes(filepath.Join(dir, "missing")); got != "" {
+		t.Fatalf("missing file must be nothing, got %q", got)
+	}
+}
