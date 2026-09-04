@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+- **A dev deploy no longer resets the fastfetch emblem (or the kitty
+  palette).** `deploy.sh` re-copied `fastfetch/config.jsonc` and
+  `kitty/current-theme.conf` on every run, so each `ryoku update` on a
+  checkout box put the readout back on the shipped emblem and dropped an
+  imported logo or a decor picked in the Hub. Both are now seeded once and
+  never re-laid, the same generatedSeed set `ryoku materialize` honours on a
+  packaged box (`deploy.sh`).
+
 ### Added
 - **The update island and the Hub's Updates page name the release line.**
   The Hub shows "Ryoku Onogoro" over the version pair, and both say
