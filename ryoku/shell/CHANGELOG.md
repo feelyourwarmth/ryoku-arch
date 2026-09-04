@@ -36,6 +36,14 @@
   pre-split wallpaper choice into the daemon's store on first start, so the
   wallpaper survives the update instead of coming up grey (`ryogami/daemon/apply.go`,
   `ryogami/daemon/restore_watch.go`, `ryogami/daemon/daemon.go`).
+- **The launcher returns to its exact idle size after a query is cleared.** On a
+  monitor with a non-default interface scale (`displays.ui_scale`), the hero
+  launcher opened at one height but settled a few pixels shorter once you typed
+  and erased back to empty, so the idle card visibly jumped. The initial open
+  path sized the card without the per-monitor UI scale the surface actually
+  renders at; it now folds in the same `uiScaleFor` factor, so a fresh open and a
+  cleared query land at the identical height
+  (`modules/launcher/variants/hero/Main.qml`).
 - **A pinned dock icon no longer resets to a generic gear.** The dock resolved
   each icon once through a plain function call, so a pin whose icon was not yet
   findable at first paint -- a fresh boot before the icon-theme cache warms, or
