@@ -438,7 +438,7 @@ jobs:
           stage=beta
           [[ $RELEASE == *-alpha* ]] && stage=alpha
           [[ $RELEASE != *-* ]] && stage=stable
-          gh workflow run build-iso.yml --ref "$RELEASE" \
+          gh workflow run build-iso.yml -R "$GITHUB_REPOSITORY" --ref "$RELEASE" \
             -f release_stage="$stage" \
             -f repo_url="https://repo.ryoku.dev/stable/$PREFIX/x86_64"
           echo "::notice::Dispatched build-iso.yml on $RELEASE from $PREFIX"
