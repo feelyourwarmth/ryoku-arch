@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+- **Each release line has an ASCII mark.** `ryoku version --pretty` on a
+  terminal draws the line's art (Onogoro: the spear, the drop, the island
+  rising from the sea; Amaterasu: the sun) in brand vermilion above
+  "Onogoro v0.56.x". Piped output, which is what fastfetch and scripts read,
+  stays the one line (`internal/updater/art/`).
+
 ### Changed
 - **`ryoku rollback` reads as two ways back.** It opens by saying what each
   does (the Ryoku set to a published release, live; the whole system to a
