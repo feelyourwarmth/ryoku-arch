@@ -3721,8 +3721,10 @@ func tailLines(s string, n int) string {
 
 // ryokuSystemGlobs are the ryoku-desktop-owned paths that the ISO installer
 // (bootloader.sh) and ryoku/shell deploy.sh also seed unowned: the privileged
-// helpers + their polkit rules (so a dev checkout's pkexec has a rule to match)
-// and the Plymouth splash theme. On a packaged box an unowned copy from an
+// helpers + their polkit rules (so a dev checkout's pkexec has a rule to match),
+// the ryoku-owned systemd units, the shipped boot configs under
+// /usr/share/ryoku/boot, and the Plymouth splash theme. On a packaged box an
+// unowned copy from an
 // earlier dev deploy, an older ISO, or `ryoku recovery` collides with the package
 // on `pacman -Syu` ("exists in filesystem") and aborts the whole atomic
 // transaction, so no update lands. `ryoku update` now passes --overwrite for these
@@ -3730,8 +3732,10 @@ func tailLines(s string, n int) string {
 // binary; clearing the copies here lets the next update adopt them.
 var ryokuSystemGlobs = []string{
 	"/usr/bin/ryoku-*",
+	"/usr/lib/systemd/system/ryoku-*",
 	"/usr/share/polkit-1/rules.d/*ryoku*.rules",
 	"/usr/share/plymouth/themes/ryoku/*",
+	"/usr/share/ryoku/boot/*",
 }
 
 // pkgOwnsFile reports whether an installed package owns path. A var so tests stub

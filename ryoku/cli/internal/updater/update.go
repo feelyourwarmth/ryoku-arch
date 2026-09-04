@@ -318,15 +318,19 @@ func runSystemUpgrade(forceRefresh bool) error {
 
 // ryokuOverwriteGlob names the ryoku-desktop-owned paths that the ISO installer
 // and ryoku/shell/deploy.sh seed unowned before the package began owning them:
-// the privileged helpers (ryoku-dns, ryoku-wifi-powersave), their polkit rules,
-// and the Plymouth splash theme (installer bootloader.sh + deploy.sh). Every
-// ryoku-desktop (re)install --overwrites these, or the first upgrade that starts
-// owning a seeded path aborts the whole transaction ("exists in filesystem") and
-// blocks every update until the files are removed by hand. Keep in sync with the
-// doctor's ryokuSystemGlobs, which clears the same paths on an already-wedged box.
+// the privileged helpers (ryoku-dns, ryoku-network-kill, ryoku-boot-apply,
+// ryoku-wifi-powersave), their polkit rules, the Plymouth splash theme, the
+// ryoku-owned systemd units, and the shipped boot configs under
+// /usr/share/ryoku/boot. Every ryoku-desktop (re)install --overwrites these, or
+// the first upgrade that starts owning a seeded path aborts the whole
+// transaction ("exists in filesystem") and blocks every update until the files
+// are removed by hand. Keep in sync with the doctor's ryokuSystemGlobs, which
+// clears the same paths on an already-wedged box.
 const ryokuOverwriteGlob = "/usr/bin/ryoku-*," +
+	"/usr/lib/systemd/system/ryoku-*," +
 	"/usr/share/polkit-1/rules.d/*ryoku*.rules," +
-	"/usr/share/plymouth/themes/ryoku/*"
+	"/usr/share/plymouth/themes/ryoku/*," +
+	"/usr/share/ryoku/boot/*"
 
 // systemUpgradeArgs is the packaged-box upgrade command. After a channel move
 // the refresh is forced (-Syy): pacman skips a db that is not newer than its

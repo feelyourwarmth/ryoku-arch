@@ -14,6 +14,17 @@
   (`internal/updater/materialize.go`).
 
 ### Fixed
+- **An unowned Ryoku system file no longer freezes every package update.** When
+  `ryoku-desktop` began owning paths the ISO installer and `deploy.sh` had
+  seeded unowned -- the `ryoku-*` systemd units and the boot configs under
+  `/usr/share/ryoku/boot`, on top of the helpers, polkit rules and Plymouth
+  theme already covered -- `pacman -Syu` aborted the whole transaction with
+  "exists in filesystem", so no package (including the new `ryotunes` app that
+  replaces the Chromium wrapper) ever installed and the box silently stopped
+  updating. The overwrite set now covers those two families in the packaged
+  update path, the checkout `deploy.sh` upgrade, and the doctor's stray-file
+  cleanup (`internal/updater/update.go`, `internal/doctor/doctor.go`,
+  `ryoku/shell/deploy.sh`).
 - **A rejected package database no longer wedges updates.** A box could cache
   a `[ryoku]` sync db whose bytes no longer matched its signature (the mirror
   briefly serves a db and `.sig` from different builds, and pacman refetches a

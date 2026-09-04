@@ -517,8 +517,14 @@ if command -v sudo >/dev/null 2>&1 && command -v pacman >/dev/null 2>&1; then
   mkdir -p "$(dirname "$_plog")"
   # the redirect is the user's file, which is the intent (shellcheck SC2024 is
   # about root-owned targets); pacman's own output goes to the log for -v.
+  # --overwrite the ryoku-owned paths the ISO installer and this script seed
+  # unowned (privileged helpers, systemd units, polkit rules, the plymouth theme,
+  # the boot configs); once ryoku-desktop packages them an unowned copy otherwise
+  # aborts the whole -Syu with "exists in filesystem" and nothing upgrades.
+  # Mirrors updater.ryokuOverwriteGlob / the doctor's ryokuSystemGlobs.
+  _rovw='/usr/bin/ryoku-*,/usr/lib/systemd/system/ryoku-*,/usr/share/polkit-1/rules.d/*ryoku*.rules,/usr/share/plymouth/themes/ryoku/*,/usr/share/ryoku/boot/*'
   # shellcheck disable=SC2024
-  if sudo pacman -Syu --needed --noconfirm ryotunes >"$_plog" 2>&1; then
+  if sudo pacman -Syu --needed --noconfirm --overwrite "$_rovw" ryotunes >"$_plog" 2>&1; then
     say "ryotunes from [ryoku]: $(pacman -Q ryotunes 2>/dev/null | awk '{print $2}')"
   else
     say "  ryotunes not installed from [ryoku] (channel unreachable or not published yet); see $_plog"
