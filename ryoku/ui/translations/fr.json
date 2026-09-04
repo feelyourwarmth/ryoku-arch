@@ -1552,6 +1552,8 @@
   "Pair": "Jumeler",
   "Paired": "Appairé",
   "Pairing failed": "Échec du jumelage",
+  "Pairing failed. Put the device in pairing mode and try again.": "Échec de l'appairage. Mettez l'appareil en mode appairage et réessayez.",
+  "Pairing…": "Appairage…",
   "Palette": "Palette",
   "Panel + tooltip": "Panneau + infobulle",
   "Panel drawn behind the widget; pick none to sit right on the wallpaper": "Panneau dessiné derrière le widget ; choisissez aucun pour qu'il repose directement sur le fond d'écran",

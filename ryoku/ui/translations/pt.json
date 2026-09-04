@@ -1552,6 +1552,8 @@
   "Pair": "Emparelhar",
   "Paired": "Emparelhado",
   "Pairing failed": "Falha no emparelhamento",
+  "Pairing failed. Put the device in pairing mode and try again.": "O emparelhamento falhou. Coloque o dispositivo em modo de emparelhamento e tente novamente.",
+  "Pairing…": "A emparelhar…",
   "Palette": "Paleta",
   "Panel + tooltip": "Painel + dica",
   "Panel drawn behind the widget; pick none to sit right on the wallpaper": "Painel desenhado atrás do widget; escolha nenhum para ficar diretamente no papel de parede",
