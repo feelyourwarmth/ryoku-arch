@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Changed
+- **`ryoku rollback` reads as two ways back.** It opens by saying what each
+  does (the Ryoku set to a published release, live; the whole system to a
+  snapshot, from the boot menu), then a RELEASES block (channel, the running
+  release, the ledger with the running one marked, the `--to` and
+  `track stable` commands) and a SNAPSHOTS block (id, minute, pre/post,
+  description; a one-line summary with free space and whether the boot menu
+  lists them). A checkout box is told releases do not apply to it instead of
+  being shown nothing. `ryoku rollback <id>` names the snapshot it guides
+  (`internal/updater/update.go`).
+
+### Added
+- **The doctor moves fastfetch's OS line to `ryoku version --pretty`.**
+  `fastfetch/config.jsonc` is seeded once and then owned by the box, so the
+  shipped change to the OS line never reached an existing install; the
+  `fastfetch OS line` reconciler rewrites that one command in place (the
+  BRANCH line and everything else untouched), so the readout says "Ryoku
+  Onogoro v0.56.x" everywhere (`internal/doctor/doctor.go`).
+
 ### Fixed
 - **A testing build's name is not a release tag.** `v0.56.0-beta.19.dev.363+g4d1cf63`
   matched the release-tag shape, so a box moving from testing to a release

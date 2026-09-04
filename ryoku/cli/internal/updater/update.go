@@ -631,12 +631,13 @@ func runFreshDoctor() {
 	_ = sys.Run(pkgBin("ryoku"), "doctor")
 }
 
-// Rollback puts a packaged box back on an earlier release, or guides a
-// snapshot restore. `--to <tag>` pins the [ryoku] repo at that frozen release
-// directory and runs the update, so the Ryoku set moves back in one pacman
-// transaction while Arch stays current; `ryoku track stable` follows releases
-// again afterwards. Without --to it lists the releases the ledger knows and
-// the snapshots on disk.
+// Rollback is the way back, on two levels. `--to <tag>` moves the Ryoku set
+// (its packages and config) to a published release without a reboot: the
+// [ryoku] repo is pinned at that frozen release directory and the update runs,
+// so the set moves in one pacman transaction while Arch stays current;
+// `ryoku track stable` follows releases again afterwards. A snapshot id guides
+// a whole-system restore from the boot menu. With no argument it shows both:
+// the releases the ledger knows and the snapshots on disk.
 //
 // The snapshot path is a boot-menu restore, not a live one: Ryoku pins the
 // root subvolume on the kernel cmdline and in fstab (rootflags=subvol=@), and
@@ -657,43 +658,79 @@ func Rollback(args []string) error {
 		if !sys.IsReleaseTag(to) {
 			return fmt.Errorf("--to takes a release tag (see `ryoku rollback` for the list), got %q", to)
 		}
-		fmt.Printf("==> Rolling the Ryoku set back to release %s\n", to)
+		fmt.Printf("==> Moving the Ryoku set to release %s\n", to)
 		return Track(to)
 	}
-	if sys.ResolveRepo() == "" {
-		rel := sys.ReadRelease()
-		if rel.Release != "" {
-			fmt.Printf("running:   %s%s (%s)\n", withSpace(rel.Name), rel.Release, orDash(sys.PackagedChannel()))
+	if len(args) > 0 {
+		return restoreGuide(args[0])
+	}
+
+	fmt.Println("Two ways back:")
+	fmt.Println("  the Ryoku set (its packages and config) to a published release, live;")
+	fmt.Println("  the whole system (Arch included) to a snapshot, from the boot menu.")
+	fmt.Println()
+	printReleases()
+	fmt.Println()
+	fmt.Println("SNAPSHOTS  the whole system, on this disk")
+	if err := Snapshots(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// printReleases is the RELEASES block of `ryoku rollback`: what a packaged box
+// runs, what it can move to, and how; a checkout box is told releases do not
+// apply to it instead of being shown nothing.
+func printReleases() {
+	if sys.ResolveRepo() != "" {
+		fmt.Println("RELEASES  not on this box")
+		fmt.Printf("  this box runs a checkout of %s; releases apply to packaged installs.\n", ryokuChannel())
+		fmt.Println("  ryoku track main|unstable-dev   picks the branch `ryoku update` follows")
+		return
+	}
+	ch := sys.PackagedChannel()
+	rel := sys.ReadRelease()
+	fmt.Printf("RELEASES  repo.ryoku.dev, channel: %s\n", orDash(ch))
+	if rel.Release != "" {
+		fmt.Printf("  running    %s%s\n", withSpace(rel.Name), rel.Release)
+	}
+	l := ledger()
+	if len(l.Releases) == 0 {
+		fmt.Println("  no published releases yet")
+		return
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 2, 3, ' ', 0)
+	for _, r := range l.Releases {
+		mark := " "
+		if r.Tag == rel.Release {
+			mark = "*"
 		}
-		if l := ledger(); len(l.Releases) > 0 {
-			fmt.Println("releases (newest first); `ryoku rollback --to <tag>` pins the box to one:")
-			for _, r := range l.Releases {
-				mark := "  "
-				if r.Tag == rel.Release {
-					mark = "* "
-				}
-				fmt.Printf("  %s%-24s %s  %-10s %s\n", mark, r.Tag, r.Date[:min(10, len(r.Date))], r.Name, r.Version)
+		fmt.Fprintf(w, "  %s %s\t%s\t%s\n", mark, r.Tag, r.Date[:min(10, len(r.Date))], r.Name)
+	}
+	w.Flush()
+	fmt.Println("  ryoku rollback --to <tag>   moves the Ryoku set to that release, no reboot")
+	fmt.Println("  ryoku track stable          follows new releases again afterwards")
+}
+
+// restoreGuide is `ryoku rollback <id>`: the boot-menu restore, step by step,
+// naming the snapshot when snapper can describe it.
+func restoreGuide(id string) error {
+	label := id
+	if rows, err := snapshotRows(); err == nil {
+		for _, r := range rows {
+			if r.number == id {
+				label = fmt.Sprintf("%s  (%s, %s %s)", id, shortSnapDate(r.date), r.kind, orDash(r.description))
+				break
 			}
-			fmt.Println()
 		}
 	}
-	id := "<id>"
-	if len(args) == 0 {
-		fmt.Println("Snapshots (pick an id, or choose one under Snapshots in the Limine boot menu):")
-		if err := Snapshots(); err != nil {
-			return err
-		}
-		fmt.Println()
-	} else {
-		id = args[0]
-		fmt.Printf("==> Restoring snapshot %s\n\n", id)
-	}
+	fmt.Printf("Restoring snapshot %s\n\n", label)
 	fmt.Println("Ryoku boots the @ subvolume directly, so a live `snapper rollback` cannot")
-	fmt.Println("restore the system; the restore runs from the boot menu instead:")
-	fmt.Printf("  1. Reboot, and in the Limine menu open Snapshots -> snapshot %s.\n", id)
-	fmt.Println("  2. Boot it, then run `sudo limine-snapper-restore` in a terminal (it offers")
-	fmt.Println("     to restore the snapshot you are booted into, matching kernels included).")
-	fmt.Println("  3. Reboot back into the restored system.")
+	fmt.Println("restore the system; the restore runs from the boot menu:")
+	fmt.Printf("  1. Reboot, and in the Limine menu open Snapshots -> %s.\n", id)
+	fmt.Println("  2. In that session run:  sudo limine-snapper-restore")
+	fmt.Println("     (it restores the snapshot you booted, matching kernels included)")
+	fmt.Println("  3. Reboot into the restored system.")
 	if !sys.PkgInstalled("limine-snapper-sync") {
 		fmt.Println()
 		fmt.Println("limine-snapper-sync is not installed, so snapshots are missing from the boot")
@@ -703,26 +740,35 @@ func Rollback(args []string) error {
 	return nil
 }
 
+// Snapshots prints the snapshot table (the SNAPSHOTS block of `ryoku rollback`).
 func Snapshots() error {
 	if !sys.Has("snapper") {
 		return fmt.Errorf("snapper is not installed")
 	}
 	if !sys.Exists("/etc/snapper/configs/root") {
-		fmt.Println("Snapshots are not configured on this machine.")
-		fmt.Println("Enable them with: ryoku doctor")
+		fmt.Println("  not configured on this machine; `ryoku doctor` enables them")
 		return nil
 	}
-	// Prime sudo on the terminal (it may prompt), then capture without a tty so
-	// the parse below gets clean CSV instead of a password prompt in the output.
-	_ = sys.Run("sudo", "-v")
-	out, err := sys.RunOut("sudo", "-n", "snapper", "-c", snapperConfig, "--csvout",
-		"list", "--columns", "number,type,date,description,cleanup")
+	rows, err := snapshotRows()
 	if err != nil {
 		// fall back to snapper's own table rather than showing nothing.
 		return sys.Sudo("snapper", "-c", snapperConfig, "list")
 	}
-	printSnapshotTable(parseSnapshotRows(out))
+	printSnapshotTable(rows)
 	return nil
+}
+
+// snapshotRows lists the snapshots through snapper (root), parsed. sudo is
+// primed on the terminal first (it may prompt), then the list is captured
+// without a tty so the parse gets clean CSV instead of a password prompt.
+func snapshotRows() ([]snapshotRow, error) {
+	primeSudo()
+	out, err := sys.RunOut("sudo", "-n", "snapper", "-c", snapperConfig, "--csvout",
+		"list", "--columns", "number,type,date,description,cleanup")
+	if err != nil {
+		return nil, err
+	}
+	return parseSnapshotRows(out), nil
 }
 
 // snapshotRow is one parsed line of `snapper --csvout list`.
@@ -762,30 +808,38 @@ func parseSnapshotRows(out string) []snapshotRow {
 	return rows
 }
 
-// printSnapshotTable shows the snapshots plus a count and boot-menu footer.
+// printSnapshotTable shows the snapshots (newest last, the way snapper counts)
+// plus a count, free space, and whether the boot menu lists them.
 func printSnapshotTable(rows []snapshotRow) {
 	if len(rows) == 0 {
-		fmt.Println("No snapshots yet. `ryoku update` takes one before each update.")
+		fmt.Println("  none yet; `ryoku update` takes one before and after each update")
 		return
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(w, "#\tTYPE\tDATE\tCLEANUP\tDESCRIPTION")
 	for _, s := range rows {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.number, s.kind, s.date, orDash(s.cleanup), orDash(s.description))
+		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\n", s.number, shortSnapDate(s.date), s.kind, orDash(s.description))
 	}
 	w.Flush()
-
-	boot := "no (run: ryoku doctor)"
-	if snapshotsInBootMenu() {
-		boot = "yes"
-	}
 	fmt.Println()
+	summary := fmt.Sprintf("  %d snapshots", len(rows))
 	if free := rootFree(); free != "" {
-		fmt.Printf("%d snapshots \u00b7 %s free on / \u00b7 boot menu: %s\n", len(rows), free, boot)
-	} else {
-		fmt.Printf("%d snapshots \u00b7 boot menu: %s\n", len(rows), boot)
+		summary += ", " + free + " free on /"
 	}
-	fmt.Println("Restore one from the Limine \"Snapshots\" boot menu, or: ryoku rollback <#>")
+	if snapshotsInBootMenu() {
+		summary += ", listed in the Limine boot menu"
+	} else {
+		summary += ", NOT in the boot menu (ryoku doctor fixes that)"
+	}
+	fmt.Println(summary)
+	fmt.Println("  ryoku rollback <#>          shows how to boot into a snapshot and restore it")
+}
+
+// shortSnapDate trims snapper's "2026-09-03 22:10:06" to the minute.
+func shortSnapDate(d string) string {
+	if len(d) >= 16 {
+		return d[:16]
+	}
+	return d
 }
 
 // snapshotsInBootMenu reports whether limine-snapper-sync is in place to list
