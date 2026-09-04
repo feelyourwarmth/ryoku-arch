@@ -158,6 +158,7 @@ func reconcilers() []reconciler {
 		{"SDDM greeter display server", reconcileGreeterDisplayServer},
 		{"fastfetch readout emblem", reconcileFastfetchEmblem},
 		{"rice fastfetch emblem", reconcileRiceEmblem},
+		{"fastfetch OS line", reconcileFastfetchOSLine},
 		{"brand mark image", reconcileBrandLogo},
 		{"decor art", reconcileRyodecors},
 		{"Hyprland config integrity", reconcileHyprlandConfig},
@@ -2402,6 +2403,53 @@ func reconcileFastfetchEmblem(checkOnly bool) recResult {
 		return failRes("could not restore fastfetch emblem: %v", err).withFix("ryoku materialize")
 	}
 	return fixedRes("restored the fastfetch emblem; the readout no longer falls back to the Arch logo")
+}
+
+// ---- reconciler: fastfetch OS line -------------------------------------------
+
+// fastfetch's OS line used to run `ryoku version`; with named releases it runs
+// `ryoku version --pretty` ("Ryoku Onogoro v0.56.3-beta.19"). config.jsonc is
+// seeded once and then owned by the box (the Hub, the store and the user edit
+// it in place), so the shipped change never reaches an existing box on its
+// own; this rewrites that one command and nothing else.
+const (
+	fastfetchOSLineOld = `ryoku version 2>/dev/null`
+	fastfetchOSLineNew = `ryoku version --pretty 2>/dev/null`
+)
+
+// upgradeFastfetchOSLine returns the config with the OS line's command moved
+// to --pretty, and whether anything changed. `--branch 2>/dev/null` on the
+// BRANCH line does not match the old form, so it is left alone.
+func upgradeFastfetchOSLine(raw string) (string, bool) {
+	if !strings.Contains(raw, fastfetchOSLineOld) {
+		return raw, false
+	}
+	return strings.Replace(raw, fastfetchOSLineOld, fastfetchOSLineNew, 1), true
+}
+
+func reconcileFastfetchOSLine(checkOnly bool) recResult {
+	path := filepath.Join(sys.ConfigHome(), "fastfetch", "config.jsonc")
+	raw := readFileSafe(path)
+	if raw == "" {
+		return okRes("no Ryoku fastfetch config")
+	}
+	migrated, changed := upgradeFastfetchOSLine(raw)
+	if !changed {
+		return okRes("fastfetch's OS line names the release")
+	}
+	if checkOnly {
+		return wouldRes("fastfetch's OS line predates named releases (ryoku version -> ryoku version --pretty)").
+			withFix("ryoku doctor rewrites that one line")
+	}
+	tmp := path + ".ryoku-tmp"
+	if err := os.WriteFile(tmp, []byte(migrated), 0o644); err != nil {
+		return failRes("could not write %s: %v", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return failRes("could not replace %s: %v", path, err)
+	}
+	return fixedRes("fastfetch's OS line now names the release (ryoku version --pretty)")
 }
 
 // ---- reconciler: rice fastfetch emblem ---------------------------------------

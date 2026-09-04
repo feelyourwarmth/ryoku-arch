@@ -2420,3 +2420,24 @@ func TestResolveGtkThemeName(t *testing.T) {
 		}
 	}
 }
+
+func TestUpgradeFastfetchOSLine(t *testing.T) {
+	old := `{ "type": "command", "key": "OS",     "text": "echo \"Ryoku $(ryoku version 2>/dev/null || echo dev)\"" },
+{ "type": "command", "key": "BRANCH", "text": "ryoku version --branch 2>/dev/null || echo main" },`
+	got, changed := upgradeFastfetchOSLine(old)
+	if !changed {
+		t.Fatal("the pre-release OS line must be upgraded")
+	}
+	if !strings.Contains(got, `ryoku version --pretty 2>/dev/null || echo dev`) {
+		t.Fatalf("OS line not moved to --pretty:\n%s", got)
+	}
+	if !strings.Contains(got, `ryoku version --branch 2>/dev/null || echo main`) {
+		t.Fatalf("BRANCH line must be untouched:\n%s", got)
+	}
+	if again, changed := upgradeFastfetchOSLine(got); changed || again != got {
+		t.Fatal("upgrading twice must be a no-op")
+	}
+	if _, changed := upgradeFastfetchOSLine(`{ "key": "OS", "text": "echo mine" }`); changed {
+		t.Fatal("a user-rewritten OS line must be left alone")
+	}
+}
