@@ -24,6 +24,28 @@ set -u
 export XCURSOR_THEME="${XCURSOR_THEME:-Bibata-Modern-Ice}"
 export XCURSOR_SIZE="${XCURSOR_SIZE:-24}"
 
+# The greeter is a bare weston with no session behind it, so it reads neither
+# the console keymap nor /etc/X11/xorg.conf.d/00-keyboard.conf (that file is
+# X11-only): without a layout it comes up on the built-in us map, and an AZERTY
+# (or any non-us) password typed at the login field silently fails while the
+# same password works on a tty that has the vconsole keymap. localectl records
+# the layout the session and console use in the X11 config; hand its primary to
+# weston through the libxkbcommon defaults, which weston honours when its own
+# config names no keymap. Same source keyboard.X11Layout() reads.
+kb_conf=/etc/X11/xorg.conf.d/00-keyboard.conf
+if [ -r "$kb_conf" ]; then
+  xkb_opt() { sed -n "s/.*Option[[:space:]]*\"$1\"[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$kb_conf" | head -n1; }
+  # a login screen has no way to switch, so it gets the first of a "be,us" pair.
+  layout=$(xkb_opt XkbLayout); layout=${layout%%,*}
+  if [ -n "$layout" ]; then
+    export XKB_DEFAULT_LAYOUT="$layout"
+    variant=$(xkb_opt XkbVariant); variant=${variant%%,*}
+    [ -n "$variant" ] && export XKB_DEFAULT_VARIANT="$variant"
+    options=$(xkb_opt XkbOptions)
+    [ -n "$options" ] && export XKB_DEFAULT_OPTIONS="$options"
+  fi
+fi
+
 # exec plain weston (preferred mode); the login screen must always start.
 weston_plain() { exec weston --shell=kiosk "$@"; }
 

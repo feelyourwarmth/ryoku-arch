@@ -29,6 +29,16 @@
   watchdog clears the flash if auth ever goes silent, so no submit -- empty,
   wrong, or hung -- can hold the lock (`themes/clockwork/orbital/Main.qml`,
   `quickshell-lockscreen/shim/SddmShim.qml`).
+- **The login screen uses the same keyboard layout as the session, so a non-US
+  password is accepted.** Moving the greeter to a Wayland weston kiosk left it on
+  weston's built-in `us` map: `/etc/X11/xorg.conf.d/00-keyboard.conf` (which the
+  installer and `localectl` write for the session and console) is X11-only, and a
+  bare weston reads neither it nor the console keymap. An AZERTY password typed at
+  the login field then failed on a QWERTY map while the same password worked on a
+  tty, which has the vconsole keymap. `sddm/ryoku-greeter` now reads that file and
+  hands weston the primary layout through the libxkbcommon defaults
+  (`XKB_DEFAULT_LAYOUT`/`_VARIANT`/`_OPTIONS`), which weston honours when its own
+  config names no keymap. Delivered by the package to fresh and existing boxes.
 - **The login screen always shows a mouse pointer.** Pinning
   `XCURSOR_THEME=Bibata-Modern-Ice` in `GreeterEnvironment` only helps clients
   that honor it; SDDM's Wayland greeter ignores it and, like weston's own
