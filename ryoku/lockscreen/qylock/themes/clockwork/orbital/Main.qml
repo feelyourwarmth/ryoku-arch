@@ -363,6 +363,15 @@ Rectangle {
     Timer { id: boomTriggerTimer; interval: 1450; onTriggered: { boomSequence.start() } }
     function startLoginSequence() {
         if (isWindup) return
+        // An empty field has nothing to submit: the shim cannot feed an empty
+        // key to PAM, so running the reveal blast would strand the surface on a
+        // white flash that never clears. Keep the field; the fingerprint sensor,
+        // when enrolled, keeps scanning on its own.
+        if (passInput.text.length === 0) {
+            errText.text = ""
+            passInput.forceActiveFocus()
+            return
+        }
         if (root.enableWindup) {
             isWindup = true
             windupAnim.start()
@@ -376,7 +385,22 @@ Rectangle {
     // second PAM auth if the fingerprint wins mid-windup (after
     // boomTriggerTimer at 1450ms). boomSequence.stop() kills the animation.
     property bool _unlocked: false
-    function doLogin() { if (_unlocked) return; _unlocked = true; root.authInfo = ""; var uname = (userHelper.currentItem && userHelper.currentItem.uLogin) ? userHelper.currentItem.uLogin : (typeof userModel !== "undefined" ? userModel.lastUser : "user"); if (typeof sddm !== "undefined") sddm.login(uname, passInput.text, root.sessionIndex) }
+    function doLogin() { if (_unlocked) return; _unlocked = true; root.authInfo = ""; var uname = (userHelper.currentItem && userHelper.currentItem.uLogin) ? userHelper.currentItem.uLogin : (typeof userModel !== "undefined" ? userModel.lastUser : "user"); if (typeof sddm !== "undefined") sddm.login(uname, passInput.text, root.sessionIndex); authWatchdog.restart() }
+    // The unlock flash (windup jitter and the white boom) stays raised until
+    // auth resolves. If PAM never answers -- an empty submit, a dead
+    // conversation -- nothing lowers it and the surface strands on the blast.
+    // clearUnlockFlash returns to the login state; the watchdog calls it when
+    // auth goes silent so a stuck conversation can never hold the screen.
+    function clearUnlockFlash() {
+        _unlocked = false; isWindup = false
+        windupAnim.stop(); boomTriggerTimer.stop(); boomSequence.stop()
+        root.windupOffset = 0; root.boomScale = 1.0; root.boomOpacity = 0.0; root.sparkIntensity = 0
+    }
+    Timer {
+        id: authWatchdog
+        interval: 8000
+        onTriggered: { clearUnlockFlash(); root.authInfo = ""; errText.text = ""; passInput.text = ""; passInput.forceActiveFocus() }
+    }
     function capitalizeFirst(str) { if (!str) return ""; return str.charAt(0).toUpperCase() + str.slice(1) }
     // ── login event handlers ────────────────────────────────────────────────
     Connections {
@@ -386,6 +410,7 @@ Rectangle {
         function onInformationMessage(message) { root.authInfo = message || ""; errText.text = root.authInfo.toUpperCase(); passInput.forceActiveFocus() }
         function onErrorMessage(message) { errText.text = (message || "").toUpperCase() }
         function onLoginSucceeded() {
+            authWatchdog.stop()
             if (typeof sddm !== "undefined" && sddm.fingerprintUnlock === true) {
                 // Sensor win: skip the windup, play the reveal flourish, no
                 // second authentication. The _unlocked guard prevents
@@ -400,7 +425,7 @@ Rectangle {
             if (root.enableWindup)
                 playUnlockReveal()
         }
-        function onLoginFailed() { _unlocked = false; isWindup = false; windupAnim.stop(); boomTriggerTimer.stop(); boomSequence.stop(); root.windupOffset = 0; root.boomScale = 1.0; root.boomOpacity = 0.0; root.sparkIntensity = 0; root.authInfo = ""; errText.text = "ACCESS DENIED"; passInput.text = ""; passInput.forceActiveFocus(); shake.start() }
+        function onLoginFailed() { authWatchdog.stop(); clearUnlockFlash(); root.authInfo = ""; errText.text = "ACCESS DENIED"; passInput.text = ""; passInput.forceActiveFocus(); shake.start() }
     }
     SequentialAnimation {
         id: shake
