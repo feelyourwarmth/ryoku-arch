@@ -162,9 +162,10 @@ A release is a tag: `main` advances only by fast-forward from `unstable-dev`,
 and publishing nothing on that push. The maintainer runs **Stable Release**
 (`bump_type: none` tags the `VERSION` main already carries; a bump rewrites it
 first), which tags `main`, publishes `releases/<tag>/`, moves the stable
-pointer onto it, records the ledger entry, and dispatches the release ISO from
-that frozen directory. Arch itself keeps rolling between releases; only the
-Ryoku set is frozen.
+pointer onto it, records the ledger entry, and dispatches both release ISOs
+(plain Arch and CachyOS) from that frozen directory, so an ISO named for a
+release installs exactly that release. Arch itself keeps rolling between
+releases; only the Ryoku set is frozen.
 
 **Work on `unstable-dev` reaches testing on every push, and stable only when a
 release is tagged.**

@@ -3,6 +3,10 @@
 ## Unreleased
 
 ### Changed
+- **A release dispatches both ISOs.** The publish ran only `build-iso.yml`
+  (plain Arch) after a release; `build-iso-cachyos.yml` is dispatched from the
+  same frozen release directory now, so the CachyOS ISO carries the release
+  too (`publish-repo.yml`).
 - **The release ledger is derived, not edited.** `bin/ryoku-release-ledger`
   rebuilds `releases/index.json` from every `releases/<tag>/x86_64/release.json`
   the bucket holds (newest first, `latest` = newest); the publish runs it

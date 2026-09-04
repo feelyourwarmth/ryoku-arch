@@ -422,7 +422,7 @@ jobs:
             || { echo "::error::releases/index.json does not list $RELEASE as latest"; exit 1; }
           echo "::notice::releases/index.json now lists $RELEASE as latest"
 
-      - name: Dispatch the release ISO build
+      - name: Dispatch the release ISO builds
         if: needs.build.outputs.channel == 'stable'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -438,7 +438,9 @@ jobs:
           stage=beta
           [[ $RELEASE == *-alpha* ]] && stage=alpha
           [[ $RELEASE != *-* ]] && stage=stable
-          gh workflow run build-iso.yml -R "$GITHUB_REPOSITORY" --ref "$RELEASE" \
-            -f release_stage="$stage" \
-            -f repo_url="https://repo.ryoku.dev/stable/$PREFIX/x86_64"
-          echo "::notice::Dispatched build-iso.yml on $RELEASE from $PREFIX"
+          for wf in build-iso.yml build-iso-cachyos.yml; do
+            gh workflow run "$wf" -R "$GITHUB_REPOSITORY" --ref "$RELEASE" \
+              -f release_stage="$stage" \
+              -f repo_url="https://repo.ryoku.dev/stable/$PREFIX/x86_64"
+            echo "::notice::Dispatched $wf on $RELEASE from $PREFIX"
+          done
