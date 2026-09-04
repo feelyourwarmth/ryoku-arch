@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Fixed
+- **The Zen policy lands on a packaged Zen.** The doctor wrote
+  `<root>/distribution/policies.json` as the user, which fails with
+  "permission denied" under `/opt/zen-browser-bin` and `/usr/lib/zen-browser`
+  (the AUR and repo installs) on every update. It now writes through sudo when
+  the install dir is root's and as the user when it is a tarball under `~`
+  (`internal/doctor/reconcile_zen.go`).
 - **Ryotunes opens the packaged app on every box.** A Chromium YouTube Music
   wrapper or a locally built copy left in `~/.local/bin` shadowed
   `/usr/bin/ryotunes` on PATH, so Super+J and the dock kept opening the old
