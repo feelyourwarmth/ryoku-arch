@@ -803,6 +803,25 @@ func TestSDDMWaylandBodyForcesQtWayland(t *testing.T) {
 	}
 }
 
+// the login-screen pointer break: the greeter and weston fall back to the cursor
+// theme literally named "default", and Ryoku shipped none. The stub must be a
+// valid index.theme that inherits the shipped Bibata set so the fallback lands
+// on a real cursor.
+func TestDefaultCursorIndexInheritsShipped(t *testing.T) {
+	body := defaultCursorIndexBody()
+	for _, line := range []string{
+		"[Icon Theme]",
+		"Inherits=" + defaultCursorTheme,
+	} {
+		if !strings.Contains(body, line) {
+			t.Errorf("defaultCursorIndexBody() missing %q:\n%s", line, body)
+		}
+	}
+	if defaultCursorTheme != "Bibata-Modern-Ice" {
+		t.Errorf("default cursor theme drifted from the shipped Bibata set: %q", defaultCursorTheme)
+	}
+}
+
 // the limine layout reconciler's decision logic lives in planLimineLayout, a
 // pure function of an observed limineLayoutState: no real /boot, no
 // efibootmgr. the config surgery (mergeLimineConf) is exercised on literal

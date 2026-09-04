@@ -3,6 +3,15 @@
 ## Unreleased
 
 ### Fixed
+- **The login screen keeps its mouse pointer.** The SDDM greeter runs on a
+  weston kiosk, and where the greeter or weston falls back to the freedesktop
+  cursor theme literally named `default` (SDDM's Wayland greeter ignores
+  `XCURSOR_THEME`), a box with no `/usr/share/icons/default` drew no pointer at
+  all -- reproducible at every boot and after logout, while the in-session lock
+  (which the running Hyprland session draws) stayed fine. A new
+  `reconcileGreeterCursor` establishes the fallback, pointing `default` at the
+  shipped Bibata set, and only when the box has no default of its own so a user's
+  choice is left untouched (`internal/doctor/doctor.go`).
 - **Moving to an earlier release works on the first try.** `ryoku rollback
   --to <tag>` (and `ryoku track` in general) failed with "invalid or
   corrupted database (PGP signature)": pacman only refetches a sync db it

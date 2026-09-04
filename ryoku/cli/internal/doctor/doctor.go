@@ -156,6 +156,7 @@ func reconcilers() []reconciler {
 		{"keyring unlock policy", reconcileKeyring},
 		{"SDDM greeter theme", reconcileGreeterTheme},
 		{"SDDM greeter display server", reconcileGreeterDisplayServer},
+		{"login screen cursor", reconcileGreeterCursor},
 		{"fastfetch readout emblem", reconcileFastfetchEmblem},
 		{"rice fastfetch emblem", reconcileRiceEmblem},
 		{"fastfetch OS line", reconcileFastfetchOSLine},
@@ -2268,7 +2269,10 @@ const greeterCompositorBin = "/usr/share/ryoku/lockscreen/ryoku-greeter"
 // no XCURSOR_*: Qt then asks libwayland-cursor for the "default" theme, and on a
 // box where that chain resolves to nothing the greeter sets a null cursor and
 // the login screen has no visible pointer. Pin the shipped Bibata set
-// (ryoku-cursors, a hard depend) at the size env.lua uses.
+// (ryoku-cursors, a hard depend) at the size env.lua uses. This only helps
+// clients that honor XCURSOR_THEME; reconcileGreeterCursor establishes the
+// "default" theme itself for the ones (SDDM's Wayland greeter, weston) that fall
+// back to it regardless.
 const greeterEnvironment = "QT_QPA_PLATFORM=wayland,XCURSOR_THEME=Bibata-Modern-Ice,XCURSOR_SIZE=24"
 
 func sddmWaylandBody() string {
@@ -2321,6 +2325,63 @@ func reconcileGreeterDisplayServer(checkOnly bool) recResult {
 			withFix("check sudo access, then re-run ryoku doctor")
 	}
 	return fixedRes("moved the SDDM greeter to Wayland (weston kiosk); it is torn down cleanly at login now")
+}
+
+// ---- reconciler: login screen cursor -----------------------------------------
+
+const defaultCursorDir = "/usr/share/icons/default"
+const defaultCursorIndex = defaultCursorDir + "/index.theme"
+
+// defaultCursorIndexBody points the freedesktop "default" cursor theme at the
+// shipped Bibata set. libwayland-cursor (weston's own pointer, and the SDDM
+// greeter's Qt client) and libXcursor fall back to the theme literally named
+// "default" whenever the requested theme is missing -- or, as SDDM's Wayland
+// greeter does, silently ignored. Ryoku ships no /usr/share/icons/default, so
+// that fallback resolves to nothing and the login screen (at system start and
+// after logout) draws no pointer at all. An Inherits= stub gives "default" a
+// real target, covering every client that does not honor GreeterEnvironment's
+// XCURSOR_THEME. Kept as a stub, not a copy, so it tracks whatever Bibata ships.
+func defaultCursorIndexBody() string {
+	return "[Icon Theme]\nName=Default\nComment=Ryoku default cursor\nInherits=" + defaultCursorTheme + "\n"
+}
+
+// defaultCursorEstablished: the system already has a "default" cursor theme --
+// our index.theme, a foreign one, or a real cursors/ dir. Any of these means the
+// fallback resolves, so we must not clobber it (a user or another package may
+// own it).
+func defaultCursorEstablished() bool {
+	return sys.Exists(defaultCursorIndex) || sys.Exists(defaultCursorDir+"/cursors")
+}
+
+// reconcileGreeterCursor keeps the login screen pointer visible. The SDDM
+// greeter runs on a weston kiosk with no session env; where the greeter or
+// weston falls back to the "default" cursor theme (SDDM's Wayland greeter
+// ignores XCURSOR_THEME), a box with no /usr/share/icons/default draws no
+// pointer at all -- the "no cursor on login/logout" break. This establishes the
+// fallback, pointing "default" at the shipped Bibata set. Only ever creates the
+// stub when absent, so a user's own default cursor is left untouched. Scoped to
+// login boxes (a Ryoku greeter is installed) and only once ryoku-cursors, which
+// ships Bibata, has landed.
+func reconcileGreeterCursor(checkOnly bool) recResult {
+	if !sys.Exists(greeterThemeDir) {
+		return okRes("no Ryoku greeter installed")
+	}
+	if defaultCursorEstablished() {
+		return okRes(`the "default" cursor theme resolves; the login screen has a pointer`)
+	}
+	if !cursorThemeInstalled(defaultCursorTheme, []string{"/usr/share/icons"}) {
+		return warnRes("cursor theme %q is not on disk yet; the login screen pointer cannot be pinned", defaultCursorTheme).
+			withFix("ryoku update")
+	}
+	if checkOnly {
+		return wouldRes(`no "default" cursor theme; the SDDM greeter draws no pointer at system start or after logout`).
+			withFix("ryoku doctor")
+	}
+	if err := writeRootFile(defaultCursorIndex, defaultCursorIndexBody(), "0644"); err != nil {
+		return failRes("could not write %s: %v", defaultCursorIndex, err).
+			withFix("check sudo access, then re-run ryoku doctor")
+	}
+	return fixedRes(`pointed the "default" cursor theme at %s; the login screen has a pointer now`, defaultCursorTheme)
 }
 
 // ---- reconciler: fastfetch readout emblem ------------------------------------
