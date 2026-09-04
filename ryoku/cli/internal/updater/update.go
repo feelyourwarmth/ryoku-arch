@@ -137,15 +137,27 @@ func Update(args []string) error {
 	}
 	clearStalePacmanLock()
 	if err := runSystemUpgrade(channelSwitch); err != nil {
-		// only advertise `ryoku rollback` when the pre snapshot it needs exists;
-		// snapperPre is best-effort and returns "" when it was skipped.
-		hint := "no pre-update snapshot exists (snapper was unavailable), so `ryoku rollback` cannot revert this; recover with pacman directly"
-		if pre != "" {
-			hint = "see `ryoku rollback` (pre-update snapshot " + pre + ")"
+		// A stale [ryoku] db that no longer matches its signature wedges pacman
+		// on "invalid or corrupted database (PGP signature)", and -Sy won't
+		// replace a db it thinks is current. Drop it and force one full refresh
+		// for a matched pair (as `ryoku track` does). Skipped on a channel switch
+		// (already -Syyu), so the retry runs at most once.
+		if !channelSwitch {
+			progress.logf("Package database rejected; dropping the stale [ryoku] db and retrying")
+			_ = sys.DropRyokuSyncDB()
+			err = runSystemUpgrade(true)
 		}
-		e := fmt.Errorf("pacman -Syu failed; %s: %w", hint, err)
-		progress.fail(e)
-		return e
+		if err != nil {
+			// only advertise `ryoku rollback` when the pre snapshot it needs exists;
+			// snapperPre is best-effort and returns "" when it was skipped.
+			hint := "no pre-update snapshot exists (snapper was unavailable), so `ryoku rollback` cannot revert this; recover with pacman directly"
+			if pre != "" {
+				hint = "see `ryoku rollback` (pre-update snapshot " + pre + ")"
+			}
+			e := fmt.Errorf("pacman -Syu failed; %s: %w", hint, err)
+			progress.fail(e)
+			return e
+		}
 	}
 	// `ryoku track` just repointed the [ryoku] repo. -Syu only moves up, so a
 	// box leaving testing for stable, or pinning an earlier release, still

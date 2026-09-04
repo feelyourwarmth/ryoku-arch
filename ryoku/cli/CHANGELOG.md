@@ -14,6 +14,15 @@
   (`internal/updater/materialize.go`).
 
 ### Fixed
+- **A rejected package database no longer wedges updates.** A box could cache
+  a `[ryoku]` sync db whose bytes no longer matched its signature (the mirror
+  briefly serves a db and `.sig` from different builds, and pacman refetches a
+  db's signature even when it keeps the db), after which every `pacman -S`
+  failed with "invalid or corrupted database (PGP signature)" and `-Sy` would
+  not replace a db it thought current. `ryoku update` now drops the cached db
+  and forces one full refresh when the upgrade is rejected, and `ryoku doctor`
+  detects and heals the same wedge (`internal/updater/update.go`,
+  `internal/doctor/doctor.go`, `internal/sys/release.go`).
 - **Zen scrolls and switches workspaces smoothly.** The shipped Zen policy
   already turned on WebRender and hardware decoding; it now also sets the
   Wayland vsync prefs that issue zen-browser/desktop#5588 identifies as the
