@@ -161,7 +161,7 @@ func revertRelease(p pendingUpdate) error {
 	if sys.Has("nm-online") {
 		_ = sys.Run("nm-online", "-q", "--timeout=90")
 	}
-	if err := sys.Run("pacman", "-Sy", "--noconfirm"); err != nil {
+	if err := sys.Run("pacman", "-Syy", "--noconfirm"); err != nil {
 		fmt.Println("boot guard: package channel unreachable; retrying the revert next boot")
 		p.Boots--
 		b, _ := json.MarshalIndent(p, "", "  ")

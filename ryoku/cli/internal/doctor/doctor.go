@@ -2412,19 +2412,17 @@ func reconcileFastfetchEmblem(checkOnly bool) recResult {
 // seeded once and then owned by the box (the Hub, the store and the user edit
 // it in place), so the shipped change never reaches an existing box on its
 // own; this rewrites that one command and nothing else.
-const (
-	fastfetchOSLineOld = `ryoku version 2>/dev/null`
-	fastfetchOSLineNew = `ryoku version --pretty 2>/dev/null`
-)
+// the shipped seed writes `2>`; a config the Hub saved carries Go's JSON
+// escape `2\u003e` for the same byte, so both spellings are the old line.
+var fastfetchOSLineOld = []string{`ryoku version 2>/dev/null`, `ryoku version 2\u003e/dev/null`}
 
-// upgradeFastfetchOSLine returns the config with the OS line's command moved
-// to --pretty, and whether anything changed. `--branch 2>/dev/null` on the
-// BRANCH line does not match the old form, so it is left alone.
 func upgradeFastfetchOSLine(raw string) (string, bool) {
-	if !strings.Contains(raw, fastfetchOSLineOld) {
-		return raw, false
+	for _, old := range fastfetchOSLineOld {
+		if strings.Contains(raw, old) {
+			return strings.Replace(raw, old, strings.Replace(old, "ryoku version ", "ryoku version --pretty ", 1), 1), true
+		}
 	}
-	return strings.Replace(raw, fastfetchOSLineOld, fastfetchOSLineNew, 1), true
+	return raw, false
 }
 
 func reconcileFastfetchOSLine(checkOnly bool) recResult {

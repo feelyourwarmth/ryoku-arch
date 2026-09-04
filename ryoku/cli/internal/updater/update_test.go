@@ -155,12 +155,15 @@ func TestPackagedStatusUpToDateOfflineEmptyRecent(t *testing.T) {
 // whole -Syu and blocks every user update; dropping any of them from the glob
 // silently reintroduces that outage, so pin them here.
 func TestSystemUpgradeAdoptsSeededRyokuFiles(t *testing.T) {
-	args := systemUpgradeArgs()
+	args := systemUpgradeArgs(false)
 	joined := strings.Join(args, " ")
 	for _, want := range []string{"pacman -Syu", "--noconfirm", "--overwrite"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("systemUpgradeArgs missing %q: %v", want, args)
 		}
+	}
+	if !strings.Contains(strings.Join(systemUpgradeArgs(true), " "), "pacman -Syyu") {
+		t.Error("a channel move must force the db refresh (-Syyu); a frozen release is older than the cached db")
 	}
 	var glob string
 	for i, a := range args {

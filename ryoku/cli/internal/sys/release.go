@@ -148,7 +148,14 @@ func SetPackagedChannel(channel string) error {
 	if !done {
 		return fmt.Errorf("no [ryoku] repo in %s; run `ryoku doctor` to add it", PacmanConf)
 	}
-	return WriteRootFile(PacmanConf, strings.Join(lines, "\n"), "0644")
+	if err := WriteRootFile(PacmanConf, strings.Join(lines, "\n"), "0644"); err != nil {
+		return err
+	}
+	// the cached sync db describes the server the box just left; pacman only
+	// refetches a db it thinks is newer, so a stale copy against a frozen
+	// (older) release fails its signature check until it is gone.
+	return Sudo("rm", "-f", "/var/lib/pacman/sync/ryoku.db", "/var/lib/pacman/sync/ryoku.db.sig",
+		"/var/lib/pacman/sync/ryoku.files", "/var/lib/pacman/sync/ryoku.files.sig")
 }
 
 // WriteRootFile writes contents to a root-owned path through a temp file and

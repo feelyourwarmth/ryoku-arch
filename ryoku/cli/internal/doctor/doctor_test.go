@@ -2440,4 +2440,9 @@ func TestUpgradeFastfetchOSLine(t *testing.T) {
 	if _, changed := upgradeFastfetchOSLine(`{ "key": "OS", "text": "echo mine" }`); changed {
 		t.Fatal("a user-rewritten OS line must be left alone")
 	}
+	saved := `"text": "echo \"Ryoku $(ryoku version 2\u003e/dev/null || echo dev)\""`
+	got, changed = upgradeFastfetchOSLine(saved)
+	if !changed || !strings.Contains(got, `ryoku version --pretty 2\u003e/dev/null`) {
+		t.Fatalf("a Hub-saved config (JSON-escaped >) must be upgraded too:\n%s", got)
+	}
 }

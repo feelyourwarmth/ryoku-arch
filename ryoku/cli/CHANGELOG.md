@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed
+- **Moving to an earlier release works on the first try.** `ryoku rollback
+  --to <tag>` (and `ryoku track` in general) failed with "invalid or
+  corrupted database (PGP signature)": pacman only refetches a sync db it
+  thinks is newer, and a frozen release directory is older than the channel
+  the box just left, so the stale cached db met the new signature. A channel
+  move now drops the cached `[ryoku]` sync db and runs `-Syyu`; the boot
+  guard's revert does the same. `ryoku track <x>` on a box already pointed at
+  x whose set never moved (a switch that failed midway) now finishes the move
+  instead of saying "already on x". The doctor's OS-line reconciler also
+  recognises the Hub-saved spelling of the line (`2\u003e`), which is what
+  every box that ever saved through the Hub carries (`internal/sys/release.go`,
+  `internal/updater/update.go`, `internal/updater/release.go`,
+  `internal/updater/bootguard.go`, `internal/doctor/doctor.go`).
+
 ### Added
 - **Each release line has an ASCII mark.** `ryoku version --pretty` on a
   terminal draws the line's art (Onogoro: the spear, the drop, the island

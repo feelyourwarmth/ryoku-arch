@@ -136,7 +136,7 @@ func Update(args []string) error {
 		os.Setenv("RYOKU_UPDATE_FROM", from)
 	}
 	clearStalePacmanLock()
-	if err := runSystemUpgrade(); err != nil {
+	if err := runSystemUpgrade(channelSwitch); err != nil {
 		// only advertise `ryoku rollback` when the pre snapshot it needs exists;
 		// snapperPre is best-effort and returns "" when it was skipped.
 		hint := "no pre-update snapshot exists (snapper was unavailable), so `ryoku rollback` cannot revert this; recover with pacman directly"
@@ -300,8 +300,8 @@ func snapshotDesc() string {
 // snapshot: `ryoku update` already brackets the whole run with one snapper
 // pre/post pair, so snap-pac's extra pair is pure noise in the list and the boot
 // menu. sudo resets the environment, so SNAP_PAC_SKIP rides inside via env(1).
-func runSystemUpgrade() error {
-	return runInhibited("System", "System package upgrade", systemUpgradeArgs())
+func runSystemUpgrade(forceRefresh bool) error {
+	return runInhibited("System", "System package upgrade", systemUpgradeArgs(forceRefresh))
 }
 
 // ryokuOverwriteGlob names the ryoku-desktop-owned paths that the ISO installer
@@ -316,9 +316,17 @@ const ryokuOverwriteGlob = "/usr/bin/ryoku-*," +
 	"/usr/share/polkit-1/rules.d/*ryoku*.rules," +
 	"/usr/share/plymouth/themes/ryoku/*"
 
-// systemUpgradeArgs is the packaged-box upgrade command.
-func systemUpgradeArgs() []string {
-	return []string{"sudo", "env", "SNAP_PAC_SKIP=y", "pacman", "-Syu", "--noconfirm",
+// systemUpgradeArgs is the packaged-box upgrade command. After a channel move
+// the refresh is forced (-Syy): pacman skips a db that is not newer than its
+// cached copy, and a frozen release directory is older than the channel the
+// box just left, so a plain -Sy kept the old db against the new signature and
+// failed with "invalid or corrupted database (PGP signature)".
+func systemUpgradeArgs(forceRefresh bool) []string {
+	op := "-Syu"
+	if forceRefresh {
+		op = "-Syyu"
+	}
+	return []string{"sudo", "env", "SNAP_PAC_SKIP=y", "pacman", op, "--noconfirm",
 		"--overwrite", ryokuOverwriteGlob}
 }
 
