@@ -27,6 +27,29 @@
   (the AUR and repo installs) on every update. It now writes through sudo when
   the install dir is root's and as the user when it is a tarball under `~`
   (`internal/doctor/reconcile_zen.go`).
+- **The CachyOS kernel entry no longer lands in emergency mode after an update.**
+  A limine box boots each kernel from a self-contained UKI, and nothing re-checked
+  that a kernel's image still matched its module tree. When an update left the
+  linux-cachyos image stale -- built for a version no longer installed, missing, or
+  older than the kernel -- booting it dropped to an emergency shell while the stock
+  linux entry stayed fine (#140). A new `reconcileLimineKernelImages` rebuilds any
+  installed kernel's stale or missing boot image on every `ryoku update`, and
+  reports and prunes a boot entry for a kernel the box no longer has, so a dead
+  second entry stops lingering (`internal/doctor/reconcile_limine_images.go`).
+- **A CachyOS install boots the CachyOS kernel by default.** The autoboot default
+  pointed at the first kernel the tool listed -- stock `linux` -- so a CachyOS box
+  silently booted the Arch kernel (the "it says Arch, not CachyOS" half of #140).
+  The default now prefers the linux-cachyos entry when the menu carries one, in the
+  doctor and the installer alike; a default the user set by hand is left untouched
+  (`internal/doctor/reconcile_limine.go`).
+- **`ryoku update` stops resetting hand-edited `/boot/limine.conf` globals.** The
+  limine reconcilers rewrote the branding header and the autoboot default on every
+  update, clobbering a changed timeout, menu colour, wallpaper, or default kernel.
+  They now add a Ryoku global only when it is missing and force just the boot
+  identity (`interface_branding`) and the snapshot-safety flag
+  (`hash_mismatch_panic`); every other global -- timeout, default_entry,
+  remember_last_entry, and all colours -- and any entry or key the user added are
+  preserved (`internal/doctor/reconcile_limine.go`).
 - **Ryotunes opens the packaged app on every box.** A Chromium YouTube Music
   wrapper or a locally built copy left in `~/.local/bin` shadowed
   `/usr/bin/ryotunes` on PATH, so Super+J and the dock kept opening the old

@@ -105,6 +105,7 @@ func reconcilers() []reconciler {
 		{"limine boot entry", reconcileLimineBootEntry},
 		{"alongside boot entry", reconcileAlongsideBootEntry},
 		{"limine UKI boot tree", reconcileLimineUKITree},
+		{"limine kernel boot images", reconcileLimineKernelImages},
 		{"limine autoboot", reconcileLimineAutoboot},
 		{"limine snapshot sync", reconcileLimineOSName},
 		{"updatedb snapshot prune", reconcileUpdatedbPrune},
