@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Changed
+- **The Ryogami picker closes once something is applied.** Wallpaper, video,
+  Wallpaper Engine scene, theme or rice: the picker leaves as soon as the
+  apply lands. "Close on apply" in the picker's settings turns it back into
+  a stay-open browser (`ryogami/wall-ui/`).
+
 ### Fixed
 - **The overview stops trying to decode a live wallpaper as an image.** Each
   workspace cell drew the current wallpaper as a still `Image` backdrop, but a
