@@ -221,12 +221,68 @@ func syncWallState(state map[string]map[string]interface{}) {
 	_ = os.WriteFile(filepath.Join(dir, "ryoku-wallpaper"), []byte(defaultWallpaperFrom(state)+"\n"), 0o644)
 }
 
-// restoreOutputs republishes the persisted wallpaper on startup so the shell
-// never sits on the empty retained frame after a daemon restart.
-func (d *daemon) restoreOutputs() {
+// legacyWallStatePath is the pre-split ~/.local/state/ryoku-wallpaper.json: the
+// shell's own wallpaper backend recorded its choice there as {default, outputs}
+// before Ryogami owned the wallpaper. Nothing writes it now.
+func legacyWallStatePath() string { return filepath.Join(stateHome(), "ryoku-wallpaper.json") }
+
+// migrateLegacyOutputs seeds outputs.json once from the pre-split state file so a
+// box upgraded across the Ryogami split keeps its wallpaper. That box has the
+// legacy file but an empty outputs.json, so the startup restore found no choice
+// and left the grey default. It runs only while outputs.json names no wallpaper,
+// so a choice already set through Ryogami is never overwritten; the daemon stays
+// the single writer of outputs.json.
+func (d *daemon) migrateLegacyOutputs() {
+	cacheDir := d.config().cacheDir()
+	cur := map[string]map[string]interface{}{}
+	loadJSON(filepath.Join(cacheDir, "outputs.json"), &cur)
+	for _, e := range cur {
+		if p, _ := e["path"].(string); p != "" {
+			return
+		}
+	}
+	var legacy struct {
+		Default string            `json:"default"`
+		Outputs map[string]string `json:"outputs"`
+	}
+	loadJSON(legacyWallStatePath(), &legacy)
+	state := map[string]map[string]interface{}{}
+	if legacy.Default != "" {
+		state["*"] = map[string]interface{}{"type": typeOf(legacy.Default), "path": legacy.Default, "mute": false}
+	} else {
+		for name, p := range legacy.Outputs {
+			if p != "" {
+				state[name] = map[string]interface{}{"type": typeOf(p), "path": p, "mute": false}
+			}
+		}
+	}
+	if len(state) == 0 {
+		return
+	}
+	_ = os.MkdirAll(cacheDir, 0o755)
+	saveJSON(filepath.Join(cacheDir, "outputs.json"), state)
+	syncWallState(state)
+	fmt.Fprintln(os.Stderr, "ryogami: migrated the pre-split wallpaper choice into outputs.json")
+}
+
+// restoreOutputs republishes the persisted wallpaper so the shell never sits on
+// the empty retained frame after a daemon restart. It reports how many stored
+// entries carry a wallpaper (want) and how many it could apply now (applied):
+// a login race can leave the file the choice names, or the outputs a live wall
+// spans, not yet present, and the caller retries while applied < want instead of
+// giving up on the one shot. Serialized so the startup pass, the bounded retry,
+// an output-added re-apply and a manual `wall.restore` never interleave.
+func (d *daemon) restoreOutputs() (want, applied int) {
+	d.restoreMu.Lock()
+	defer d.restoreMu.Unlock()
 	cacheDir := d.config().cacheDir()
 	state := map[string]map[string]interface{}{}
 	loadJSON(filepath.Join(cacheDir, "outputs.json"), &state)
+	for _, e := range state {
+		if p, _ := e["path"].(string); p != "" {
+			want++
+		}
+	}
 	fit := contentFit()
 	restored := ""
 	restore := func(out string, e map[string]interface{}) {
@@ -265,6 +321,7 @@ func (d *daemon) restoreOutputs() {
 				d.surface.showOutput(out, paint, fit, nil, false, true, clip)
 			}
 			restored = filepath.Base(p)
+			applied++
 			return
 		}
 
@@ -292,6 +349,7 @@ func (d *daemon) restoreOutputs() {
 			d.surface.showOutput(out, paint, fit, nil, frameLive, live, "")
 		}
 		restored = filepath.Base(p)
+		applied++
 	}
 	if e, okAll := state["*"]; okAll {
 		restore("*", e)
@@ -305,6 +363,7 @@ func (d *daemon) restoreOutputs() {
 		fmt.Fprintf(os.Stderr, "ryogami: auto-restored wallpaper: %s\n", restored)
 	}
 	syncWallState(state)
+	return want, applied
 }
 
 func fileExists(p string) bool {

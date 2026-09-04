@@ -24,6 +24,18 @@
   a stay-open browser (`ryogami/wall-ui/`).
 
 ### Fixed
+- **The wallpaper reappears after a reboot even when its file or the monitors
+  arrive late.** The daemon restored the saved wallpaper (static or live) in a
+  single pass at startup and silently gave up if the file the choice named was
+  not yet readable or the compositor's outputs were not yet enumerable -- a
+  login-time race that left the desktop on the grey Hyprland default until the
+  next manual set. The startup restore now retries briefly while the desktop is
+  bare, and a Hyprland event-socket watcher re-spans a live wall onto an output
+  that comes up after the first pass (a login race, a hotplug, a panel that
+  enumerates late). A box upgraded across the Ryogami split also carries its
+  pre-split wallpaper choice into the daemon's store on first start, so the
+  wallpaper survives the update instead of coming up grey (`ryogami/daemon/apply.go`,
+  `ryogami/daemon/restore_watch.go`, `ryogami/daemon/daemon.go`).
 - **A pinned dock icon no longer resets to a generic gear.** The dock resolved
   each icon once through a plain function call, so a pin whose icon was not yet
   findable at first paint -- a fresh boot before the icon-theme cache warms, or
