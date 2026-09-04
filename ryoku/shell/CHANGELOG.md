@@ -3,6 +3,23 @@
 ## Unreleased
 
 ### Fixed
+- **The overview stops trying to decode a live wallpaper as an image.** Each
+  workspace cell drew the current wallpaper as a still `Image` backdrop, but a
+  live (video) wallpaper -- `.mp4`/`.webm`/`.mkv`/`.mov` -- has no still frame, so
+  every cell logged "Unsupported image format" and drew nothing. A video
+  wallpaper is now treated as no backdrop (the cell keeps its flat fill), matching
+  the `Session.wallIsVideo` check (`modules/overview/Singletons/Config.qml`).
+- **The bar no longer spawns `makoctl` forever on a box without mako.** The qsbar
+  do-not-disturb probe shelled out to `makoctl mode` on every status refresh;
+  Ryoku runs its own notification server and never ships mako, so the process
+  failed to start on repeat, spamming the log. The probe is now gated on a
+  one-shot `makoctl` PATH check, so it runs only where mako is actually installed
+  (`modules/bar/barstyles/qsbar/Theme.qml`).
+- **A dismissed notification no longer throws while its card animates out.**
+  `Notifs.timeLabel()` dereferenced the notification (`n.id`) without a null
+  guard, and the card passes `card.notif`, which is null once the service has
+  dropped a toast still easing off screen; it now returns "" for a null
+  notification (`services/Notifs.qml`).
 - **A dev deploy no longer resets the fastfetch emblem (or the kitty
   palette).** `deploy.sh` re-copied `fastfetch/config.jsonc` and
   `kitty/current-theme.conf` on every run, so each `ryoku update` on a
