@@ -659,8 +659,10 @@ if command -v sudo >/dev/null 2>&1; then
   cmp -s "$here/../apps/mimeapps.list" /usr/share/applications/mimeapps.list ||
     sudo install -Dm644 "$here/../apps/mimeapps.list" /usr/share/applications/mimeapps.list || true
 fi
-# chromium reads ~/.config/chromium-flags.conf at launch; pin its password store to the GNOME keyring.
+# chromium reads ~/.config/chromium-flags.conf, Google Chrome reads chrome-flags.conf;
+# lay the one source to both (GNOME keyring password store + native Wayland).
 cp -a "$here/../apps/chromium-flags.conf" "$cfg/chromium-flags.conf"
+cp -a "$here/../apps/chromium-flags.conf" "$cfg/chrome-flags.conf"
 # the screen-share source chooser xdph launches (hypr/xdph.conf names it). Its
 # stylesheet is matugen's, rendered to ~/.cache/ryoku/share-picker.css.
 mkdir -p "$cfg/hyprland-preview-share-picker"
