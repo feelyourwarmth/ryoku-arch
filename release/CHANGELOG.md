@@ -3,6 +3,14 @@
 ## Unreleased
 
 ### Changed
+- **The release ledger is derived, not edited.** `bin/ryoku-release-ledger`
+  rebuilds `releases/index.json` from every `releases/<tag>/x86_64/release.json`
+  the bucket holds (newest first, `latest` = newest); the publish runs it
+  after a release lands and asserts the new tag is `latest`, and the Release
+  Ledger workflow rebuilds it on demand. The in-place jq edit it replaces read
+  a missing ledger as empty input (rclone cat of a missing key succeeds with
+  nothing) and published a zero-byte file on the first release. The publish
+  job also installs `github-cli` again, which the release ISO dispatch needs.
 - **`build-repo.sh` adopts before it builds.** A package whose output names
   (`makepkg --packagelist`) the mirror already serves is not built: its bytes
   are copied in and re-signed, the immutability rule applied up front instead

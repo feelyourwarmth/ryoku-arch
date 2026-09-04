@@ -323,8 +323,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Install rclone and jq
-        run: pacman -Syu --noconfirm --needed rclone jq libarchive
+      - name: Install the publish tools
+        # rclone uploads, jq and bsdtar verify, gh dispatches the release ISO
+        run: pacman -Syu --noconfirm --needed rclone jq libarchive github-cli
       - name: Fetch the signed repo
         uses: actions/download-artifact@v4
         with:
@@ -410,27 +411,15 @@ jobs:
         env:
           R2_BUCKET: ${{ secrets.R2_BUCKET }}
           RELEASE: ${{ needs.build.outputs.release }}
-          PREFIX: ${{ needs.build.outputs.prefix }}
         run: |
           set -euo pipefail
-          # releases/index.json: one entry per published release, newest first.
-          # the Hub's Updates page, `ryoku rollback` (the list it offers) and
-          # the site read it; a re-run with force_release replaces its entry.
-          tmp=$(mktemp -d)
-          rclone cat "Ryoku:$R2_BUCKET/releases/index.json" > "$tmp/index.json" 2>/dev/null || echo '{"schema":1,"releases":[]}' > "$tmp/index.json"
-          jq --arg tag "$RELEASE" \
-             --arg name "$(jq -r .name release/repo/out/x86_64/release.json)" \
-             --arg version "$(jq -r .version release/repo/out/x86_64/release.json)" \
-             --arg commit "$GITHUB_SHA" \
-             --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-             --arg repo "$PREFIX/x86_64" \
-             --arg run "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
-             '.schema = 1
-              | .releases = ([{tag: $tag, name: $name, version: $version, commit: $commit, date: $date, repo: $repo, run: $run}]
-                             + [.releases[] | select(.tag != $tag)])
-              | .latest = $tag' \
-             "$tmp/index.json" > "$tmp/index.new.json"
-          rclone copyto "$tmp/index.new.json" "Ryoku:$R2_BUCKET/releases/index.json" --header-upload "Cache-Control: no-cache, must-revalidate"
+          # releases/index.json is derived from the release directories the
+          # bucket holds (bin/ryoku-release-ledger), never edited in place: an
+          # in-place edit once read a missing ledger as empty input and
+          # published a zero-byte file. release-ledger.yml rebuilds it on
+          # demand with the same script.
+          ./bin/ryoku-release-ledger "Ryoku:$R2_BUCKET" | jq -e --arg tag "$RELEASE" '.latest == $tag' >/dev/null \
+            || { echo "::error::releases/index.json does not list $RELEASE as latest"; exit 1; }
           echo "::notice::releases/index.json now lists $RELEASE as latest"
 
       - name: Dispatch the release ISO build
