@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+- **A testing build's name is not a release tag.** `v0.56.0-beta.19.dev.363+g4d1cf63`
+  matched the release-tag shape, so a box moving from testing to a release
+  armed the boot guard with a "previous release" nothing frozen stands behind
+  (a revert would have failed), and `ryoku track`/`rollback --to` accepted it.
+  Only `vX.Y.Z` with an optional `-alpha|beta|rc.N` counts now
+  (`internal/sys/release.go`).
+
 ### Added
 - **`ryoku version --pretty` leads with the release line's name** ("Onogoro
   v0.56.0-beta.19"; fastfetch's OS line uses it), and the name reaches
