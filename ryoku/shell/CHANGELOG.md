@@ -9,6 +9,15 @@
   a stay-open browser (`ryogami/wall-ui/`).
 
 ### Fixed
+- **A pinned dock icon no longer resets to a generic gear.** The dock resolved
+  each icon once through a plain function call, so a pin whose icon was not yet
+  findable at first paint -- a fresh boot before the icon-theme cache warms, or
+  right after an app (e.g. Zen Browser) updates its `.desktop`/icon -- stuck on the
+  generic `application-x-executable` fallback until a shell reload. Icon
+  resolution now re-runs reactively: on any desktop-database change and via a
+  bounded warm-up poll after load, so a pin recovers its real icon on its own. Both
+  the first-class dock and the qsbar rail dock go through the one resolver
+  (`services/Dock.qml`, `modules/bar/framebars/widgets/RailDock.qml`).
 - **The overview stops trying to decode a live wallpaper as an image.** Each
   workspace cell drew the current wallpaper as a still `Image` backdrop, but a
   live (video) wallpaper -- `.mp4`/`.webm`/`.mkv`/`.mov` -- has no still frame, so
