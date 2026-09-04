@@ -3,6 +3,16 @@
 ## Unreleased
 
 ### Changed
+- **`build-repo.sh` adopts before it builds.** A package whose output names
+  (`makepkg --packagelist`) the mirror already serves is not built: its bytes
+  are copied in and re-signed, the immutability rule applied up front instead
+  of after a wasted compile. A release is now a promotion of the testing build
+  (same commit, same names, same bytes; only ryoku-desktop, which carries the
+  channel marker, is rebuilt) and a testing push no longer recompiles a pinned
+  external (ryotunes, ryomotion, prowl-agent). The first tag publish spent 40
+  minutes hung inside ryotunes' upstream `cargo test` (an mpv integration
+  test) and hit the job timeout; that `check()` is gone from the PKGBUILD too:
+  the package build proves the binary builds, upstream CI owns its tests.
 - **The publish builds once and ships the bytes it tested.** `publish-repo.yml`
   is now build -> gate -> publish: the build job signs the repo with the
   release key and keeps it as a workflow artifact; the container gate installs
