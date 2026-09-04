@@ -27,7 +27,10 @@ func reconcileRyotunes(checkOnly bool) recResult {
 		fixes = append(fixes, "sudo pacman -S --needed ryotunes")
 	}
 	if len(problems) == 0 {
-		if sys.Exists("/usr/bin/ryotunes") && !pkgOwnsFile("/usr/bin/ryotunes") {
+		if _, err := sys.RunOut("pacman", "-Qoq", "/usr/bin/ryotunes"); err == nil {
+			return okRes("ryotunes is the packaged app")
+		}
+		if sys.Exists("/usr/bin/ryotunes") {
 			return warnRes("/usr/bin/ryotunes is not owned by the ryotunes package").
 				withFix("sudo pacman -S --overwrite /usr/bin/ryotunes ryotunes")
 		}
