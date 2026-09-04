@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed
+- **An edit to a shipped file survives the update as a fork.** `ryoku
+  materialize` re-lays every shipped config on each update, so a hand edit
+  to, say, `hypr/modules/window_rules.lua` was thrown away. The manifest now
+  records the bytes each update left on disk; a shipped file whose live
+  bytes match neither those nor the new shipped ones was edited by hand and
+  is copied to `~/.config/ryoku/user_edits/<path>` before the base is laid,
+  where it wins on top, and the update lists the files it kept. Deleting the
+  fork takes Ryoku's version again. The shell's own QML tree is never forked
+  (`internal/updater/materialize.go`).
+
 ### Fixed
 - **A package you removed stays removed.** The doctor installed
   spotify-launcher, spicetify-cli and asusctl on its own whenever it saw a
