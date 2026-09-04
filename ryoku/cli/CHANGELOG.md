@@ -14,6 +14,15 @@
   (`internal/updater/materialize.go`).
 
 ### Fixed
+- **`ryoku update` clears an unowned file that blocks the upgrade, then
+  retries.** A `pacman -Syu` aborts the whole transaction when any package (not
+  just a Ryoku one) is about to install a file that already exists on disk owned
+  by no package -- an installer or deploy stray, a partial extraction. The
+  update now reads the "exists in filesystem" paths pacman reports, removes the
+  ones no package owns (a file another package ships is a real conflict and is
+  left for the user), and retries once, in both the packaged update path and the
+  checkout `deploy.sh` upgrade (`internal/updater/update.go`,
+  `internal/updater/upgradelog.go`, `ryoku/shell/deploy.sh`).
 - **An unowned Ryoku system file no longer freezes every package update.** When
   `ryoku-desktop` began owning paths the ISO installer and `deploy.sh` had
   seeded unowned -- the `ryoku-*` systemd units and the boot configs under

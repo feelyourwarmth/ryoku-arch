@@ -136,16 +136,14 @@ func Update(args []string) error {
 		os.Setenv("RYOKU_UPDATE_FROM", from)
 	}
 	clearStalePacmanLock()
-	if err := runSystemUpgrade(channelSwitch); err != nil {
-		// A stale [ryoku] db that no longer matches its signature wedges pacman
-		// on "invalid or corrupted database (PGP signature)", and -Sy won't
-		// replace a db it thinks is current. Drop it and force one full refresh
-		// for a matched pair (as `ryoku track` does). Skipped on a channel switch
-		// (already -Syyu), so the retry runs at most once.
+	if conflicts, err := runSystemUpgrade(channelSwitch); err != nil {
+		// One in-place recovery, then a single retry: clear the unowned files a
+		// new package now claims (an installer/deploy stray), or, with nothing to
+		// clear, drop a stale [ryoku] db whose signature no longer matches. A
+		// channel switch already forces -Syyu, so it does not retry here.
 		if !channelSwitch {
-			progress.logf("Package database rejected; dropping the stale [ryoku] db and retrying")
-			_ = sys.DropRyokuSyncDB()
-			err = runSystemUpgrade(true)
+			healSystemUpgrade(conflicts)
+			_, err = runSystemUpgrade(true)
 		}
 		if err != nil {
 			// only advertise `ryoku rollback` when the pre snapshot it needs exists;
@@ -310,10 +308,43 @@ func snapshotDesc() string {
 // runSystemUpgrade runs `pacman -Syu` sleep-inhibited (a lid-close or idle
 // suspend mid-transaction cannot corrupt it) and skips snap-pac's per-transaction
 // snapshot: `ryoku update` already brackets the whole run with one snapper
-// pre/post pair, so snap-pac's extra pair is pure noise in the list and the boot
-// menu. sudo resets the environment, so SNAP_PAC_SKIP rides inside via env(1).
-func runSystemUpgrade(forceRefresh bool) error {
-	return runInhibited("System", "System package upgrade", systemUpgradeArgs(forceRefresh))
+// pre/post pair. It returns any "exists in filesystem" conflict paths so a
+// failed run can clear unowned strays and retry.
+func runSystemUpgrade(forceRefresh bool) ([]string, error) {
+	return runUpgradeCollecting("System", "System package upgrade", systemUpgradeArgs(forceRefresh))
+}
+
+// healSystemUpgrade recovers from a failed system upgrade in place, once. Files
+// that block the transaction and that no package owns ("exists in filesystem"
+// for an installer/deploy stray a new package now claims) are removed so the
+// package adopts them; a file another package owns is a real conflict and is
+// left untouched for the retry to surface. With nothing to clear, it assumes a
+// stale [ryoku] db whose signature no longer matches and forces a clean refresh.
+func healSystemUpgrade(conflicts []string) {
+	if strays := unownedFiles(conflicts); len(strays) > 0 {
+		progress.logf("Clearing %d unowned file(s) blocking the upgrade, then retrying", len(strays))
+		_ = sys.Sudo(append([]string{"rm", "-f"}, strays...)...)
+		return
+	}
+	progress.logf("Package database rejected; dropping the stale [ryoku] db and retrying")
+	_ = sys.DropRyokuSyncDB()
+}
+
+// unownedFiles keeps only the paths no installed package owns: pacman -Qo fails
+// on a stray, and removing a file a package ships would break that package.
+func unownedFiles(paths []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range paths {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		if _, err := sys.RunOut("pacman", "-Qo", p); err != nil {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // ryokuOverwriteGlob names the ryoku-desktop-owned paths that the ISO installer

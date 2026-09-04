@@ -523,9 +523,25 @@ if command -v sudo >/dev/null 2>&1 && command -v pacman >/dev/null 2>&1; then
   # aborts the whole -Syu with "exists in filesystem" and nothing upgrades.
   # Mirrors updater.ryokuOverwriteGlob / the doctor's ryokuSystemGlobs.
   _rovw='/usr/bin/ryoku-*,/usr/lib/systemd/system/ryoku-*,/usr/share/polkit-1/rules.d/*ryoku*.rules,/usr/share/plymouth/themes/ryoku/*,/usr/share/ryoku/boot/*'
+  _pac_ryotunes() { sudo pacman -Syu --needed --noconfirm --overwrite "$_rovw" ryotunes; }
   # shellcheck disable=SC2024
-  if sudo pacman -Syu --needed --noconfirm --overwrite "$_rovw" ryotunes >"$_plog" 2>&1; then
+  if _pac_ryotunes >"$_plog" 2>&1; then
     say "ryotunes from [ryoku]: $(pacman -Q ryotunes 2>/dev/null | awk '{print $2}')"
+  elif grep -q 'exists in filesystem' "$_plog"; then
+    # a new package now claims files that exist unowned (an installer/deploy
+    # stray for any package, not just ryoku): remove the ones no package owns and
+    # retry once. A file another package owns is a real conflict, left in place.
+    _strays=()
+    while IFS= read -r _f; do
+      [ -e "$_f" ] || continue
+      pacman -Qo "$_f" >/dev/null 2>&1 || _strays+=("$_f")
+    done < <(sed -n 's/.*: \(\/[^ ]*\) exists in filesystem.*/\1/p' "$_plog")
+    # shellcheck disable=SC2024
+    if [ "${#_strays[@]}" -gt 0 ] && sudo rm -f "${_strays[@]}" && _pac_ryotunes >>"$_plog" 2>&1; then
+      say "ryotunes from [ryoku]: $(pacman -Q ryotunes 2>/dev/null | awk '{print $2}') (cleared ${#_strays[@]} unowned file(s))"
+    else
+      say "  ryotunes not installed from [ryoku] (file conflicts remain; see $_plog)"
+    fi
   else
     say "  ryotunes not installed from [ryoku] (channel unreachable or not published yet); see $_plog"
   fi
