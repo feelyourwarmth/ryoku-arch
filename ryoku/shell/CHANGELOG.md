@@ -44,6 +44,22 @@
   renders at; it now folds in the same `uiScaleFor` factor, so a fresh open and a
   cleared query land at the identical height
   (`modules/launcher/variants/hero/Main.qml`).
+- **The Bluetooth widget no longer leaks `bluetoothctl` processes.** On a box
+  with no adapter the widget polled `bluetoothctl show` on a timer even while
+  the widget was disabled; without BlueZ the call never returned, so each tick
+  orphaned the previous one and dead processes piled into the hundreds, leaking
+  RAM. The widget now reads state straight off `Quickshell.Bluetooth` (BlueZ over
+  D-Bus) with no polling and no process at all, so an adapterless machine spawns
+  nothing (`modules/bar/barstyles/qsbar/modules/BluetoothWidget.qml`).
+- **Bluetooth device names load, and pairing a fresh device works.** The qsbar
+  panel parsed `bluetoothctl devices` output, which left names blank, and its
+  pair step ran `trust`/`pair`/`connect` with no pairing agent, so a new mouse
+  never bonded. The panel now lists devices from `Quickshell.Bluetooth` so names
+  come from BlueZ, and pairing shells one `bluetoothctl` that brings its own
+  `NoInputNoOutput` agent, then trusts, connects and reports the failure text to
+  the panel instead of failing silently. The frame-bar popout pairs through the
+  same path (`modules/bar/barstyles/qsbar/panels/BluetoothPanel.qml`,
+  `modules/bar/popouts/BluetoothPopout.qml`, `services/BtLink.qml`).
 - **A pinned dock icon no longer resets to a generic gear.** The dock resolved
   each icon once through a plain function call, so a pin whose icon was not yet
   findable at first paint -- a fresh boot before the icon-theme cache warms, or

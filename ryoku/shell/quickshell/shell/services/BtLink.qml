@@ -123,4 +123,35 @@ Singleton {
             : (d.deviceName && d.deviceName.length) ? d.deviceName
             : (d.address || qsTr("Unknown"));
     }
+
+    // --- pairing ---------------------------------------------------------------
+
+    // Quickshell.Bluetooth drives BlueZ's Device1.Pair directly but registers no
+    // pairing agent, so BlueZ has nothing to authorise the bond and pairing a
+    // fresh device (a mouse, a keyboard) fails. This one-shot bluetoothctl brings
+    // its own NoInputNoOutput agent for the length of the call, which auto-accepts
+    // just-works pairing, then trusts and connects. The agent dies with the
+    // process, so nothing lingers. Exit codes from bluetoothctl are unreliable
+    // (0 even on failure), so success is read from its output and the last error
+    // line is echoed for the UI to show. Exit 0 paired+connected, 1 pair failed,
+    // 2 paired but connect failed.
+    function pairCommand(mac) {
+        const m = String(mac || "");
+        const script = `
+mac="$1"
+pout=$(bluetoothctl --agent NoInputNoOutput --timeout 25 pair "$mac" 2>&1)
+if grep -qiE 'Pairing successful|already[ -]?paired|Paired: yes|AlreadyExists' <<<"$pout"; then
+    bluetoothctl trust "$mac" >/dev/null 2>&1
+    cout=$(bluetoothctl --timeout 20 connect "$mac" 2>&1)
+    if grep -qiE 'Connection successful|Connected: yes|already connected' <<<"$cout"; then
+        exit 0
+    fi
+    grep -iE 'Failed|not available|error|refused|timed out' <<<"$cout" | tail -1
+    exit 2
+fi
+grep -iE 'Failed|not available|error|timed out|refused|Authentication|Protocol' <<<"$pout" | tail -1
+exit 1
+`;
+        return ["bash", "-c", script, "bash", m];
+    }
 }
