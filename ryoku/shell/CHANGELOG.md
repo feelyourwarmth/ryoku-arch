@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Fixed
+- **Quickshell's runtime logs can no longer eat the RAM.** Quickshell keeps
+  a per-instance directory under `$XDG_RUNTIME_DIR` (a tmpfs, so memory) with
+  two unbounded logs and never removes it; one warning storm wrote 4.3 GB
+  there and a hundred dead instances kept their logs after it, which reads as
+  "the shell uses gigabytes" and starves every socket in the runtime dir. The
+  daemon now prunes dead instance directories at start and every five
+  minutes and truncates a live log past 32 MB (`ipc/qsruntime.go`).
+- **The wallpaper picker no longer holds 400 MB while hidden.** Its QML tree
+  (thumbnails, browsers, previews) was built at daemon boot and kept for the
+  session. It is now built on the first Super+W and torn down a second after
+  the picker closes; the process stays warm, so a reopen is instant (36 ms
+  measured) and an idle picker sits at about 160 MB instead of 410
+  (`ryogami/wall-ui/shell.qml`).
+
 ### Changed
 - **The Ryogami picker closes once something is applied.** Wallpaper, video,
   Wallpaper Engine scene, theme or rice: the picker leaves as soon as the
