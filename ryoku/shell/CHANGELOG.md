@@ -3,6 +3,25 @@
 ## Unreleased
 
 ### Fixed
+- **A silent bar sits still again, and the GPU drift is paced (#60, third
+  round).** The GPU gap animation (`StreamShader.qml`) drove its shader clock
+  with a `FrameAnimation`, which makes Quickshell render and commit a frame
+  every vsync whether or not the picture changed, on the full-screen bar
+  layer, on every profile. The shader itself costs nothing; the frames do:
+  each one is a compositor frame, and on a 165 Hz hybrid laptop rendering on
+  the discrete GPU (reverse PRIME, ~7 ms a frame) that held Hyprland at
+  ~38% of a core and the shell at ~26%, silent, all day. The clock is now a
+  Timer at the paces the Canvas stream already used: 30 fps (60 for the fast
+  modes 5 and 6) while audio drives it, 20 fps for the silent drift, and the
+  silent drift only on Performance (`Perf.ambientMotion`), so Balanced and
+  Saver idle still like caelestia and end-4. The battery's charging shimmer
+  follows the same rule: it was an infinite sweep at vsync whenever the
+  laptop was plugged in below full, now Performance-only and one sweep every
+  few seconds; the indigo body, wash and bolt still say "charging". Measured
+  on the dev box, silent: shell 26% -> 5% (Balanced) / 11% (Performance),
+  the shell's share of Hyprland ~56% -> ~17% / ~39%
+  (`modules/bar/barstyles/qsbar/modules/StreamShader.qml`,
+  `BatteryWidget.qml`, `ReactorLayer.qml`).
 - **Quickshell's runtime logs can no longer eat the RAM.** Quickshell keeps
   a per-instance directory under `$XDG_RUNTIME_DIR` (a tmpfs, so memory) with
   two unbounded logs and never removes it; one warning storm wrote 4.3 GB
