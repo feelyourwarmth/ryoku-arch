@@ -6,9 +6,10 @@
 # still the default) and the native Quickshell client (`ryotunes-qml`, pure
 # QML at /usr/share/ryotunes/client) behind `ryotunesd`, a socket-activated
 # daemon that owns playback, MPRIS and the tray and exits five minutes after
-# the last client leaves with nothing playing. `RYOTUNES_CLIENT=qml` in the
-# user environment makes the daemon's tray Show / second launch open the
-# native client. It publishes org.mpris.MediaPlayer2.ryotunes, which is what
+# the last client leaves with nothing playing. Only one player runs at a
+# time: `ryotunes` hands off to a live daemon (raise its client, or open
+# `ryotunes-qml`) and is the standalone Tauri app only when no daemon runs,
+# so the desktop's keybind, dock and launcher keep running plain `ryotunes`. It publishes org.mpris.MediaPlayer2.ryotunes, which is what
 # the desktop now-playing widget, the dock pill and the media keys follow, and
 # it retints itself from the shell's theme files (~/.config/ryoku/theme.json,
 # ~/.cache/ryoku/colors.json) so it follows the wallpaper like the rest of the
@@ -22,7 +23,7 @@
 # pkgver when src-tauri/tauri.conf.json's version moves) to ship a new build.
 pkgname=ryotunes
 pkgver=2.4.1
-pkgrel=2
+pkgrel=3
 pkgdesc="Ryotunes: the Ryoku music app (YouTube Music client with native playback)"
 arch=('x86_64')
 url="https://github.com/neur0map/ryotunes"
@@ -44,7 +45,7 @@ conflicts=("${_legacy[@]}")
 replaces=("${_legacy[@]}")
 # Rust already strips with the release profile; the debug split has nothing.
 options=('!lto' '!debug')
-_commit=815af5a185bce3a3f51bceddf1ffd3c11a57421e
+_commit=40990cee335f979f811a17c8b44cdeb88a362318
 source=("$pkgname::git+https://github.com/neur0map/ryotunes.git#commit=$_commit")
 sha256sums=('SKIP')
 
