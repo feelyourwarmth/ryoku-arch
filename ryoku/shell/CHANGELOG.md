@@ -2,6 +2,129 @@
 
 ## Unreleased
 
+### Fixed
+- **In-shell video wallpapers can play sound again (#139).** The in-shell
+  engine's QtMultimedia player was hardwired to `AudioOutput { muted: true }`,
+  so a live wallpaper stayed silent even with audio turned on in the picker.
+  The daemon now carries the picker's mute and volume on the `wallpaper` frame
+  (new `mute`/`volume` keys, taken from the per-output apply maps or the
+  wall-ui `wallpaperMute`/`wallpaperVolume` defaults), persists both in
+  `outputs.json`, and republishes the live frame on `wall.set_audio` so a
+  running clip changes at once; the backdrop binds them to its player. The
+  in-shell transcode cache keeps its audio track now (the `-an` that stripped
+  it is gone, and the cache key changed so stale silent re-encodes are
+  ignored). The ryogami C player stays intentionally silent
+  (`ryogami/daemon/`, `modules/wallpaper/`).
+- **A silent bar sits still again, and the GPU drift is paced (#60, third
+  round).** The GPU gap animation (`StreamShader.qml`) drove its shader clock
+  with a `FrameAnimation`, which makes Quickshell render and commit a frame
+  every vsync whether or not the picture changed, on the full-screen bar
+  layer, on every profile. The shader itself costs nothing; the frames do:
+  each one is a compositor frame, and on a 165 Hz hybrid laptop rendering on
+  the discrete GPU (reverse PRIME, ~7 ms a frame) that held Hyprland at
+  ~38% of a core and the shell at ~26%, silent, all day. The clock is now a
+  Timer at the paces the Canvas stream already used: 30 fps (60 for the fast
+  modes 5 and 6) while audio drives it, 20 fps for the silent drift, and the
+  silent drift only on Performance (`Perf.ambientMotion`), so Balanced and
+  Saver idle still like caelestia and end-4. The battery's charging shimmer
+  follows the same rule: it was an infinite sweep at vsync whenever the
+  laptop was plugged in below full, now Performance-only and one sweep every
+  few seconds; the indigo body, wash and bolt still say "charging". Measured
+  on the dev box, silent: shell 26% -> 5% (Balanced) / 11% (Performance),
+  the shell's share of Hyprland ~56% -> ~17% / ~39%
+  (`modules/bar/barstyles/qsbar/modules/StreamShader.qml`,
+  `BatteryWidget.qml`, `ReactorLayer.qml`).
+- **Quickshell's runtime logs can no longer eat the RAM.** Quickshell keeps
+  a per-instance directory under `$XDG_RUNTIME_DIR` (a tmpfs, so memory) with
+  two unbounded logs and never removes it; one warning storm wrote 4.3 GB
+  there and a hundred dead instances kept their logs after it, which reads as
+  "the shell uses gigabytes" and starves every socket in the runtime dir. The
+  daemon now prunes dead instance directories at start and every five
+  minutes and truncates a live log past 32 MB (`ipc/qsruntime.go`).
+- **The wallpaper picker no longer holds 400 MB while hidden.** Its QML tree
+  (thumbnails, browsers, previews) was built at daemon boot and kept for the
+  session. It is now built on the first Super+W and torn down a second after
+  the picker closes; the process stays warm, so a reopen is instant (36 ms
+  measured) and an idle picker sits at about 160 MB instead of 410
+  (`ryogami/wall-ui/shell.qml`).
+
+### Changed
+- **The Ryogami picker closes once something is applied.** Wallpaper, video,
+  Wallpaper Engine scene, theme or rice: the picker leaves as soon as the
+  apply lands. "Close on apply" in the picker's settings turns it back into
+  a stay-open browser (`ryogami/wall-ui/`).
+
+### Fixed
+- **The wallpaper reappears after a reboot even when its file or the monitors
+  arrive late.** The daemon restored the saved wallpaper (static or live) in a
+  single pass at startup and silently gave up if the file the choice named was
+  not yet readable or the compositor's outputs were not yet enumerable -- a
+  login-time race that left the desktop on the grey Hyprland default until the
+  next manual set. The startup restore now retries briefly while the desktop is
+  bare, and a Hyprland event-socket watcher re-spans a live wall onto an output
+  that comes up after the first pass (a login race, a hotplug, a panel that
+  enumerates late). A box upgraded across the Ryogami split also carries its
+  pre-split wallpaper choice into the daemon's store on first start, so the
+  wallpaper survives the update instead of coming up grey (`ryogami/daemon/apply.go`,
+  `ryogami/daemon/restore_watch.go`, `ryogami/daemon/daemon.go`).
+- **The launcher returns to its exact idle size after a query is cleared.** On a
+  monitor with a non-default interface scale (`displays.ui_scale`), the hero
+  launcher opened at one height but settled a few pixels shorter once you typed
+  and erased back to empty, so the idle card visibly jumped. The initial open
+  path sized the card without the per-monitor UI scale the surface actually
+  renders at; it now folds in the same `uiScaleFor` factor, so a fresh open and a
+  cleared query land at the identical height
+  (`modules/launcher/variants/hero/Main.qml`).
+- **The Bluetooth widget no longer leaks `bluetoothctl` processes.** On a box
+  with no adapter the widget polled `bluetoothctl show` on a timer even while
+  the widget was disabled; without BlueZ the call never returned, so each tick
+  orphaned the previous one and dead processes piled into the hundreds, leaking
+  RAM. The widget now reads state straight off `Quickshell.Bluetooth` (BlueZ over
+  D-Bus) with no polling and no process at all, so an adapterless machine spawns
+  nothing (`modules/bar/barstyles/qsbar/modules/BluetoothWidget.qml`).
+- **Bluetooth device names load, and pairing a fresh device works.** The qsbar
+  panel parsed `bluetoothctl devices` output, which left names blank, and its
+  pair step ran `trust`/`pair`/`connect` with no pairing agent, so a new mouse
+  never bonded. The panel now lists devices from `Quickshell.Bluetooth` so names
+  come from BlueZ, and pairing shells one `bluetoothctl` that brings its own
+  `NoInputNoOutput` agent, then trusts, connects and reports the failure text to
+  the panel instead of failing silently. The frame-bar popout pairs through the
+  same path (`modules/bar/barstyles/qsbar/panels/BluetoothPanel.qml`,
+  `modules/bar/popouts/BluetoothPopout.qml`, `services/BtLink.qml`).
+- **A pinned dock icon no longer resets to a generic gear.** The dock resolved
+  each icon once through a plain function call, so a pin whose icon was not yet
+  findable at first paint -- a fresh boot before the icon-theme cache warms, or
+  right after an app (e.g. Zen Browser) updates its `.desktop`/icon -- stuck on the
+  generic `application-x-executable` fallback until a shell reload. Icon
+  resolution now re-runs reactively: on any desktop-database change and via a
+  bounded warm-up poll after load, so a pin recovers its real icon on its own. Both
+  the first-class dock and the qsbar rail dock go through the one resolver
+  (`services/Dock.qml`, `modules/bar/framebars/widgets/RailDock.qml`).
+- **The overview stops trying to decode a live wallpaper as an image.** Each
+  workspace cell drew the current wallpaper as a still `Image` backdrop, but a
+  live (video) wallpaper -- `.mp4`/`.webm`/`.mkv`/`.mov` -- has no still frame, so
+  every cell logged "Unsupported image format" and drew nothing. A video
+  wallpaper is now treated as no backdrop (the cell keeps its flat fill), matching
+  the `Session.wallIsVideo` check (`modules/overview/Singletons/Config.qml`).
+- **The bar no longer spawns `makoctl` forever on a box without mako.** The qsbar
+  do-not-disturb probe shelled out to `makoctl mode` on every status refresh;
+  Ryoku runs its own notification server and never ships mako, so the process
+  failed to start on repeat, spamming the log. The probe is now gated on a
+  one-shot `makoctl` PATH check, so it runs only where mako is actually installed
+  (`modules/bar/barstyles/qsbar/Theme.qml`).
+- **A dismissed notification no longer throws while its card animates out.**
+  `Notifs.timeLabel()` dereferenced the notification (`n.id`) without a null
+  guard, and the card passes `card.notif`, which is null once the service has
+  dropped a toast still easing off screen; it now returns "" for a null
+  notification (`services/Notifs.qml`).
+- **A dev deploy no longer resets the fastfetch emblem (or the kitty
+  palette).** `deploy.sh` re-copied `fastfetch/config.jsonc` and
+  `kitty/current-theme.conf` on every run, so each `ryoku update` on a
+  checkout box put the readout back on the shipped emblem and dropped an
+  imported logo or a decor picked in the Hub. Both are now seeded once and
+  never re-laid, the same generatedSeed set `ryoku materialize` honours on a
+  packaged box (`deploy.sh`).
+
 ### Added
 - **The update island and the Hub's Updates page name the release line.**
   The Hub shows "Ryoku Onogoro" over the version pair, and both say
@@ -33,6 +156,17 @@
   `core/widgets.json`).
 
 ### Fixed
+- **The audio graph no longer touches Quickshell's Pipewire structures mid-teardown.**
+  The shell already fed every audio Repeater from a debounced snapshot so a view
+  never rebuilds inside a node-removal dispatch, but the singleton's
+  `PwObjectTracker` still bound its object set to the live lists, so a mass audio
+  reset (a device flap, "Device or resource busy") that destroys every node rewrote
+  the tracked set on every single removal, inside the same dispatch. That is a
+  reported Quickshell segfault: a binding write into the Pipewire object tracker
+  while a node is being freed. The tracker now follows the settled snapshots (the
+  two default devices stay live so the bar volume reads instantly), so it never
+  re-tracks across a dying node and costs no immediacy, since no view shows a node
+  before it reaches the settled list (`services/Audio.qml`).
 - **The Rashin chat's skill list now shows the `ryoku` skill.** The sidebar
   listed slash-able skills by walking `~/.hermes/skills`, which does not follow
   the symlink `wire` lays for the shipped skill, so Hermes had the skill but the

@@ -41,14 +41,8 @@ var (
 // renderUpgrade runs argv, rendering a curated view of its output. phase is the
 // short label for the header ("System", "AUR", "Flatpak").
 func renderUpgrade(phase string, argv []string) error {
-	// pacman runs under sudo; prime the timestamp on the real terminal first so
-	// the piped transaction never blocks on an unseen password prompt.
-	for _, a := range argv {
-		if a == "sudo" {
-			_ = sys.Run("sudo", "-v")
-			break
-		}
-	}
+	// sudo is primed once up front by the update (primeSudo), so the piped
+	// transaction here never blocks on an unseen password prompt.
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		return sys.Run(argv[0], argv[1:]...)
@@ -73,6 +67,78 @@ func renderUpgrade(phase string, argv []string) error {
 	werr := cmd.Wait()
 	r.finish(werr == nil)
 	return werr
+}
+
+// runUpgradeCollecting runs a package transaction sleep-inhibited and rendered
+// (or streamed raw for pipes/--verbose) exactly like renderUpgrade, and returns
+// the "exists in filesystem" conflict paths pacman reported, so a failed upgrade
+// can clear the strays no package owns and retry. Both views scan the same
+// stream, so the collection is identical on a TTY and in a log.
+func runUpgradeCollecting(phase, why string, argv []string) ([]string, error) {
+	full := argv
+	if sys.Has("systemd-inhibit") {
+		full = append([]string{"systemd-inhibit", "--what=sleep:idle",
+			"--who=ryoku update", "--why=" + why, "--mode=block"}, argv...)
+	}
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return nil, sys.Run(full[0], full[1:]...)
+	}
+	cmd := exec.Command(full[0], full[1:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, pw, pw
+	if err := cmd.Start(); err != nil {
+		pw.Close()
+		pr.Close()
+		return nil, err
+	}
+	pw.Close()
+	rendered := !verboseLog && sys.StdoutIsTTY()
+	var r *upgradeRenderer
+	if rendered {
+		r = newUpgradeRenderer(os.Stdout, phase, true)
+	}
+	var conflicts []string
+	sc := bufio.NewScanner(pr)
+	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+	sc.Split(scanLinesCR)
+	for sc.Scan() {
+		line := sc.Text()
+		logRaw(line)
+		if p := conflictPath(line); p != "" {
+			conflicts = append(conflicts, p)
+		}
+		if rendered {
+			r.feed(line)
+		} else {
+			fmt.Fprintln(os.Stdout, line)
+		}
+	}
+	pr.Close()
+	werr := cmd.Wait()
+	if rendered {
+		r.finish(werr == nil)
+	}
+	return conflicts, werr
+}
+
+// conflictPath pulls the path from a pacman file-conflict line, e.g.
+// "noto-fonts: /usr/share/fontconfig/conf.avail/46-noto-sans.conf exists in
+// filesystem" -> the path. Empty for any other line.
+func conflictPath(line string) string {
+	const marker = " exists in filesystem"
+	i := strings.Index(line, marker)
+	if i < 0 {
+		return ""
+	}
+	head := strings.TrimSpace(line[:i])
+	c := strings.LastIndex(head, ": ")
+	if c < 0 {
+		return ""
+	}
+	if p := strings.TrimSpace(head[c+2:]); strings.HasPrefix(p, "/") {
+		return p
+	}
+	return ""
 }
 
 // rawLog, set for the duration of an update, receives every unstyled line the
@@ -198,12 +264,7 @@ func (s *liveSpinner) close() {
 // lines) whose phase header the caller already narrated. Exit status is passed
 // through; a pipe failure degrades to raw passthrough.
 func renderQuiet(argv []string) error {
-	for _, a := range argv {
-		if a == "sudo" {
-			_ = sys.Run("sudo", "-v")
-			break
-		}
-	}
+	// sudo is primed once up front by the update (primeSudo); nothing to do here.
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		return sys.Run(argv[0], argv[1:]...)

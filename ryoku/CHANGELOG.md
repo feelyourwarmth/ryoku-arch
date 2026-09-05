@@ -14,6 +14,30 @@
   (`hyprland/monitors_user.lua.example`).
 
 ### Fixed
+- **Floating windows fit the screen they open on (#147).** Files, Ryoku
+  Settings, Ryostore, Ryovm and the other fixed-size floating rules asked for
+  1500x850 or bigger, so on a 1366x768 panel Files opened larger than the
+  monitor and read as a stuck fullscreen that no dconf setting could undo. Every
+  size in `hyprland/modules/window_rules.lua` is now capped at the monitor
+  (92% wide, 88% tall) through Hyprland's size expressions, so the same rule
+  fits a laptop panel and a desktop monitor.
+- **Rashin chat follows a hermes reconfigure (#145).** Switching hermes to a
+  new provider in the terminal (say NVIDIA NIM) left the dashboard chat failing
+  with "HTTP 404" on every turn: the daemon re-applied the model it had
+  remembered from before the switch onto the new endpoint, and the resident
+  `hermes acp` process kept the provider and keys it loaded at spawn. The
+  remembered pick is now tied to the hermes config it was made under and
+  dropped when that changes, and a chat turn after `config.yaml` or `.env`
+  changed respawns the session first (`rashin/backend/`).
+- **Google Chrome loads pages and shares the keyring, like Chromium.** Ryoku
+  pinned native Wayland and the GNOME keyring for Chromium (`chromium-flags.conf`)
+  and for Electron apps (`ELECTRON_OZONE_PLATFORM_HINT`), but Google Chrome reads
+  a different file, `chrome-flags.conf`, which nothing shipped -- so Chrome alone
+  fell back to Xwayland, where on an NVIDIA card it renders pages blank while
+  Discord and Chromium (both native Wayland) work. The one flags source now lays
+  as both `chromium-flags.conf` and `chrome-flags.conf`, so Chrome gets
+  `--ozone-platform=wayland` and `--password-store=gnome-libsecret` too. Delivered
+  to fresh and existing boxes by the package and `materialize`.
 - **Animations no longer break the desktop on a non-default preset.** Ryoku's
   signature window curves (`ryokuBloom`, `ryokuSettle`, plus `easeOutQuint`,
   `quick`, `almostLinear`, `ryokuWobble`) were defined only by the `ryoku`

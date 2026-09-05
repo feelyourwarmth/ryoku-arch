@@ -61,9 +61,10 @@ func (d *daemon) applyWallpaper(wpType, path, mode string, outputs []string, mut
 				d.transcodeAsync(path, outputs, prefs)
 			}
 		}
-		d.surface.show(paint, fit, d.transitionFor(mode), false, true, clip)
+		clipAudio := frameAudio(outputs, mute, volume)
+		d.surface.show(paint, fit, d.transitionFor(mode), false, true, videoClip{path: clip, mute: clipAudio.mute, volume: clipAudio.volume})
 		d.setCurrent(name)
-		d.saveOutputs(outputs, wpType, path, mute)
+		d.saveOutputs(outputs, wpType, path, mute, volume)
 		d.store.mutate(keyFor(d.store, name, key), func(e *Entry) { e.ApplyCount++ })
 		d.broadcast("ryogami.wall.applied", map[string]interface{}{
 			"type": wpType, "name": name, "path": path, "we_id": "", "key": key,
@@ -114,15 +115,15 @@ func (d *daemon) applyWallpaper(wpType, path, mode string, outputs []string, mut
 		d.video.Play(outputs, path, liveFit(fit), d.config().ResourceTier, repaint)
 	}
 	if len(outputs) == 0 || contains(outputs, "*") {
-		d.surface.show(paint, fit, tr, frameLive, live, "")
+		d.surface.show(paint, fit, tr, frameLive, live, videoClip{})
 	} else {
 		for _, out := range outputs {
-			d.surface.showOutput(out, paint, fit, tr, frameLive, live, "")
+			d.surface.showOutput(out, paint, fit, tr, frameLive, live, videoClip{})
 		}
 	}
 	name := filepath.Base(path)
 	d.setCurrent(name)
-	d.saveOutputs(outputs, wpType, path, mute)
+	d.saveOutputs(outputs, wpType, path, mute, volume)
 	key := strings.TrimSuffix(name, filepath.Ext(name))
 	d.store.mutate(keyFor(d.store, name, key), func(e *Entry) { e.ApplyCount++ })
 	// The palette follows through ryoku-shell: its ryogami bridge watches the
@@ -157,10 +158,13 @@ func contains(list []string, s string) bool {
 	return false
 }
 
-// saveOutputs persists {output: {type, path}} to cacheDir/outputs.json for the
-// startup restore, mirroring the Rust daemon: a broadcast apply clears the map
-// to a single "*" entry, a per-output apply removes "*".
-func (d *daemon) saveOutputs(outputs []string, wpType, path string, mute map[string]bool) {
+// saveOutputs persists {output: {type, path, mute, volume}} to
+// cacheDir/outputs.json for the startup restore, mirroring the Rust daemon: a
+// broadcast apply clears the map to a single "*" entry, a per-output apply
+// removes "*". Audio is the clip's effective value: the per-output apply map
+// when it names the key, else the wall-ui global default (so a missing key
+// stays muted at the configured volume instead of unmuting).
+func (d *daemon) saveOutputs(outputs []string, wpType, path string, mute map[string]bool, volume map[string]int) {
 	cacheDir := d.config().cacheDir()
 	state := map[string]map[string]interface{}{}
 	loadJSON(filepath.Join(cacheDir, "outputs.json"), &state)
@@ -171,12 +175,26 @@ func (d *daemon) saveOutputs(outputs []string, wpType, path string, mute map[str
 	} else {
 		delete(state, "*")
 	}
+	def := wallAudioDefaults()
 	for _, k := range keys {
-		state[k] = map[string]interface{}{"type": wpType, "path": path, "mute": mute[k]}
+		m, vol := effectiveAudio(k, mute, volume, def)
+		state[k] = map[string]interface{}{"type": wpType, "path": path, "mute": m, "volume": vol}
 	}
 	_ = os.MkdirAll(cacheDir, 0o755)
 	saveJSON(filepath.Join(cacheDir, "outputs.json"), state)
 	syncWallState(state)
+}
+
+// frameAudio resolves the single broadcast in-shell frame's audio: the first
+// named output's effective value, or the global default for a broadcast apply
+// (no outputs) or one whose maps name none of them.
+func frameAudio(outputs []string, mute map[string]bool, volume map[string]int) wallAudio {
+	key := "*"
+	if len(outputs) > 0 && !contains(outputs, "*") {
+		key = outputs[0]
+	}
+	m, vol := effectiveAudio(key, mute, volume, wallAudioDefaults())
+	return wallAudio{mute: m, volume: vol}
 }
 
 // wallStatePath is the legacy ~/.local/state/ryoku-wallpaper file: the absolute
@@ -221,12 +239,59 @@ func syncWallState(state map[string]map[string]interface{}) {
 	_ = os.WriteFile(filepath.Join(dir, "ryoku-wallpaper"), []byte(defaultWallpaperFrom(state)+"\n"), 0o644)
 }
 
-// restoreOutputs republishes the persisted wallpaper on startup so the shell
-// never sits on the empty retained frame after a daemon restart.
-func (d *daemon) restoreOutputs() {
+// legacyWallStatePath: the shell's own choice from before Ryogami owned the
+// wallpaper. Nothing writes it now.
+func legacyWallStatePath() string { return filepath.Join(stateHome(), "ryoku-wallpaper.json") }
+
+// migrateLegacyOutputs seeds outputs.json from the pre-split state once,
+// only while no wallpaper is stored.
+func (d *daemon) migrateLegacyOutputs() {
+	cacheDir := d.config().cacheDir()
+	cur := map[string]map[string]interface{}{}
+	loadJSON(filepath.Join(cacheDir, "outputs.json"), &cur)
+	for _, e := range cur {
+		if p, _ := e["path"].(string); p != "" {
+			return
+		}
+	}
+	var legacy struct {
+		Default string            `json:"default"`
+		Outputs map[string]string `json:"outputs"`
+	}
+	loadJSON(legacyWallStatePath(), &legacy)
+	state := map[string]map[string]interface{}{}
+	def := wallAudioDefaults()
+	if legacy.Default != "" {
+		state["*"] = map[string]interface{}{"type": typeOf(legacy.Default), "path": legacy.Default, "mute": def.mute, "volume": def.volume}
+	} else {
+		for name, p := range legacy.Outputs {
+			if p != "" {
+				state[name] = map[string]interface{}{"type": typeOf(p), "path": p, "mute": def.mute, "volume": def.volume}
+			}
+		}
+	}
+	if len(state) == 0 {
+		return
+	}
+	_ = os.MkdirAll(cacheDir, 0o755)
+	saveJSON(filepath.Join(cacheDir, "outputs.json"), state)
+	syncWallState(state)
+	fmt.Fprintln(os.Stderr, "ryogami: migrated the pre-split wallpaper choice into outputs.json")
+}
+
+// restoreOutputs republishes the stored wallpaper; the caller retries while
+// applied < want, since the file or the outputs can lag at login.
+func (d *daemon) restoreOutputs() (want, applied int) {
+	d.restoreMu.Lock()
+	defer d.restoreMu.Unlock()
 	cacheDir := d.config().cacheDir()
 	state := map[string]map[string]interface{}{}
 	loadJSON(filepath.Join(cacheDir, "outputs.json"), &state)
+	for _, e := range state {
+		if p, _ := e["path"].(string); p != "" {
+			want++
+		}
+	}
 	fit := contentFit()
 	restored := ""
 	restore := func(out string, e map[string]interface{}) {
@@ -259,12 +324,14 @@ func (d *daemon) restoreOutputs() {
 					d.transcodeAsync(p, []string{out}, prefs)
 				}
 			}
+			m, vol := entryAudio(e, wallAudioDefaults())
 			if out == "*" {
-				d.surface.show(paint, fit, nil, false, true, clip)
+				d.surface.show(paint, fit, nil, false, true, videoClip{path: clip, mute: m, volume: vol})
 			} else {
-				d.surface.showOutput(out, paint, fit, nil, false, true, clip)
+				d.surface.showOutput(out, paint, fit, nil, false, true, videoClip{path: clip, mute: m, volume: vol})
 			}
 			restored = filepath.Base(p)
+			applied++
 			return
 		}
 
@@ -287,11 +354,12 @@ func (d *daemon) restoreOutputs() {
 		}
 		frameLive := live && paint == p
 		if out == "*" {
-			d.surface.show(paint, fit, nil, frameLive, live, "")
+			d.surface.show(paint, fit, nil, frameLive, live, videoClip{})
 		} else {
-			d.surface.showOutput(out, paint, fit, nil, frameLive, live, "")
+			d.surface.showOutput(out, paint, fit, nil, frameLive, live, videoClip{})
 		}
 		restored = filepath.Base(p)
+		applied++
 	}
 	if e, okAll := state["*"]; okAll {
 		restore("*", e)
@@ -305,6 +373,7 @@ func (d *daemon) restoreOutputs() {
 		fmt.Fprintf(os.Stderr, "ryogami: auto-restored wallpaper: %s\n", restored)
 	}
 	syncWallState(state)
+	return want, applied
 }
 
 func fileExists(p string) bool {
@@ -312,15 +381,32 @@ func fileExists(p string) bool {
 	return err == nil && st.Mode().IsRegular()
 }
 
-// outputsState answers wall.outputs from the persisted map, adding the mute
-// flag the picker's monitor popup reads (audio routing itself is the shell's
-// domain, so mute is echoed state, not a mixer control).
+// entryAudio resolves a persisted outputs.json entry's clip audio, falling back
+// to the wall-ui global default for a key the entry predates (an old outputs.json
+// with no volume, or a mute its writer never set).
+func entryAudio(e map[string]interface{}, def wallAudio) (bool, int) {
+	m := def.mute
+	if v, ok := e["mute"].(bool); ok {
+		m = v
+	}
+	vol := def.volume
+	if v, ok := e["volume"].(float64); ok {
+		vol = clampVolume(int(v))
+	}
+	return m, vol
+}
+
+// outputsState answers wall.outputs from the persisted map, echoing each entry's
+// mute flag and volume the picker's monitor popup reads (audio routing itself is
+// the shell's domain, so this is echoed state, not a mixer control).
 func (d *daemon) outputsState() map[string]interface{} {
 	state := map[string]map[string]interface{}{}
 	loadJSON(filepath.Join(d.config().cacheDir(), "outputs.json"), &state)
+	def := wallAudioDefaults()
 	out := map[string]interface{}{}
 	for k, e := range state {
-		entry := map[string]interface{}{"type": e["type"], "mute": e["mute"] == true}
+		m, vol := entryAudio(e, def)
+		entry := map[string]interface{}{"type": e["type"], "mute": m, "volume": vol}
 		if p, okPath := e["path"].(string); okPath {
 			entry["path"] = p
 		}
@@ -329,7 +415,10 @@ func (d *daemon) outputsState() map[string]interface{} {
 	return out
 }
 
-func (d *daemon) setAudio(mute *bool, outputs []string) {
+// setAudio persists an audio change for the addressed outputs (all when none are
+// given) to outputs.json, then republishes the live frame so a running in-shell
+// clip mutes or changes volume at once. A nil mute or volume leaves that field.
+func (d *daemon) setAudio(mute *bool, volume *int, outputs []string) {
 	cacheDir := d.config().cacheDir()
 	state := map[string]map[string]interface{}{}
 	loadJSON(filepath.Join(cacheDir, "outputs.json"), &state)
@@ -339,10 +428,14 @@ func (d *daemon) setAudio(mute *bool, outputs []string) {
 		}
 		if mute != nil {
 			e["mute"] = *mute
-			state[k] = e
 		}
+		if volume != nil {
+			e["volume"] = *volume
+		}
+		state[k] = e
 	}
 	saveJSON(filepath.Join(cacheDir, "outputs.json"), state)
+	d.surface.setAudio(mute, volume, outputs)
 }
 
 // deleteWallpaper removes the source file and the catalog row, then tells
@@ -396,11 +489,11 @@ var _ = json.Marshal
 // cuts, never reveals.
 func (d *daemon) repaintOutputs(outputs []string, paint, fit string, live bool) {
 	if len(outputs) == 0 || contains(outputs, "*") {
-		d.surface.show(paint, fit, nil, live, true, "")
+		d.surface.show(paint, fit, nil, live, true, videoClip{})
 		return
 	}
 	for _, out := range outputs {
-		d.surface.showOutput(out, paint, fit, nil, live, true, "")
+		d.surface.showOutput(out, paint, fit, nil, live, true, videoClip{})
 	}
 }
 

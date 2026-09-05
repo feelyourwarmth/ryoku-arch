@@ -1,8 +1,15 @@
 # Maintainer: Ryoku <releases@ryoku.dev>
 #
-# ryotunes: the Ryoku music app. A Tauri (WebKitGTK) client for YouTube Music
-# with native libmpv playback, built from github.com/neur0map/ryotunes at a
-# pinned commit. It publishes org.mpris.MediaPlayer2.ryotunes, which is what
+# ryotunes: the Ryoku music app. A YouTube Music client with native libmpv
+# playback, built from github.com/neur0map/ryotunes at a pinned commit. It
+# ships two clients over one daemon: the Tauri (WebKitGTK) app (`ryotunes`,
+# still the default) and the native Quickshell client (`ryotunes-qml`, pure
+# QML at /usr/share/ryotunes/client) behind `ryotunesd`, a socket-activated
+# daemon that owns playback, MPRIS and the tray and exits five minutes after
+# the last client leaves with nothing playing. Only one player runs at a
+# time: `ryotunes` hands off to a live daemon (raise its client, or open
+# `ryotunes-qml`) and is the standalone Tauri app only when no daemon runs,
+# so the desktop's keybind, dock and launcher keep running plain `ryotunes`. It publishes org.mpris.MediaPlayer2.ryotunes, which is what
 # the desktop now-playing widget, the dock pill and the media keys follow, and
 # it retints itself from the shell's theme files (~/.config/ryoku/theme.json,
 # ~/.cache/ryoku/colors.json) so it follows the wallpaper like the rest of the
@@ -16,7 +23,7 @@
 # pkgver when src-tauri/tauri.conf.json's version moves) to ship a new build.
 pkgname=ryotunes
 pkgver=2.4.1
-pkgrel=1
+pkgrel=4
 pkgdesc="Ryotunes: the Ryoku music app (YouTube Music client with native playback)"
 arch=('x86_64')
 url="https://github.com/neur0map/ryotunes"
@@ -24,6 +31,7 @@ license=('GPL-3.0-or-later')
 # webkit2gtk-4.1 renders the UI; mpv is the audio engine (libmpv, linked);
 # libappindicator-gtk3 is dlopen'd for the tray icon.
 depends=('webkit2gtk-4.1' 'gtk3' 'mpv' 'libappindicator-gtk3' 'hicolor-icon-theme')
+optdepends=('quickshell: native QML client (ryotunes-qml)')
 makedepends=('git' 'rust' 'pnpm' 'nodejs')
 # Before it was packaged here, upstream shipped side-by-side builds named
 # ryotunes-vX.Y (and an AUR ryotunes-bin) whose install hooks symlinked
@@ -37,7 +45,7 @@ conflicts=("${_legacy[@]}")
 replaces=("${_legacy[@]}")
 # Rust already strips with the release profile; the debug split has nothing.
 options=('!lto' '!debug')
-_commit=7f9feedfa406516a4b4c712448af124592557f9c
+_commit=73e4e962b1eae42de3d007702e3b8e6b6a080c80
 source=("$pkgname::git+https://github.com/neur0map/ryotunes.git#commit=$_commit")
 sha256sums=('SKIP')
 
@@ -49,18 +57,27 @@ build() {
 
   cd "$srcdir/$pkgname"
   export CARGO_HOME="$srcdir/.cargo"
-  cargo build --release --locked --package ryotunes
-}
-
-check() {
-  cd "$srcdir/$pkgname"
-  export CARGO_HOME="$srcdir/.cargo"
-  cargo test --locked --workspace
+  cargo build --release --locked --package ryotunes --package ryotunesd --package ryotunes-cli
 }
 
 package() {
   cd "$srcdir/$pkgname"
   install -Dm755 target/release/ryotunes "$pkgdir/usr/bin/ryotunes"
+  install -Dm755 target/release/ryotunesd "$pkgdir/usr/bin/ryotunesd"
+  install -Dm755 target/release/ryotunes-cli "$pkgdir/usr/bin/ryotunes-cli"
+  install -Dm644 packaging/linux/ryotunesd.socket "$pkgdir/usr/lib/systemd/user/ryotunesd.socket"
+  install -Dm644 packaging/linux/ryotunesd.service "$pkgdir/usr/lib/systemd/user/ryotunesd.service"
+
+  # The native client: a Quickshell config launched by explicit path (`qs -p`),
+  # since `qs -c NAME` only resolves under $XDG_CONFIG_HOME/quickshell.
+  install -Dm755 packaging/linux/ryotunes-qml "$pkgdir/usr/bin/ryotunes-qml"
+  install -Dm644 packaging/linux/ryotunes-qml.desktop \
+    "$pkgdir/usr/share/applications/ryotunes-qml.desktop"
+  install -dm755 "$pkgdir/usr/share/ryotunes"
+  cp -r client "$pkgdir/usr/share/ryotunes/client"
+  rm -rf "$pkgdir/usr/share/ryotunes/client/tests"
+  find "$pkgdir/usr/share/ryotunes/client" -type d -exec chmod 755 {} +
+  find "$pkgdir/usr/share/ryotunes/client" -type f -exec chmod 644 {} +
   install -Dm644 packaging/linux/dev.ryoku.ryotunes.metainfo.xml \
     "$pkgdir/usr/share/metainfo/dev.ryoku.ryotunes.metainfo.xml"
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"

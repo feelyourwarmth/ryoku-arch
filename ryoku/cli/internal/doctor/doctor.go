@@ -105,6 +105,7 @@ func reconcilers() []reconciler {
 		{"limine boot entry", reconcileLimineBootEntry},
 		{"alongside boot entry", reconcileAlongsideBootEntry},
 		{"limine UKI boot tree", reconcileLimineUKITree},
+		{"limine kernel boot images", reconcileLimineKernelImages},
 		{"limine autoboot", reconcileLimineAutoboot},
 		{"limine snapshot sync", reconcileLimineOSName},
 		{"updatedb snapshot prune", reconcileUpdatedbPrune},
@@ -114,6 +115,7 @@ func reconcilers() []reconciler {
 		{"stale update run-state", reconcileStaleUpdateRun},
 		{"stale install crypt mapper", reconcileStaleCryptMapper},
 		{"ryoku package channel", reconcileRyokuChannel},
+		{"ryoku package database", reconcileRyokuSyncDB},
 		{"boot guard", reconcileBootGuard},
 		{"update channel checkout", reconcileUpdateChannel},
 		{"update checkout pointer", reconcileRepoPointer},
@@ -156,8 +158,11 @@ func reconcilers() []reconciler {
 		{"keyring unlock policy", reconcileKeyring},
 		{"SDDM greeter theme", reconcileGreeterTheme},
 		{"SDDM greeter display server", reconcileGreeterDisplayServer},
+		{"login screen cursor", reconcileGreeterCursor},
 		{"fastfetch readout emblem", reconcileFastfetchEmblem},
 		{"rice fastfetch emblem", reconcileRiceEmblem},
+		{"ryotunes", reconcileRyotunes},
+		{"fastfetch OS line", reconcileFastfetchOSLine},
 		{"brand mark image", reconcileBrandLogo},
 		{"decor art", reconcileRyodecors},
 		{"Hyprland config integrity", reconcileHyprlandConfig},
@@ -969,6 +974,53 @@ func reconcileRyokuChannel(checkOnly bool) recResult {
 	// re-populating is idempotent and cheap.
 	_ = sys.Sudo("pacman-key", "--populate", "ryoku")
 	return fixedRes("re-added the [ryoku] repo to pacman.conf so updates arrive again")
+}
+
+// ---- reconciler: ryoku sync database health ----------------------------------
+
+// reconcileRyokuSyncDB heals a cached [ryoku] sync db wedged against its
+// signature. The db is non-reproducible and its detached .sig is fetched fresh
+// on every refresh even when the db itself is unchanged (a 304), so any box
+// that syncs while the mirror briefly serves a db and .sig from different
+// builds caches a mismatched pair. pacman then rejects it -- "invalid or
+// corrupted database (PGP signature)" -- on every transaction, and -Sy will not
+// replace a db it thinks is current, so `pacman -S <anything>` stays wedged
+// until the cache is dropped. `ryoku update` self-heals on the spot; this
+// catches a box a user only ever drives through plain pacman. Detection is
+// read-only (`pacman -Sl` loads and verifies the cached db); the fix drops it
+// and pulls a fresh, matched pair.
+func reconcileRyokuSyncDB(checkOnly bool) recResult {
+	if !sys.PkgInstalled("ryoku-desktop") {
+		return okRes("not a packaged install (desktop runs from a checkout)")
+	}
+	// a missing key is a keyring problem the channel reconciler owns; dropping
+	// the db would only refetch one that fails the same way.
+	if !sys.PkgInstalled("ryoku-keyring") || sys.RyokuServer() == "" {
+		return okRes("[ryoku] repo or keyring absent; nothing to verify")
+	}
+	if !sys.Exists("/var/lib/pacman/sync/ryoku.db") {
+		return okRes("no cached [ryoku] sync db to check")
+	}
+	out, err := sys.RunOut("sh", "-c", "LC_ALL=C pacman -Sl ryoku 2>&1")
+	if err == nil {
+		return okRes("the [ryoku] sync db loads and verifies")
+	}
+	if !strings.Contains(out, "invalid or corrupted database") && !strings.Contains(out, "signature") {
+		// another failure (offline, transient); not the stale-signature wedge.
+		return okRes("the [ryoku] sync db is present; no signature wedge")
+	}
+	if checkOnly {
+		return wouldRes("the cached [ryoku] sync db no longer matches its signature; every pacman transaction fails until it is refreshed").
+			withFix("ryoku doctor")
+	}
+	if err := sys.DropRyokuSyncDB(); err != nil {
+		return failRes("could not drop the stale [ryoku] sync db: %v", err).
+			withFix("sudo rm -f /var/lib/pacman/sync/ryoku.* && sudo pacman -Syy")
+	}
+	// the db is gone now, so a plain -Sy pulls a fresh, matched pair; best-effort
+	// so an offline box simply refetches on its next update.
+	_ = sys.Sudo("pacman", "-Sy", "--noconfirm")
+	return fixedRes("dropped the stale [ryoku] sync db so pacman refetches a matched db and signature")
 }
 
 // ---- reconciler: Material Symbols icon font ------------------------------------
@@ -2267,7 +2319,10 @@ const greeterCompositorBin = "/usr/share/ryoku/lockscreen/ryoku-greeter"
 // no XCURSOR_*: Qt then asks libwayland-cursor for the "default" theme, and on a
 // box where that chain resolves to nothing the greeter sets a null cursor and
 // the login screen has no visible pointer. Pin the shipped Bibata set
-// (ryoku-cursors, a hard depend) at the size env.lua uses.
+// (ryoku-cursors, a hard depend) at the size env.lua uses. This only helps
+// clients that honor XCURSOR_THEME; reconcileGreeterCursor establishes the
+// "default" theme itself for the ones (SDDM's Wayland greeter, weston) that fall
+// back to it regardless.
 const greeterEnvironment = "QT_QPA_PLATFORM=wayland,XCURSOR_THEME=Bibata-Modern-Ice,XCURSOR_SIZE=24"
 
 func sddmWaylandBody() string {
@@ -2320,6 +2375,63 @@ func reconcileGreeterDisplayServer(checkOnly bool) recResult {
 			withFix("check sudo access, then re-run ryoku doctor")
 	}
 	return fixedRes("moved the SDDM greeter to Wayland (weston kiosk); it is torn down cleanly at login now")
+}
+
+// ---- reconciler: login screen cursor -----------------------------------------
+
+const defaultCursorDir = "/usr/share/icons/default"
+const defaultCursorIndex = defaultCursorDir + "/index.theme"
+
+// defaultCursorIndexBody points the freedesktop "default" cursor theme at the
+// shipped Bibata set. libwayland-cursor (weston's own pointer, and the SDDM
+// greeter's Qt client) and libXcursor fall back to the theme literally named
+// "default" whenever the requested theme is missing -- or, as SDDM's Wayland
+// greeter does, silently ignored. Ryoku ships no /usr/share/icons/default, so
+// that fallback resolves to nothing and the login screen (at system start and
+// after logout) draws no pointer at all. An Inherits= stub gives "default" a
+// real target, covering every client that does not honor GreeterEnvironment's
+// XCURSOR_THEME. Kept as a stub, not a copy, so it tracks whatever Bibata ships.
+func defaultCursorIndexBody() string {
+	return "[Icon Theme]\nName=Default\nComment=Ryoku default cursor\nInherits=" + defaultCursorTheme + "\n"
+}
+
+// defaultCursorEstablished: the system already has a "default" cursor theme --
+// our index.theme, a foreign one, or a real cursors/ dir. Any of these means the
+// fallback resolves, so we must not clobber it (a user or another package may
+// own it).
+func defaultCursorEstablished() bool {
+	return sys.Exists(defaultCursorIndex) || sys.Exists(defaultCursorDir+"/cursors")
+}
+
+// reconcileGreeterCursor keeps the login screen pointer visible. The SDDM
+// greeter runs on a weston kiosk with no session env; where the greeter or
+// weston falls back to the "default" cursor theme (SDDM's Wayland greeter
+// ignores XCURSOR_THEME), a box with no /usr/share/icons/default draws no
+// pointer at all -- the "no cursor on login/logout" break. This establishes the
+// fallback, pointing "default" at the shipped Bibata set. Only ever creates the
+// stub when absent, so a user's own default cursor is left untouched. Scoped to
+// login boxes (a Ryoku greeter is installed) and only once ryoku-cursors, which
+// ships Bibata, has landed.
+func reconcileGreeterCursor(checkOnly bool) recResult {
+	if !sys.Exists(greeterThemeDir) {
+		return okRes("no Ryoku greeter installed")
+	}
+	if defaultCursorEstablished() {
+		return okRes(`the "default" cursor theme resolves; the login screen has a pointer`)
+	}
+	if !cursorThemeInstalled(defaultCursorTheme, []string{"/usr/share/icons"}) {
+		return warnRes("cursor theme %q is not on disk yet; the login screen pointer cannot be pinned", defaultCursorTheme).
+			withFix("ryoku update")
+	}
+	if checkOnly {
+		return wouldRes(`no "default" cursor theme; the SDDM greeter draws no pointer at system start or after logout`).
+			withFix("ryoku doctor")
+	}
+	if err := writeRootFile(defaultCursorIndex, defaultCursorIndexBody(), "0644"); err != nil {
+		return failRes("could not write %s: %v", defaultCursorIndex, err).
+			withFix("check sudo access, then re-run ryoku doctor")
+	}
+	return fixedRes(`pointed the "default" cursor theme at %s; the login screen has a pointer now`, defaultCursorTheme)
 }
 
 // ---- reconciler: fastfetch readout emblem ------------------------------------
@@ -2402,6 +2514,51 @@ func reconcileFastfetchEmblem(checkOnly bool) recResult {
 		return failRes("could not restore fastfetch emblem: %v", err).withFix("ryoku materialize")
 	}
 	return fixedRes("restored the fastfetch emblem; the readout no longer falls back to the Arch logo")
+}
+
+// ---- reconciler: fastfetch OS line -------------------------------------------
+
+// fastfetch's OS line used to run `ryoku version`; with named releases it runs
+// `ryoku version --pretty` ("Ryoku Onogoro v0.56.3-beta.19"). config.jsonc is
+// seeded once and then owned by the box (the Hub, the store and the user edit
+// it in place), so the shipped change never reaches an existing box on its
+// own; this rewrites that one command and nothing else.
+// the shipped seed writes `2>`; a config the Hub saved carries Go's JSON
+// escape `2\u003e` for the same byte, so both spellings are the old line.
+var fastfetchOSLineOld = []string{`ryoku version 2>/dev/null`, `ryoku version 2\u003e/dev/null`}
+
+func upgradeFastfetchOSLine(raw string) (string, bool) {
+	for _, old := range fastfetchOSLineOld {
+		if strings.Contains(raw, old) {
+			return strings.Replace(raw, old, strings.Replace(old, "ryoku version ", "ryoku version --pretty ", 1), 1), true
+		}
+	}
+	return raw, false
+}
+
+func reconcileFastfetchOSLine(checkOnly bool) recResult {
+	path := filepath.Join(sys.ConfigHome(), "fastfetch", "config.jsonc")
+	raw := readFileSafe(path)
+	if raw == "" {
+		return okRes("no Ryoku fastfetch config")
+	}
+	migrated, changed := upgradeFastfetchOSLine(raw)
+	if !changed {
+		return okRes("fastfetch's OS line names the release")
+	}
+	if checkOnly {
+		return wouldRes("fastfetch's OS line predates named releases (ryoku version -> ryoku version --pretty)").
+			withFix("ryoku doctor rewrites that one line")
+	}
+	tmp := path + ".ryoku-tmp"
+	if err := os.WriteFile(tmp, []byte(migrated), 0o644); err != nil {
+		return failRes("could not write %s: %v", tmp, err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return failRes("could not replace %s: %v", path, err)
+	}
+	return fixedRes("fastfetch's OS line now names the release (ryoku version --pretty)")
 }
 
 // ---- reconciler: rice fastfetch emblem ---------------------------------------
@@ -3562,17 +3719,23 @@ func tailLines(s string, n int) string {
 
 // ---- reconciler: unowned Ryoku system files (deploy-seeded) -------------------
 
-// ryokuSystemGlobs are the paths ryoku-desktop packages that ryoku/shell
-// deploy.sh also seeds unowned (privileged helpers + their polkit rules, so a dev
-// checkout's pkexec has a rule to match). On a packaged box an unowned copy from
-// an earlier dev deploy or `ryoku recovery` collides with the package on
-// `pacman -Syu` ("exists in filesystem") and aborts the whole atomic transaction,
-// so no update lands. `ryoku update` now passes --overwrite for these, but a box
-// already wedged cannot reach that fixed binary; clearing the copies here lets the
-// next update adopt them.
+// ryokuSystemGlobs are the ryoku-desktop-owned paths that the ISO installer
+// (bootloader.sh) and ryoku/shell deploy.sh also seed unowned: the privileged
+// helpers + their polkit rules (so a dev checkout's pkexec has a rule to match),
+// the ryoku-owned systemd units, the shipped boot configs under
+// /usr/share/ryoku/boot, and the Plymouth splash theme. On a packaged box an
+// unowned copy from an
+// earlier dev deploy, an older ISO, or `ryoku recovery` collides with the package
+// on `pacman -Syu` ("exists in filesystem") and aborts the whole atomic
+// transaction, so no update lands. `ryoku update` now passes --overwrite for these
+// (updater.ryokuOverwriteGlob), but a box already wedged cannot reach that fixed
+// binary; clearing the copies here lets the next update adopt them.
 var ryokuSystemGlobs = []string{
 	"/usr/bin/ryoku-*",
+	"/usr/lib/systemd/system/ryoku-*",
 	"/usr/share/polkit-1/rules.d/*ryoku*.rules",
+	"/usr/share/plymouth/themes/ryoku/*",
+	"/usr/share/ryoku/boot/*",
 }
 
 // pkgOwnsFile reports whether an installed package owns path. A var so tests stub

@@ -162,9 +162,10 @@ A release is a tag: `main` advances only by fast-forward from `unstable-dev`,
 and publishing nothing on that push. The maintainer runs **Stable Release**
 (`bump_type: none` tags the `VERSION` main already carries; a bump rewrites it
 first), which tags `main`, publishes `releases/<tag>/`, moves the stable
-pointer onto it, records the ledger entry, and dispatches the release ISO from
-that frozen directory. Arch itself keeps rolling between releases; only the
-Ryoku set is frozen.
+pointer onto it, records the ledger entry, and dispatches both release ISOs
+(plain Arch and CachyOS) from that frozen directory, so an ISO named for a
+release installs exactly that release. Arch itself keeps rolling between
+releases; only the Ryoku set is frozen.
 
 **Work on `unstable-dev` reaches testing on every push, and stable only when a
 release is tagged.**
@@ -226,7 +227,12 @@ island (when the channel serves the next line) and the Hub's Updates page.
 - **A user override belongs in `~/.config/ryoku/user_edits`, never in a shipped
   path.** The base still ships every file (the delivery check stays green) and
   the overlay wins on top. A whole-file fork opts out of upstream fixes for that
-  one file, so prefer an overlay for anything additive.
+  one file, so prefer an overlay for anything additive. An edit made to a
+  shipped file in place is not lost either: `materialize` notices bytes that
+  match neither what it laid last time nor what it ships now, copies them into
+  the overlay as a fork, lays the base, and lists the files it kept. Hyprland
+  additions (rules, binds) belong in `hypr/user.lua` or the Hub, which are
+  never re-laid.
 - **Everything a user runs must converge on update, wherever it lives.**
   `materialize` covers `~/.config`; a payload installed elsewhere (the lock
   bundle under `~/.local/share`, the SDDM greeter skin under
@@ -263,6 +269,11 @@ island (when the channel serves the next line) and the Hub's Updates page.
 - The install-test workflow builds the ISO and runs a real, unattended install in
   a VM, then verifies the desktop comes up, so a broken install or a missing
   package is caught before a user hits it.
+- The publish (`publish-repo.yml`) builds and signs the repo once, keeps it as
+  a workflow artifact, installs ryoku-desktop from that artifact on Arch and
+  CachyOS with the release key verified (`installation/tests/container-install.sh`
+  with `RYOKU_PREBUILT_REPO=1`), and uploads the same artifact. What was tested
+  is byte-for-byte what ships; a run that fails the gate publishes nothing.
 - `bin/ryoku-dev-lint-qml <config-root>...` fails on QML that cannot load. The
   publish gate (`installation/tests/container-install.sh`) runs it over the
   materialized shell and Hub trees against the installed Qt modules, the same

@@ -3,6 +3,18 @@
 ## Unreleased
 
 ### Changed
+- **ISOs are named for their release and variant.** A release build produces
+  `ryoku-<date>-r<run>-<sha>-x86_64-v0.57.0-beta.19.iso` and, for CachyOS,
+  the same name ending `-cachyos.iso`; a build off `main` keeps `-main`. The
+  manifest reads the ref and variant back from the name, and the live ISO's
+  motd and payload stamp carry the line's name ("Ryoku Onogoro 0.57.0-beta.19
+  installer") (`build-iso-reusable.yml`, `bin/ryoku-iso-manifest`,
+  `iso/build.sh`, `iso/airootfs/etc/motd`).
+- `tests/container-install.sh`: **installs a prebuilt signed repo when
+  `RYOKU_PREBUILT_REPO=1`** (the publish's artifact, verified with the release
+  keyring at `SigLevel=Required`, no build toolchain) and asserts the release
+  and channel the publish named; a hand build still builds with a throwaway
+  key. Also asserts the boot guard ships and disarms on a proven boot.
 - `iso/build.sh`: **A release ISO bakes from its frozen release directory.**
   `RYOKU_ISO_REPO_URL` (the `repo_url` input of the ISO workflows, which
   `publish-repo.yml` passes for a tagged release) now reaches
@@ -12,6 +24,13 @@
 - `tests/container-install.sh`: asserts the `/etc/ryoku-release` marker, that
   `ryoku version` prints it, and that `ryoku track` refuses to move a box whose
   `[ryoku]` points at a mirror Ryoku does not publish.
+- **The locale picker leads with the keyboard's own country.** `be` is both the
+  Belgian keyboard layout and the Belarusian language code, and `be_BY.UTF-8`
+  sorts and fuzzy-matches ahead of `fr_BE`/`nl_BE` for "be", so a Belgian could
+  pick Belarusian (a Cyrillic locale) by mistake and land in a Russian-looking
+  shell. The locale step now floats the chosen keyboard's country locales to the
+  top and makes one the default highlight, so the intended pick is the obvious
+  one (`tui/main.go`, `tui/system.go`).
 
 A ground-up hardening of the installer for real hardware. Granular backend and
 ISO detail live in `backend/CHANGELOG.md` and `iso/CHANGELOG.md`.
