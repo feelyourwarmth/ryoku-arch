@@ -3,6 +3,16 @@
 ## Unreleased
 
 ### Changed
+- **`ryotunes` 2.4.1-2 ships the native client.** The package now tracks
+  neur0map/ryotunes `815af5a` and carries `ryotunesd` (socket-activated daemon
+  owning playback, MPRIS and the tray), `ryotunes-cli`, and the pure-QML
+  Quickshell client `ryotunes-qml` at `/usr/share/ryotunes/client`, next to the
+  unchanged Tauri app. Measured on a 7940HS laptop the native client idles at
+  0.1% CPU paused and 0.7% playing where the WebKit app spent 2% plus three
+  helper processes, and scrolls Home at under 1% of a core instead of 76%.
+  `RYOTUNES_CLIENT=qml` makes the daemon open the native client on tray Show
+  and second launch. Hyprland floats its window (`float-ryotunes-qml`, the
+  Quickshell class with title `Ryotunes`) like the Tauri one.
 - **A release dispatches both ISOs.** The publish ran only `build-iso.yml`
   (plain Arch) after a release; `build-iso-cachyos.yml` is dispatched from the
   same frozen release directory now, so the CachyOS ISO carries the release
