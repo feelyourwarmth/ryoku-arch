@@ -35,6 +35,10 @@ Scope {
     property string depthUrl: ""
     property var wallpaperTransition: null
     property string videoUrl: ""
+    // The in-shell clip's audio, threaded from the wallpaper bridge to the
+    // backdrop's player: muted by default, volume 0-100.
+    property bool videoMuted: true
+    property int videoVolume: 100
     // The ryogami-live yield flag (default "ryogami" engine): hide the painter
     // while the C player owns the background layer.
     property bool wallpaperLive: false
@@ -194,6 +198,8 @@ Scope {
             transition: root.wallpaperTransition
             videoUrl: root.videoUrl
             live: root.wallpaperLive
+            videoMuted: root.videoMuted
+            videoVolume: root.videoVolume
         }
 
         // Mirror of the same image for glass widgets: Qt cannot sample another

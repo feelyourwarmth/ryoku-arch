@@ -175,6 +175,8 @@ ShellRoot {
                 wallpaperTransition: wallpaper.transition
                 videoUrl: wallpaper.videoUrl
                 wallpaperLive: wallpaper.live
+                videoMuted: wallpaper.videoMuted
+                videoVolume: wallpaper.videoVolume
             }
             Visualizer {
                 screen: perScreen.modelData

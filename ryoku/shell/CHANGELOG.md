@@ -3,6 +3,18 @@
 ## Unreleased
 
 ### Fixed
+- **In-shell video wallpapers can play sound again (#139).** The in-shell
+  engine's QtMultimedia player was hardwired to `AudioOutput { muted: true }`,
+  so a live wallpaper stayed silent even with audio turned on in the picker.
+  The daemon now carries the picker's mute and volume on the `wallpaper` frame
+  (new `mute`/`volume` keys, taken from the per-output apply maps or the
+  wall-ui `wallpaperMute`/`wallpaperVolume` defaults), persists both in
+  `outputs.json`, and republishes the live frame on `wall.set_audio` so a
+  running clip changes at once; the backdrop binds them to its player. The
+  in-shell transcode cache keeps its audio track now (the `-an` that stripped
+  it is gone, and the cache key changed so stale silent re-encodes are
+  ignored). The ryogami C player stays intentionally silent
+  (`ryogami/daemon/`, `modules/wallpaper/`).
 - **A silent bar sits still again, and the GPU drift is paced (#60, third
   round).** The GPU gap animation (`StreamShader.qml`) drove its shader clock
   with a `FrameAnimation`, which makes Quickshell render and commit a frame
