@@ -3,8 +3,8 @@
 ## Unreleased
 
 ### Changed
-- **`ryotunes` 2.4.1-3 ships the native client.** The package now tracks
-  neur0map/ryotunes `40990ce` and carries `ryotunesd` (socket-activated daemon
+- **`ryotunes` 2.4.1-4 ships the native client.** The package now tracks
+  neur0map/ryotunes `73e4e96` and carries `ryotunesd` (socket-activated daemon
   owning playback, MPRIS and the tray), `ryotunes-cli`, and the pure-QML
   Quickshell client `ryotunes-qml` at `/usr/share/ryotunes/client`, next to the
   unchanged Tauri app. Measured on a 7940HS laptop the native client idles at
@@ -13,7 +13,7 @@
   Only one player runs at a time: `ryotunes` hands off to a live daemon
   (raise its client, or open `ryotunes-qml`) and is the standalone Tauri app
   only when no daemon runs, so Super+J, the dock and the launcher keep
-  running plain `ryotunes` (2.4.1-3). Hyprland floats its window (`float-ryotunes-qml`, the
+  running plain `ryotunes`, and reopening after Super+Q remaps the client window (2.4.1-4). Hyprland floats its window (`float-ryotunes-qml`, the
   Quickshell class with title `Ryotunes`) like the Tauri one.
 - **A release dispatches both ISOs.** The publish ran only `build-iso.yml`
   (plain Arch) after a release; `build-iso-cachyos.yml` is dispatched from the
