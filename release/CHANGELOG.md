@@ -2,7 +2,52 @@
 
 ## Unreleased
 
+### Added
+- **`ryoku-keysounds`: the key sounds compositor plugin.** Built from
+  `ryoku/hyprland/plugins/keysounds` (depends on `hyprland`, `libcanberra`),
+  it installs `keysounds.so` under `/usr/lib/hyprland/plugins/`, eleven
+  sample profiles cut at build time from the pinned MIT-licensed Mechvibes
+  packs under `/usr/share/ryoku/keysounds/` (the licence beside them), and the
+  plugin source under `/usr/share/ryoku/hypr-plugins/keysounds/` so a box with
+  no checkout can rebuild it for a newer Hyprland. `ryoku-desktop` pins it like
+  the other plugin packages.
+
 ### Changed
+- **`ryotunes` 2.5.1-1 tracks neur0map/ryotunes v2.5.1.** The heart saves without an account. Liking a track when there is no YouTube Music session (or on a SoundCloud/local track) lands it in a device-local Liked...
+- **`ryotunes` 2.5.0-1 tracks neur0map/ryotunes v2.5.0.** The package now follows
+  Ryotunes' GitHub releases (a sha256-pinned source tarball) instead of a hand-pinned
+  commit: `.github/workflows/ryotunes-release.yml` bumps it on every upstream release
+  (dispatch or daily poll) and publishes to testing. The package enables
+  `ryotunesd.socket` for every user, so `ryotunes` opens the native client on a
+  fresh install instead of the old Tauri app.
+- **Every Hyprland plugin package lays an `.abi` receipt beside its `.so`.**
+  `hypr-dynamic-cursors`, `ryoku-hypr-plugins`, `hyprglass`, `imgborders` and
+  `ryoku-keysounds` write `<name>.abi` from the build host's `version.h`, the
+  plugin ABI string Hyprland checks on load (commit plus the major.minor of
+  aquamarine, hyprutils, hyprgraphics, hyprcursor, hyprlang). The Hub's Plugins
+  page, the generated `settings.lua` and `ryoku doctor` read it to tell a copy
+  an Arch bump left behind from a working one without loading it, and rebuild
+  it locally until the next publish ships a fresh package.
+- **`ryotunes` 2.4.1-7 tracks neur0map/ryotunes `43d063f`.** SoundCloud as a
+  third provider (guest, waveform seek bar, Orange-style artist pages), the
+  Discover home, the skin system (ten shipped skins under
+  `/usr/share/ryotunes/skins`, the matugen template under
+  `/usr/share/ryotunes/matugen`, RyoStore's `ryotunes-skins` category as the
+  store source), the static cover wash (the client dropped from ~35 % of a core
+  to ~2 % while playing), pause-to-quit (client after a minute parked, daemon a
+  minute later), and the Spotify Premium gate that says why a sign-in failed.
+- **`ryotunes` 2.4.1-4 ships the native client.** The package now tracks
+  neur0map/ryotunes `73e4e96` and carries `ryotunesd` (socket-activated daemon
+  owning playback, MPRIS and the tray), `ryotunes-cli`, and the pure-QML
+  Quickshell client `ryotunes-qml` at `/usr/share/ryotunes/client`, next to the
+  unchanged Tauri app. Measured on a 7940HS laptop the native client idles at
+  0.1% CPU paused and 0.7% playing where the WebKit app spent 2% plus three
+  helper processes, and scrolls Home at under 1% of a core instead of 76%.
+  Only one player runs at a time: `ryotunes` hands off to a live daemon
+  (raise its client, or open `ryotunes-qml`) and is the standalone Tauri app
+  only when no daemon runs, so Super+J, the dock and the launcher keep
+  running plain `ryotunes`, and reopening after Super+Q remaps the client window (2.4.1-4). Hyprland floats its window (`float-ryotunes-qml`, the
+  Quickshell class with title `Ryotunes`) like the Tauri one.
 - **A release dispatches both ISOs.** The publish ran only `build-iso.yml`
   (plain Arch) after a release; `build-iso-cachyos.yml` is dispatched from the
   same frozen release directory now, so the CachyOS ISO carries the release
