@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Changed
+- **`ryoku update` tracks Ryotunes on its own release channel; `ryoku doctor`
+  reports it.** Ryotunes is released independently as a prebuilt Arch package on
+  ryoku-dev/ryotunes' GitHub releases, so `ryoku update` now installs a new build
+  directly through `internal/ryotunesrelease` (fresh release read, sha256 +
+  pacman name/version/arch verification, `pacman -U`, upgrade-only) on both the
+  git and packaged channels -- a box with no other changes still picks it up, and
+  a newer external build is never downgraded. `ryoku doctor` and
+  `ryoku status --json` report a pending release without installing it
+  (`internal/ryotunesrelease.Check`), and an offline check is never rendered as
+  up to date (`internal/updater/ryotunes.go`,
+  `internal/doctor/reconcile_ryotunes.go`).
 - **An edit to a shipped file survives the update as a fork.** `ryoku
   materialize` re-lays every shipped config on each update, so a hand edit
   to, say, `hypr/modules/window_rules.lua` was thrown away. The manifest now
@@ -227,7 +238,7 @@
   catalogue's per-file sha256/size/mode, docs and preview media `install:
   false`) and `registry-entry.json` (a complete, community `plugins/registry.json`
   row with `hosts` and the `bar-widget`/`desktop-widget` tag), under git.
-  `share <id>` exports if needed, then lays it into a fork of `neur0map/ryostore`
+  `share <id>` exports if needed, then lays it into a fork of `ryoku-dev/ryostore`
   as `plugins/<id>/`, upserts the registry entry, pushes `plugin/<id>` and opens
   the pull request with the catalogue's checklist (as the plugin's author when
   git has no identity); without `gh` it opens the submission form prefilled
