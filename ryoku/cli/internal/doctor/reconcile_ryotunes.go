@@ -10,6 +10,8 @@ import (
 
 	"ryoku-cli/internal/ryotunesrelease"
 	"ryoku-cli/internal/sys"
+
+	i18n "ryoku-i18n"
 )
 
 // ryotunesSocketUnit provides native daemon socket activation. The launcher can
@@ -33,7 +35,7 @@ func reconcileRyotunes(checkOnly bool) recResult {
 	bin := filepath.Join(sys.Home(), ".local", "bin", "ryotunes")
 	stale := staleUserRyotunes(bin)
 	if stale != "" {
-		problems = append(problems, stale+" in ~/.local/bin shadows the packaged app")
+		problems = append(problems, i18n.Tf("%s in ~/.local/bin shadows the packaged app", stale))
 		fixes = append(fixes, "rm -f ~/.local/bin/ryotunes ~/.local/share/applications/ryotunes.desktop")
 	}
 	// A box that runs the Ryoku desktop is expected to have Ryotunes: a dev
@@ -43,23 +45,23 @@ func reconcileRyotunes(checkOnly bool) recResult {
 	managedDesktop := sys.ResolveRepo() != "" || sys.PkgInstalled("ryoku-desktop")
 	desktopMissingRyotunes := managedDesktop && !sys.PkgInstalled("ryotunes")
 	if desktopMissingRyotunes {
-		problems = append(problems, "the ryotunes package is not installed")
+		problems = append(problems, i18n.T("the ryotunes package is not installed"))
 		fixes = append(fixes, "ryoku update")
 	}
 	socketMissing := sys.PkgInstalled("ryotunes") && !ryotunesSocketEnabled()
 	if socketMissing {
-		problems = append(problems, "the ryotunesd socket is not enabled for session activation")
+		problems = append(problems, i18n.T("the ryotunesd socket is not enabled for session activation"))
 		fixes = append(fixes, "systemctl --user enable --now ryotunesd.socket")
 	}
 	if len(problems) == 0 {
 		if _, err := sys.RunOut("pacman", "-Qoq", "/usr/bin/ryotunes"); err != nil && sys.Exists("/usr/bin/ryotunes") {
-			return warnRes("/usr/bin/ryotunes is not owned by the ryotunes package").
+			return warnRes(i18n.T("/usr/bin/ryotunes is not owned by the ryotunes package")).
 				withFix("sudo pacman -S --overwrite /usr/bin/ryotunes ryotunes")
 		}
 		if note, ok := ryotunesUpdateNote(); ok {
 			return note
 		}
-		return okRes("ryotunes is the packaged app")
+		return okRes(i18n.T("ryotunes is the packaged app"))
 	}
 	if checkOnly {
 		return wouldRes("%s", strings.Join(problems, "; ")).withFix(strings.Join(fixes, " && "))
@@ -89,7 +91,7 @@ func reconcileRyotunes(checkOnly bool) recResult {
 		_, err := ryotunesrelease.Ensure(ctx)
 		cancel()
 		if err != nil {
-			return failRes("could not install ryotunes: %v", err).withFix("ryoku update")
+			return failRes(i18n.T("could not install ryotunes: %v"), err).withFix("ryoku update")
 		}
 	}
 	if socketMissing {
@@ -97,11 +99,11 @@ func reconcileRyotunes(checkOnly bool) recResult {
 		// enable --now: the socket binds in this session without a relogin.
 		_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
 		if err := exec.Command("systemctl", "--user", "enable", "--now", ryotunesSocketUnit).Run(); err != nil {
-			return failRes("could not enable %s: %v", ryotunesSocketUnit, err).
+			return failRes(i18n.T("could not enable %s: %v"), ryotunesSocketUnit, err).
 				withFix("systemctl --user enable --now ryotunesd.socket")
 		}
 	}
-	return fixedRes("ryotunes opens the packaged app (%s)", strings.Join(problems, "; "))
+	return fixedRes(i18n.T("ryotunes opens the packaged app (%s)"), strings.Join(problems, "; "))
 }
 
 // Release availability is advisory: doctor checks but never installs. A lookup
@@ -111,12 +113,12 @@ func ryotunesUpdateNote() (recResult, bool) {
 	defer cancel()
 	st, err := ryotunesrelease.Check(ctx)
 	if err != nil {
-		return noteRes("could not check Ryotunes releases: %v", err), true
+		return noteRes(i18n.T("could not check Ryotunes releases: %v"), err), true
 	}
 	if !st.Available {
 		return recResult{}, false
 	}
-	return noteRes("a newer Ryotunes (%s) is available; `ryoku update` installs it", st.Latest).
+	return noteRes(i18n.T("a newer Ryotunes (%s) is available; `ryoku update` installs it"), st.Latest).
 		withFix("ryoku update"), true
 }
 

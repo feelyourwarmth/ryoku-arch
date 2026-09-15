@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- **The bar stream can drift again when nothing is playing.** A new "Drift when
+  silent" switch keeps the gap stream animating on any power profile, not only
+  Performance. It sits next to Gap animation in the bar control centre and under
+  Settings > Performance, ships off so a quiet desktop still idles cheap, and
+  music animates the bar either way (`shell/services/Perf.qml`,
+  `bar/barstyles/qsbar/controlcenter/routes/BarsRoute.qml`).
 - **Ryotunes skins are a RyoStore category.** RyoStore serves the community
   Ryotunes-skin catalogue as `ryotunes-skins` (group `wear`): a skin installs
   as a generic product into `~/.local/share/ryoku/ryotunes-skins/<id>/` with a
@@ -53,6 +59,15 @@
   `shell/matugen/apps.toml`, `shell/ipc/matugen.go`, `../hub/backend/matugen.go`).
 
 ### Fixed
+- **The gap stream clears when it stops instead of freezing a frame.** A silent
+  bar with no drift left the last shader frame stuck in the gaps; it now hides,
+  so the stream reads as off, then on when audio returns
+  (`bar/barstyles/qsbar/modules/StreamShader.qml`).
+- **Settings search for the workspace and launcher marks lands on the right tab
+  again.** Those controls moved to the bar control centre's Identity tab, but
+  the search index still sent "Workspace marker" and "Launcher mark" to the old
+  Widgets page, so a search dropped you where they no longer were. They route to
+  Identity now (`shell/modules/bar/barstyles/qsbar/controlcenter/ControlCenter.qml`).
 - **Floating windows fit the screen they open on (#147).** Files, Ryoku
   Settings, Ryostore, Ryovm and the other fixed-size floating rules asked for
   1500x850 or bigger, so on a 1366x768 panel Files opened larger than the

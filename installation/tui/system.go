@@ -20,6 +20,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"ryoku-i18n"
 )
 
 // run executes a command and returns its trimmed stdout, plus whether it worked.
@@ -66,8 +68,8 @@ func sysKeymaps() []item {
 		return nil
 	}
 	labels := map[string]string{
-		"us": "US (QWERTY)", "uk": "United Kingdom", "gb": "United Kingdom",
-		"de": "German", "fr": "French (AZERTY)", "es": "Spanish", "it": "Italian",
+		"us": i18n.T("US (QWERTY)"), "uk": i18n.T("United Kingdom"), "gb": i18n.T("United Kingdom"),
+		"de": i18n.T("German"), "fr": i18n.T("French (AZERTY)"), "es": i18n.T("Spanish"), "it": i18n.T("Italian"),
 		"dvorak": "Dvorak", "colemak": "Colemak",
 	}
 	var items []item
@@ -152,7 +154,7 @@ func sysTimezones() []item {
 	if !ok {
 		return nil
 	}
-	items := []item{{"auto", "Detect automatically", "via IP, also sets the clock"}}
+	items := []item{{"auto", i18n.T("Detect automatically"), i18n.T("via IP, also sets the clock")}}
 	for _, l := range strings.Split(out, "\n") {
 		c := strings.TrimSpace(l)
 		if c != "" {
@@ -342,9 +344,9 @@ func sysDisks() []item {
 // module, so the fix is a firmware setting; anything else gets a generic hint.
 func diskHint() string {
 	if hasVMD() {
-		return "No disks found. This machine has Intel VMD (RST) enabled -- enable AHCI / disable VMD (Intel RST) in BIOS setup, then reboot the installer. dual-boot note: Windows installed under RST will not boot after switching; see docs/installation-hardware.md."
+		return i18n.T("No disks found. This machine has Intel VMD (RST) enabled -- enable AHCI / disable VMD (Intel RST) in BIOS setup, then reboot the installer. dual-boot note: Windows installed under RST will not boot after switching; see docs/installation-hardware.md.")
 	}
-	return "No disks found. Check that a drive is connected and detected in firmware, then reboot the installer."
+	return i18n.T("No disks found. Check that a drive is connected and detected in firmware, then reboot the installer.")
 }
 
 // hasVMD reports whether an Intel Volume Management Device controller is present
@@ -409,40 +411,8 @@ func sysDiskLayout(disk string) diskLayout {
 	if pt, ok := run("blkid", "-o", "value", "-s", "PTTYPE", disk); ok {
 		dl.gpt = strings.TrimSpace(pt) == "gpt"
 	}
-	out, ok := run("lsblk", "-pnbo", "NAME,TYPE,SIZE,FSTYPE,PARTTYPE,PARTLABEL", "-P", disk)
-	if ok {
-		for _, line := range strings.Split(out, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			r := map[string]string{}
-			for _, tok := range splitPairs(line) {
-				if eq := strings.IndexByte(tok, '='); eq >= 0 {
-					r[tok[:eq]] = unescapeLsblk(strings.Trim(tok[eq+1:], "\""))
-				}
-			}
-			if r["TYPE"] != "part" {
-				continue
-			}
-			sizeB, _ := strconv.ParseInt(r["SIZE"], 10, 64)
-			gib := int((sizeB + (1 << 29)) / (1 << 30)) // round to nearest GiB
-			fs := strings.ToLower(r["FSTYPE"])
-			if fs == "bitlocker" {
-				dl.bitlocker = true // locked NTFS: booting Windows via Ryoku will demand the recovery key
-			}
-			p := part{size: gib, fs: fs, mount: "-", flags: "-", status: "keep"}
-			switch {
-			case strings.EqualFold(r["PARTTYPE"], espTypeGUID):
-				p.dev, p.fs, p.mount, p.flags = "EFI System", "fat32", "-", "esp"
-			case fs == "ntfs":
-				p.dev, p.mount = winLabel(r["PARTLABEL"]), "Windows"
-				dl.windows = true
-			default:
-				p.dev = partLabel(r["PARTLABEL"], fs)
-			}
-			dl.parts = append(dl.parts, p)
-		}
+	if out, ok := run("lsblk", "-pnbo", "NAME,TYPE,SIZE,FSTYPE,PARTTYPE,PARTLABEL", "-P", disk); ok {
+		dl.parts, dl.windows, dl.bitlocker = parseDiskParts(out)
 	}
 	pr := probeAlongside(disk)
 	dl.freeG, dl.regionStart, dl.regionEnd = pr.freeG, pr.regionStart, pr.regionEnd
@@ -450,6 +420,46 @@ func sysDiskLayout(disk string) diskLayout {
 	dl.espKind, dl.existingBoot, dl.leftovers = pr.espKind, pr.existingBoot, pr.leftovers
 	dl.espCount, dl.espFreeKiB = pr.espCount, pr.espFreeKiB
 	return dl
+}
+
+// parseDiskParts parses `lsblk -pnbo NAME,TYPE,SIZE,FSTYPE,PARTTYPE,PARTLABEL -P`
+// into a disk's partition list. Every `part` row is listed regardless of table
+// type or filesystem, so an MBR disk or an unformatted partition never reads as
+// blank. windows/bitlocker report a present NTFS / locked-NTFS volume.
+func parseDiskParts(out string) (parts []part, windows, bitlocker bool) {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		r := map[string]string{}
+		for _, tok := range splitPairs(line) {
+			if eq := strings.IndexByte(tok, '='); eq >= 0 {
+				r[tok[:eq]] = unescapeLsblk(strings.Trim(tok[eq+1:], "\""))
+			}
+		}
+		if r["TYPE"] != "part" {
+			continue
+		}
+		sizeB, _ := strconv.ParseInt(r["SIZE"], 10, 64)
+		gib := int((sizeB + (1 << 29)) / (1 << 30)) // round to nearest GiB
+		fs := strings.ToLower(r["FSTYPE"])
+		if fs == "bitlocker" {
+			bitlocker = true // locked NTFS: booting Windows via Ryoku will demand the recovery key
+		}
+		p := part{size: gib, fs: fs, mount: "-", flags: "-", status: "keep"}
+		switch {
+		case strings.EqualFold(r["PARTTYPE"], espTypeGUID):
+			p.dev, p.fs, p.mount, p.flags = "EFI System", "fat32", "-", "esp"
+		case fs == "ntfs":
+			p.dev, p.mount = winLabel(r["PARTLABEL"]), "Windows"
+			windows = true
+		default:
+			p.dev = partLabel(r["PARTLABEL"], fs)
+		}
+		parts = append(parts, p)
+	}
+	return parts, windows, bitlocker
 }
 
 func winLabel(lbl string) string {
@@ -466,7 +476,7 @@ func partLabel(lbl, fs string) string {
 	if fs != "" {
 		return strings.ToUpper(fs)
 	}
-	return "partition"
+	return i18n.T("partition")
 }
 
 // probeResult is the backend alongside probe's report: the largest usable free
@@ -492,7 +502,7 @@ func probeAlongside(disk string) probeResult {
 	}
 	out, ok := run(bin, "probe", "alongside", disk)
 	if !ok {
-		return probeResult{verdict: "error", message: "could not run the disk probe (ryoku-install probe alongside).", espFreeKiB: -1}
+		return probeResult{verdict: "error", message: i18n.T("could not run the disk probe (ryoku-install probe alongside)."), espFreeKiB: -1}
 	}
 	r := probeResult{espFreeKiB: -1}
 	var bestMiB int64
@@ -518,7 +528,7 @@ func probeAlongside(disk string) probeResult {
 		case len(f) == 4 && f[0] == "leftover":
 			// leftover <dev> <partlabel> <sizeMiB>: verified debris the backend frees.
 			r.leftovers = append(r.leftovers, part{
-				dev: "previous Ryoku", fs: f[2], size: gibRound(parseI64(f[3])),
+				dev: i18n.T("previous Ryoku"), fs: f[2], size: gibRound(parseI64(f[3])),
 				reclaim: true, status: "reclaim",
 			})
 		case len(f) >= 2 && f[0] == "verdict":
@@ -562,7 +572,7 @@ func (p resizePart) name() string {
 	case "ntfs":
 		return "Windows"
 	case "":
-		return "partition"
+		return i18n.T("partition")
 	default:
 		return strings.ToUpper(p.fs)
 	}
@@ -624,15 +634,15 @@ func probeResize(disk string) []resizePart {
 // without opening it. e.g. "Windows + 3 more · 190 GiB free", "ryoku · full".
 func diskSummary(dl diskLayout) string {
 	if len(dl.parts) == 0 {
-		return "empty"
+		return i18n.T("empty")
 	}
 	head := diskPrimary(dl)
 	if more := len(dl.parts) - 1; more > 0 {
-		head += fmt.Sprintf(" + %d more", more)
+		head += i18n.Tf(" + %d more", more)
 	}
-	free := "full"
+	free := i18n.T("full")
 	if dl.freeG > 0 {
-		free = fmt.Sprintf("%d GiB free", dl.freeG)
+		free = i18n.Tf("%d GiB free", dl.freeG)
 	}
 	return head + " · " + free
 }
@@ -784,9 +794,9 @@ func detectHardware() hwInfo {
 		h.fw, h.bios = "BIOS", true // backend is UEFI-only; the TUI hard-blocks BIOS boot
 	}
 	if isVM {
-		h.fw += " · virtual machine"
+		h.fw += i18n.T(" · virtual machine")
 	} else {
-		h.fw += " · bare metal"
+		h.fw += i18n.T(" · bare metal")
 	}
 	h.secureBoot = secureBootEnabled() // Limine is unsigned; blocks Review when on
 
@@ -863,7 +873,7 @@ func summarizeGPU(lines []string) string {
 		}
 	}
 	if len(names) == 0 {
-		return "unclassified"
+		return i18n.T("unclassified")
 	}
 	return strings.Join(names, " + ")
 }
@@ -1062,6 +1072,9 @@ func (m model) installEnv() []string {
 		"RYOKU_XKB_LAYOUT=" + xkbLay,
 		"RYOKU_XKB_VARIANT=" + xkbVar,
 		"RYOKU_LOCALE=" + def(m.picks["locale"], "en_US.UTF-8"),
+		// The backend's shell reads RYOKU_LANG (lib/i18n.sh) so its progress log
+		// speaks the language the user picked in the TUI.
+		"RYOKU_LANG=" + i18n.Lang(),
 		"RYOKU_TIMEZONE=" + def(m.picks["timezone"], "UTC"),
 		"RYOKU_PROFILE=" + def(m.picks["profile"], "vm"),
 		"RYOKU_ESP_GIB=" + strconv.Itoa(m.espG),
@@ -1316,5 +1329,5 @@ func netInterface() string {
 	if out, ok := run("sh", "-c", "ip -4 route show default | awk '{print $5; exit}'"); ok && out != "" {
 		return out
 	}
-	return "online"
+	return i18n.T("online")
 }

@@ -47,7 +47,7 @@ func UserEditFiles() ([]string, error) {
 // place (materialize's generatedSeed set: the Hub's Fastfetch editor and the
 // store's readout styles rewrite fastfetch/config.jsonc, ryoku-gpu owns
 // gpu.lua, the display flow owns monitors.lua and keyboard.lua, matugen owns
-// kitty/current-theme.conf). They must NEVER live in the overlay:
+// kitty/current-theme.conf and ghostty/ryoku-colors). They must NEVER live in the overlay:
 // overlayUserEdits would re-lay a frozen copy over the live file on every
 // update and silently wipe edits made afterward. The user.lua report was the
 // first sighting; "updates keep resetting my fastfetch" was the same bug
@@ -62,11 +62,17 @@ var LiveOwnedConfig = []string{
 	"hypr/gpu.lua",
 	"hypr/keyboard.lua",
 	"kitty/current-theme.conf",
+	"ghostty/ryoku-colors",
 }
 
 // IsLiveOwnedConfig reports whether rel (a slash path relative to ~/.config) is
-// one of the live-owned user files the overlay must never lay.
+// one of the live-owned user files the overlay must never lay. The nvim tree
+// counts too: it seeds once (updater.isSeed) and is then the user's, so a frozen
+// overlay copy must never be re-laid over their live LazyVim config.
 func IsLiveOwnedConfig(rel string) bool {
+	if strings.HasPrefix(rel, "nvim/") {
+		return true
+	}
 	for _, r := range LiveOwnedConfig {
 		if r == rel {
 			return true

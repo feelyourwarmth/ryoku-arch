@@ -104,10 +104,10 @@ type daemon struct {
 	sup         map[string]bool      // components that already have a supervisor goroutine
 	proc        map[string]*exec.Cmd // current live process per component
 	paintSig    chan struct{}        // coalescing wake for the palette/border worker
-	depthSig    chan struct{}        // coalescing wake for the depth-cutout worker
-	depthForce  atomic.Bool          // a pending forced regenerate (detail change / refresh)
-	depthGen    atomic.Bool          // a pending enable: reuse a saved cutout, else generate
-	depthBusy   atomic.Bool          // a cutout generation is in flight (for status)
+	stageSig    chan struct{}        // coalescing wake for the unified stage worker
+	stageForce  atomic.Bool          // a pending forced regenerate (effect/quality change, refresh, re-cut)
+	stageGen    atomic.Bool          // a pending enable: reuse an existing cut, else generate
+	stageBusy   atomic.Bool          // a cut/inpaint is in flight (for the status/topic)
 	ledsSig     chan struct{}        // coalescing wake for the OpenRGB worker
 	widgetSig   chan struct{}        // coalescing wake for the widget-occupancy gate
 	quit        chan struct{}
@@ -134,7 +134,7 @@ type daemon struct {
 	clip        *clipState               // clipboard history state (nil until started)
 	tray        *trayState               // system tray watcher/host state (nil until started)
 	ryoWallMu   sync.Mutex               // guards ryoWall
-	ryoWall     ryogamiFrame             // last wallpaper frame seen from ryogami; feeds the depth worker
+	ryoWall     ryogamiFrame             // last wallpaper frame seen from ryogami; feeds the stage worker
 	polkit      *polkitAgent             // PolicyKit1 authentication agent (nil until started)
 	settings    *settingsStore           // shell.json store (nil until startSettings); theme apply patches through it
 	pp          *powerProfilesState      // power-profiles-daemon bus state; nil until startPowerProfiles
@@ -191,7 +191,7 @@ func runDaemon() error {
 		sup:         map[string]bool{},
 		proc:        map[string]*exec.Cmd{},
 		paintSig:    make(chan struct{}, 1),
-		depthSig:    make(chan struct{}, 1),
+		stageSig:    make(chan struct{}, 1),
 		ledsSig:     make(chan struct{}, 1),
 		widgetSig:   make(chan struct{}, 1),
 		quit:        make(chan struct{}),
@@ -341,7 +341,7 @@ func (d *daemon) bootstrap() {
 	d.startPolkit()
 	d.startUpdates()
 	go d.paintWorker()
-	go d.depthWorker()
+	d.startStage()
 	go d.watchRyogami()
 	go d.watchMatugenKnobs()
 	go d.ledsWorker()
@@ -992,29 +992,81 @@ func (d *daemon) dispatch(line string) string {
 			return d.hub(args[0], args[1])
 		}
 		return "err hub: expected open [section] or close"
-	case "depth":
-		// refresh forces a regenerate for the current wallpaper (model change);
-		// the worker no-ops when depth is off for it or the engine is absent.
-		// status reports generation progress and the current cutout to the UI.
-		// set-enabled records the per-wall opt-in (daemon-owned, persisted).
-		// clear deletes every saved cutout and the reuse index, freeing the space.
-		if len(args) >= 1 && args[0] == "refresh" {
-			d.depthForce.Store(true)
-			d.scheduleDepth()
+	case "stage":
+		// One verb surface for Ryostage (docs/stage.md): set-effect records the
+		// three-way effect per wallpaper; set-layer applies a layer's arrangement
+		// flags (enabled/front/depth); add-layer / cut-layer / remove-layer manage
+		// the manual layers; refresh forces a re-cut; cancel kills a running engine
+		// child; clear drops the current wall's generated artifacts; status
+		// snapshots the topic; models proxies the engine catalogue. QML normally
+		// subscribes to the `stage` topic; these verbs carry intent the other way.
+		if len(args) == 0 {
+			return "err stage: expected a verb"
+		}
+		// Trailing path / json arguments may contain spaces, so recover them from
+		// the raw line by fixed-field split instead of the whitespace args, which
+		// would truncate at the first space.
+		switch args[0] {
+		case "set-effect":
+			if len(args) < 2 {
+				return "err stage set-effect: expected off|depth|parallax"
+			}
+			eff := stageEffect(args[1])
+			if eff != stageEffectOff && eff != stageEffectDepth && eff != stageEffectParallax {
+				return "err stage set-effect: expected off|depth|parallax"
+			}
+			d.stageSetEffect(eff)
+			return "ok"
+		case "refresh":
+			d.stageForce.Store(true)
+			d.scheduleStage()
+			return "ok"
+		case "cancel":
+			stageCancel()
+			return "ok"
+		case "status":
+			return d.stageStatusJSON()
+		case "models":
+			return stageModelsJSON()
+		case "cut-layer":
+			if len(args) < 2 {
+				return "err stage cut-layer: expected a path"
+			}
+			path, err := d.stageCutLayer(restField(line, 3))
+			if err != nil {
+				return "err stage cut-layer: " + err.Error()
+			}
+			return "ok " + path
+		case "set-layer":
+			if len(args) < 3 {
+				return "err stage set-layer: expected <index> <json>"
+			}
+			if err := d.stageSetLayer(args[1], restField(line, 4)); err != nil {
+				return "err stage set-layer: " + err.Error()
+			}
+			return "ok"
+		case "add-layer":
+			if len(args) < 2 {
+				return "err stage add-layer: expected a path"
+			}
+			path, err := d.stageAddLayer(restField(line, 3))
+			if err != nil {
+				return "err stage add-layer: " + err.Error()
+			}
+			return "ok " + path
+		case "remove-layer":
+			if len(args) < 2 {
+				return "err stage remove-layer: expected an index"
+			}
+			if err := d.stageRemoveLayer(args[1]); err != nil {
+				return "err stage remove-layer: " + err.Error()
+			}
+			return "ok"
+		case "clear":
+			d.stageClear()
 			return "ok"
 		}
-		if len(args) >= 1 && args[0] == "status" {
-			return d.depthStatusJSON()
-		}
-		if len(args) >= 2 && args[0] == "set-enabled" {
-			d.depthSetEnabled(args[1] == "1" || args[1] == "true")
-			return "ok"
-		}
-		if len(args) >= 1 && args[0] == "clear" {
-			d.depthClearCache()
-			return "ok"
-		}
-		return "ok"
+		return "err stage: unknown verb " + args[0]
 	case "theme":
 		// Apply a colour scheme by writing theme.theme through the settings store
 		// (the sole writer of shell.json), which validates the name, persists,

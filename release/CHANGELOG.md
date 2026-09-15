@@ -3,6 +3,26 @@
 ## Unreleased
 
 ### Added
+- **`ryoku-desktop` ships the `ryoku-gpu-trim` initramfs hook.**
+  `/usr/lib/initcpio/install/ryoku-gpu-trim`, from
+  `system/boot/mkinitcpio/install/`. The HOOKS drop-in names it and mkinitcpio
+  aborts on a hook it cannot find, so the package has to own it on every box;
+  it keeps the denylisted nouveau driver and its GSP firmware out of each
+  kernel image, about 107 MiB of a 2 GiB boot partition per kernel.
+- **The release ledger names the ISO of each variant.** `releases/index.json`
+  entries gain an `images` map (`plain`, `cachyos`), each with the ISO,
+  signature, checksum, per-ISO manifest and public URL, derived from the
+  per-ISO manifests already at the bucket root (keyed by their `installer_ref`,
+  which is the release tag on a release build, and `variant`). Both variants
+  are dispatched and uploaded per release already, but only the mutable
+  `latest.json` / `latest-cachyos.json` pointers named them, so an older
+  release's image was in the bucket and discoverable by nobody: a CachyOS box
+  could roll its packages back and not find the matching installer. The rebuild
+  stays derived and idempotent, skips `latest*.json` and anything that is not a
+  manifest (with a message, never an abort), and keeps every existing field, so
+  a consumer that ignores `images` reads byte-identical entries
+  (`bin/ryoku-release-ledger`).
+
 - **`ryoku-keysounds`: the key sounds compositor plugin.** Built from
   `ryoku/hyprland/plugins/keysounds` (depends on `hyprland`, `libcanberra`),
   it installs `keysounds.so` under `/usr/lib/hyprland/plugins/`, eleven
@@ -12,7 +32,18 @@
   no checkout can rebuild it for a newer Hyprland. `ryoku-desktop` pins it like
   the other plugin packages.
 
+### Removed
+- **The `awww` package is gone from `[ryoku]`.** The wallpaper backend moved to
+  Ryogami, which paints and animates its own transitions from the built-in
+  engine, so nothing on the box drives `awww` any more: the shell talks to
+  `ryogami.sock` and `ryoku doctor` retires a leftover `awww-daemon`. The recipe
+  and its vendored 136K Rust snapshot still built a package on every repo pass
+  and kept the daemon installable, so `release/packages/awww/` is deleted and the
+  build toolchain drops `lz4` (awww's only pkg-config probe). `ryoku recovery`
+  ensures `ryogami` instead of `awww` when it puts the wallpaper daemon back.
+
 ### Changed
+- **Ryotunes updates on its own release channel, not the `[ryoku]` repo.**
 - **Ryotunes also updates on its own GitHub release channel.**
   Ryotunes is released independently as a prebuilt Arch package on
   ryoku-dev/ryotunes' GitHub releases (`ryotunes-<ver>-1-x86_64.pkg.tar.zst` and a
@@ -20,6 +51,31 @@
   (`ryoku/cli/internal/ryotunesrelease`): it verifies the download by sha256 and
   by its own pacman name/version/arch, installs it with `pacman -U`, and only
   ever moves the version forward, so an external build is never downgraded.
+  `ryoku doctor` reports a pending release without installing it, and Ryotunes is
+  dropped from the explicit `[ryoku]` update set so the repo's base build cannot
+  overwrite a newer one. The `[ryoku]` repo still builds the `ryotunes` package
+  (the retained sha256-pinned source tarball) for the initial install only. The
+  old auto-bump path is retired with it: `.github/workflows/ryotunes-release.yml`
+  and `bin/ryoku-release-ryotunes` are gone, and the Ryotunes release dispatch
+  into this repo with them.
+- **`ryoku-shell` ships `ryostage`, not the two old engines.** Depth and Parallax
+  merged into one engine: the package installs `/usr/bin/ryostage` and no longer
+  ships `ryoku-depth` or `ryoku-parallax-engine`. `deploy.sh` removes the two old
+  binaries from checkout boxes (pacman drops them from packaged boxes on upgrade).
+- **The apps Ryoku ships are optdepends, not depends.** pacman re-satisfies a
+  dependency list on every upgrade of the package that carries it, so a hard
+  depend meant `ryoku update` reinstalled kitty, Nautilus, Ryotunes or the
+  gaming stack for anyone who had deleted them. `ryoku-desktop` now names them
+  as optdepends; the ISO pacstraps them and `ryoku doctor` delivers them once to
+  an existing box, then honours a removal for good. Feature tools the shell
+  calls by name (grim, matugen, cava, mpv, the OCR/capture backends) stay hard
+  depends. Present apps are re-marked explicitly installed so leaving `depends`
+  cannot turn them into orphan-sweep casualties.
+- **Spotify and spicetify are gone.** `spotify-launcher`, `spicetify-cli` and
+  `spicetify-marketplace` no longer ship, the two [ryoku] spicetify packages are
+  retired, and the Ryoku Canvas extension and its loopback relay are removed
+  with them. Ryotunes is the music app Ryoku ships. An already-installed Spotify
+  is left alone.
   `ryoku doctor` reports a pending release without installing it. The `[ryoku]`
   repo still builds and ships the `ryotunes` package (the retained sha256-pinned
   source tarball). The old auto-bump path is retired with it:

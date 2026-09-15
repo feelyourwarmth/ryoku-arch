@@ -144,7 +144,11 @@ mkdir -p "$bindir"
 install -m755 "$here/ipc/ryoku-shell" "$bindir/ryoku-shell"
 say "installed $bindir/ryoku-shell"
 install -m755 "$here/scripts/ryoku-reload-cover" "$bindir/ryoku-reload-cover"
-install -m755 "$here/scripts/ryoku-depth" "$bindir/ryoku-depth"
+install -m755 "$here/scripts/ryostage" "$bindir/ryostage"
+install -m755 "$here/scripts/ryoku-eq" "$bindir/ryoku-eq"
+# Depth and Parallax merged into ryostage; a checkout box that installed the old
+# helpers keeps them on PATH forever otherwise (pacman drops them on packaged boxes).
+rm -f "$bindir"/ryoku-{depth,parallax-engine}
 
 # Every hyprland leaf script the config calls by bare name (ryoku-app, the
 # ryoku-cmd-*, ...). The package ships them to /usr/bin; a checkout must put the
@@ -274,6 +278,10 @@ if command -v sudo >/dev/null 2>&1; then
   sudo install -Dm644 "$bootsrc/limine/limine.conf" /usr/share/ryoku/boot/limine.conf
   sudo install -Dm644 "$bootsrc/limine/default.conf" /usr/share/ryoku/boot/default.conf
   sudo install -Dm755 "$bootsrc/ryoku-boot-apply" /usr/bin/ryoku-boot-apply
+  # the mkinitcpio install hook the HOOKS drop-in names: mkinitcpio aborts on a
+  # hook it cannot find, and ryoku-boot-apply rebuilds the images right below.
+  sudo install -Dm644 "$bootsrc/mkinitcpio/install/ryoku-gpu-trim" \
+    /usr/lib/initcpio/install/ryoku-gpu-trim
   sudo ryoku-boot-apply || true
   say "installed and applied the boot splash + Limine theme"
 fi
@@ -497,7 +505,7 @@ if command -v sudo >/dev/null 2>&1 && command -v pacman >/dev/null 2>&1; then
   # the boot configs); once ryoku-desktop packages them an unowned copy otherwise
   # aborts the whole -Syu with "exists in filesystem" and nothing upgrades.
   # Mirrors updater.ryokuOverwriteGlob / the doctor's ryokuSystemGlobs.
-  _rovw='/usr/bin/ryoku-*,/usr/lib/systemd/system/ryoku-*,/usr/share/polkit-1/rules.d/*ryoku*.rules,/usr/share/plymouth/themes/ryoku/*,/usr/share/ryoku/boot/*'
+  _rovw='/usr/bin/ryoku-*,/usr/lib/systemd/system/ryoku-*,/usr/lib/initcpio/install/ryoku-*,/usr/share/polkit-1/rules.d/*ryoku*.rules,/usr/share/plymouth/themes/ryoku/*,/usr/share/ryoku/boot/*'
   _pac_ryotunes() { sudo pacman -Syu --needed --noconfirm --overwrite "$_rovw" ryotunes; }
   # shellcheck disable=SC2024
   if _pac_ryotunes >"$_plog" 2>&1; then
@@ -523,14 +531,6 @@ if command -v sudo >/dev/null 2>&1 && command -v pacman >/dev/null 2>&1; then
 else
   say "skipping packaged externals (sudo or pacman not available)"
 fi
-
-# ryoku-canvas: a spicetify extension (apps/spicetify) that relays the playing
-# track's Spotify Canvas to the shell so the music widget can show it. Landed in
-# the spicetify Extensions dir; a spicetify user turns it on with
-# `spicetify config extensions ryoku-canvas.js && spicetify apply`, and it stays
-# inert for anyone who does not spicetify Spotify.
-install -Dm644 "$here/../apps/spicetify/ryoku-canvas.js" "$cfg/spicetify/Extensions/ryoku-canvas.js"
-say "installed ryoku-canvas spicetify extension"
 
 # Nautilus stash actions (a nautilus-python extension). Installs ship it system-wide
 # from the ryoku-desktop package; the dev loop drops it in the user extensions dir.
@@ -619,6 +619,10 @@ install -m755 "$here/../apps/fastfetch/ryoku-fastfetch" "$bindir/ryoku-fastfetch
 mkdir -p "$cfg/kitty"
 cp -a "$here/../apps/kitty/kitty.conf" "$cfg/kitty/kitty.conf"
 seed_once "$here/../apps/kitty/current-theme.conf" "$cfg/kitty/current-theme.conf"
+# ghostty: config is the user's (seeded once, editable); matugen owns ryoku-colors.
+mkdir -p "$cfg/ghostty"
+seed_once "$here/../apps/ghostty/config" "$cfg/ghostty/config"
+seed_once "$here/../apps/ghostty/ryoku-colors" "$cfg/ghostty/ryoku-colors"
 mkdir -p "$cfg/wireplumber"; cp -a "$here/../apps/wireplumber/." "$cfg/wireplumber/"
 mkdir -p "$cfg/systemd/user"; cp -a "$here/systemd/user/." "$cfg/systemd/user/"
 # dev deploy runs the daemon from ~/.local/bin; the package ships /usr/bin.

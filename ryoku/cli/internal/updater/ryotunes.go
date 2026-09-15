@@ -5,14 +5,9 @@ import (
 	"time"
 
 	"ryoku-cli/internal/ryotunesrelease"
-)
 
-// externalReleasePkgs are packages tracked on their own GitHub release channel
-// (Upgrade/Check here), not through the [ryoku] pacman repo. pendingUpdates
-// filters them out of the distribution lane so `ryoku status` reports Ryotunes
-// once, in the Ryoku lane the update button runs (addRyotunesUpdate), never
-// twice.
-var externalReleasePkgs = map[string]bool{"ryotunes": true}
+	i18n "ryoku-i18n"
+)
 
 // upgradeRyotunes moves Ryotunes to its latest published GitHub release as part
 // of `ryoku update`. Ryotunes is released on its own cadence as a prebuilt Arch
@@ -34,13 +29,13 @@ func upgradeRyotunes() {
 	st, err := ryotunesrelease.Upgrade(ctx)
 	switch {
 	case err != nil:
-		progress.logf("Could not update Ryotunes: %v", err)
+		progress.logf(i18n.T("Could not update Ryotunes: %v"), err)
 	case st.Installed == "":
 		// Ryotunes is not installed; nothing to update (a removal stays removed).
 	case st.Updated:
-		progress.logf("Ryotunes updated to %s", st.Latest)
+		progress.logf(i18n.T("Ryotunes updated to %s"), st.Latest)
 	default:
-		progress.logf("Ryotunes is current (%s)", st.Installed)
+		progress.logf(i18n.T("Ryotunes is current (%s)"), st.Installed)
 	}
 }
 
