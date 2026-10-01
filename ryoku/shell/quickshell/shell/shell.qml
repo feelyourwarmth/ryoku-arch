@@ -15,12 +15,14 @@ import "modules/visualizer/Singletons" as VizCfg
 import "modules/stage/Singletons" as StageCfg
 import "components"
 import "modules/wallpaper"
+import "modules/wallpaper/Singletons" as WallCfg
 import "modules/desktop"
 import "modules/visualizer"
 import "modules/bar"
 import "modules/dock"
 import "modules/launcher"
 import "modules/overview"
+import "modules/clipboard"
 import QtQuick
 import Quickshell.Io
 import Quickshell.Wayland
@@ -35,7 +37,7 @@ import Ryoku.Ui.Singletons
  *
  * One ShellRoot for the whole desktop. It brings the shared service singletons
  * online, holds the per-monitor ShellState every surface binds its visibility
- * to, and registers the shell's in-QML Hyprland global shortcuts. Each monitor
+ * to, and registers the shell's in-QML global shortcuts. Each monitor
  * gets one Scope carrying that screen's ShellState slice (st); every migrated
  * surface is instantiated once inside it and binds its screen and its visibility
  * to the slice, so a keybind that flips a flag on the active monitor reveals or
@@ -43,14 +45,23 @@ import Ryoku.Ui.Singletons
  * ryoku-shell client per press across separate surface processes.
  *
  * The ryoku-shell daemon launches this instance as `qs -c shell`, the live
- * desktop, and the compositor binds dispatch global:ryoku:<name> straight to the
- * shortcuts registered here.
+ * desktop. Where the compositor offers a global-shortcuts protocol its binds
+ * dispatch straight to the shortcuts registered here.
  *
  * UseQApplication is declared once for the whole shell (the tray needs Qt
  * Widgets), replacing the six per-surface copies the old multi-process shell paid.
  */
 ShellRoot {
     id: root
+    // One deferred-build wave for the cheap event-driven surfaces (the OSDs and
+    // the notification column), armed 1.5 s into boot so a keypress or an
+    // arriving toast never waits on a component build. Everything heavier is
+    // built on its own first open and torn down a grace period after every
+    // close, so nothing parses, instantiates or commits for a surface nobody
+    // asked for. The grace is what protects the animations: a surface is only
+    // ever destroyed while it sits closed.
+    property int warm: 0
+    Timer { interval: 1500; running: true; repeat: false; onTriggered: root.warm = 1 }
 
     // Construct the shared services (ShellState's per-monitor state now, heavier
     // providers as surfaces migrate) at load rather than on the first keybind.
@@ -122,15 +133,15 @@ ShellRoot {
     // Power Saver strips compositor blur and shadow too (the heaviest present-time
     // GPU cost), reusing the decoration.lua path lowPowerMode already takes. Perf
     // folds the active power profile into its switches; mirror the profile-driven
-    // "saver" flag to a cache decoration.lua reads, and reload Hyprland when it
-    // flips so the compositor re-reads it live. Seeded once at load with no reload
+    // "saver" flag to a cache the compositor reads, and reload it when it flips
+    // so it re-reads the value live. Seeded once at load with no reload
     // (login already parsed the right value); only a later profile change reloads.
     FileView {
         id: hyprPerf
         path: (Quickshell.env("XDG_CACHE_HOME") || (Quickshell.env("HOME") + "/.cache")) + "/ryoku/hypr-perf.json"
         printErrors: false
         property bool armed: false
-        onSaved: if (hyprPerf.armed) Quickshell.execDetached(["hyprctl", "reload"])
+        onSaved: if (hyprPerf.armed) Wm.reloadConfig("")
         JsonAdapter { id: hyprPerfA; property bool saver: false }
         Component.onCompleted: {
             hyprPerfA.saver = Perf.saver;
@@ -171,6 +182,7 @@ ShellRoot {
                 id: desktop
                 screen: perScreen.modelData
                 active: true
+                widgetsEnabled: Tokens.widgetsEnabledFor(perScreen.modelData.name)
                 wallpaperUrl: wallpaper.wallpaperUrl
                 wallpaperPath: wallpaper.wallpaperPath
                 wallpaperFit: wallpaper.fit
@@ -181,163 +193,374 @@ ShellRoot {
                 videoVolume: wallpaper.videoVolume
             }
 
+            // A blurred copy of the wallpaper for the compositor's overview
+            // backdrop, mapped below the desktop so it shows only in the
+            // overview. Built only where the capability and the user's setting
+            // both ask for it; a box with the backdrop off never pays for it.
+            LazyLoader {
+                id: backdropLoader
+                activeAsync: Wm.caps.overviewBackdrop === true && WallCfg.OverviewBackdropConfig.enabled
+                OverviewBackdrop {
+                    screen: perScreen.modelData
+                    available: Wm.caps.overviewBackdrop === true
+                    overviewOpen: Wm.overviewOpen
+                    wallpaperUrl: wallpaper.wallpaperUrl
+                }
+            }
+
             // Stage now renders entirely inside the desktop surface (one stack:
             // backdrop, layers, widgets), so there is no separate Background
-            // surface here (docs/stage.md).
-            Visualizer {
-                id: perScreenViz
-                screen: perScreen.modelData
-                mode: !VizCfg.Config.enabled ? "off"
-                    : (perScreen.st && perScreen.st.visualizerOverlay ? "overlay" : "desktop")
-                placing: perScreen.st ? perScreen.st.visualizerPlacing : false
-                // The desktop hosts the visualizer behind the cut-outs while the
-                // stage is on; this surface steps aside (cava keeps running).
-                suppressed: desktop.hostsVisualizer
-                onPlacingDone: if (perScreen.st) perScreen.st.visualizerPlacing = false
+            // surface here (docs/stage.md). Built on first enable or first
+            // placement; cava and its buffers never exist while the visualizer
+            // is off.
+            LazyLoader {
+                id: vizLoader
+                activeAsync: VizCfg.Config.enabled || (perScreen.st && perScreen.st.visualizerPlacing)
+                Visualizer {
+                    id: perScreenViz
+                    screen: perScreen.modelData
+                    mode: !VizCfg.Config.enabled ? "off"
+                        : (perScreen.st && perScreen.st.visualizerOverlay ? "overlay" : "desktop")
+                    placing: perScreen.st ? perScreen.st.visualizerPlacing : false
+                    // The desktop hosts the visualizer behind the cut-outs while the
+                    // stage is on; this surface steps aside (cava keeps running).
+                    // A rebuilt monitor stack (DPMS off/on, a lid close/open) starts
+                    // with no wallpaper frame, so hostsVisualizer briefly reads false
+                    // even for a stage wallpaper: stay suppressed until the frame
+                    // lands, or the surface maps full-screen and pulses for a few
+                    // seconds on every resume.
+                    suppressed: desktop.hostsVisualizer || !wallpaper.reloadReady
+                    onPlacingDone: if (perScreen.st) perScreen.st.visualizerPlacing = false
+                }
             }
 
             // The frame bar (Phase 2): reads its own reveal from this slice.
             Frame {
                 modelData: perScreen.modelData
                 // park the record island flush beside this monitor's dock band
-                dockLaneEdge: perScreenDock.edge
-                dockLaneSize: perScreenDock.bandSize
-                dockLaneCenter: perScreenDock.bandCenter
+                dockLaneEdge: dockLoader.item ? dockLoader.item.edge : ""
+                dockLaneSize: dockLoader.item ? dockLoader.item.bandSize : 0
+                dockLaneCenter: dockLoader.item ? dockLoader.item.bandCenter : 0
             }
 
             // The dock: a resident per-monitor surface on the edge opposite the
             // bar. Style-agnostic, so it lives here rather than inside a bar style;
-            // it draws nothing until the user turns it on (Hub -> Bar Studio -> Dock).
-            DockSurface {
-                id: perScreenDock
-                screen: perScreen.modelData
-                // Edit widgets steps the dock back so the whole desktop is the canvas.
-                visible: Dock.cfg("enabled", false)
-                    && !(StageCfg.StageSession.widgets && StageCfg.StageSession.monitor === perScreen.modelData.name)
+            // it is not built until the user turns it on (Hub -> Bar Studio -> Dock).
+            LazyLoader {
+                id: dockLoader
+                activeAsync: Dock.cfg("enabled", false)
+                DockSurface {
+                    id: perScreenDock
+                    screen: perScreen.modelData
+                    // Edit widgets steps the dock back so the whole desktop is the canvas.
+                    visible: Dock.cfg("enabled", false)
+                        && !(StageCfg.StageSession.widgets && StageCfg.StageSession.monitor === perScreen.modelData.name)
+                }
             }
 
             // The dock's right-click context menu: a full-screen overlay on the
             // monitor that owns the open menu (the thin dock strip cannot host it).
-            DockMenuOverlay {
-                screen: perScreen.modelData
+            LazyLoader {
+                id: dockMenuLoader
+                property bool open: Dock.menuOpen && Dock.menuScreen === perScreen.modelData.name
+                activeAsync: open || dockMenuHold.running
+                onOpenChanged: if (!open && active) dockMenuHold.restart()
+                DockMenuOverlay {
+                    screen: perScreen.modelData
+                }
             }
+            Timer { id: dockMenuHold; interval: 2000 }
 
-            // Toggle-driven overlays, each bound to a ShellState flag.
-            Launcher {
-                screen: perScreen.modelData
-                active: perScreen.st ? perScreen.st.launcherOpen : false
-                onRequestClose: if (perScreen.st) perScreen.st.launcherOpen = false
+            // Toggle-driven overlays: built on first open (async, so the key
+            // press never blocks on a component build) and destroyed 15 s after
+            // every close, once the slide-out has long finished.
+            // The inner surface must be BORN closed and opened one tick later:
+            // its reveal is driven by an active-change, and an item created with
+            // the flag already true would never animate (or show) at all.
+            LazyLoader {
+                id: launcherLoader
+                property bool open: perScreen.st ? perScreen.st.launcherOpen : false
+                property bool showNow: false
+                activeAsync: open || launcherHold.running
+                onItemChanged: if (launcherLoader.item) Qt.callLater(function() { launcherLoader.showNow = launcherLoader.open; })
+                onOpenChanged: {
+                    if (launcherLoader.open) {
+                        if (launcherLoader.item) launcherLoader.showNow = true;
+                        return;
+                    }
+                    launcherLoader.showNow = false;
+                    if (launcherLoader.active) launcherHold.restart();
+                }
+                Launcher {
+                    screen: perScreen.modelData
+                    active: launcherLoader.showNow
+                    onRequestClose: if (perScreen.st) perScreen.st.launcherOpen = false
+                }
             }
-            OverviewSurface {
-                screen: perScreen.modelData
-                active: perScreen.st ? perScreen.st.overviewOpen : false
-                onRequestClose: if (perScreen.st) perScreen.st.overviewOpen = false
+            Timer { id: launcherHold; interval: 15000 }
+            LazyLoader {
+                id: overviewLoader
+                property bool open: perScreen.st ? perScreen.st.overviewOpen : false
+                property bool showNow: false
+                activeAsync: open || overviewHold.running
+                onItemChanged: if (overviewLoader.item) Qt.callLater(function() { overviewLoader.showNow = overviewLoader.open; })
+                onOpenChanged: {
+                    if (overviewLoader.open) {
+                        if (overviewLoader.item) overviewLoader.showNow = true;
+                        return;
+                    }
+                    overviewLoader.showNow = false;
+                    if (overviewLoader.active) overviewHold.restart();
+                }
+                OverviewSurface {
+                    screen: perScreen.modelData
+                    active: overviewLoader.showNow
+                    onRequestClose: if (perScreen.st) perScreen.st.overviewOpen = false
+                }
             }
-            // Shell-wide per-monitor surfaces: the three OSDs, the notification
-            // popup column, the capture/region/camera overlays, and the
-            // session-confirm dialog. Each binds this screen's modelData; the
-            // Wayland layer each maps on decides the real stacking.
-            OsdWindow {
-                modelData: perScreen.modelData
-                kind: "volume"
+            Timer { id: overviewHold; interval: 15000 }
+            LazyLoader {
+                id: clipboardLoader
+                property bool open: perScreen.st ? perScreen.st.clipboardOpen : false
+                property bool showNow: false
+                activeAsync: open || clipboardHold.running
+                onItemChanged: if (clipboardLoader.item) Qt.callLater(function() { clipboardLoader.showNow = clipboardLoader.open; })
+                onOpenChanged: {
+                    if (clipboardLoader.open) {
+                        if (clipboardLoader.item) clipboardLoader.showNow = true;
+                        return;
+                    }
+                    clipboardLoader.showNow = false;
+                    if (clipboardLoader.active) clipboardHold.restart();
+                }
+                ClipboardSurface {
+                    screen: perScreen.modelData
+                    active: clipboardLoader.showNow
+                    onRequestClose: if (perScreen.st) perScreen.st.clipboardOpen = false
+                }
             }
-            OsdWindow {
-                modelData: perScreen.modelData
-                kind: "mic"
+            Timer { id: clipboardHold; interval: 15000 }
+            // Shell-wide per-monitor surfaces. The OSDs and the popup column are
+            // small and event-driven (a keypress or an arriving toast must never
+            // wait on a build), so they join the first wave and stay resident.
+            // The capture overlays are per-flow: built on the flow's first
+            // signal, kept across the flow's pauses, dropped 20 s after it ends.
+            LazyLoader {
+                id: osdVolumeLoader
+                activeAsync: root.warm >= 1
+                OsdWindow {
+                    modelData: perScreen.modelData
+                    kind: "volume"
+                }
             }
-            OsdWindow {
-                modelData: perScreen.modelData
-                kind: "brightness"
+            LazyLoader {
+                id: osdMicLoader
+                activeAsync: root.warm >= 1
+                OsdWindow {
+                    modelData: perScreen.modelData
+                    kind: "mic"
+                }
             }
-            KeyboardOsdWindow {
-                modelData: perScreen.modelData
+            LazyLoader {
+                id: osdBrightnessLoader
+                activeAsync: root.warm >= 1
+                OsdWindow {
+                    modelData: perScreen.modelData
+                    kind: "brightness"
+                }
             }
-            NotificationPopups {
-                modelData: perScreen.modelData
+            LazyLoader {
+                id: osdKeyboardLoader
+                activeAsync: root.warm >= 1
+                KeyboardOsdWindow {
+                    modelData: perScreen.modelData
+                }
             }
-            RegionOverlay {
-                modelData: perScreen.modelData
+            LazyLoader {
+                id: notifsLoader
+                activeAsync: root.warm >= 1 || Notifs.popups.length > 0
+                NotificationPopups {
+                    modelData: perScreen.modelData
+                }
             }
-            CaptureOverlay {
-                modelData: perScreen.modelData
+            LazyLoader {
+                id: regionLoader
+                property bool open: Recorder.anyActive || Recorder.chooserOpen
+                activeAsync: open || regionHold.running
+                onOpenChanged: if (!open && active) regionHold.restart()
+                RegionOverlay {
+                    modelData: perScreen.modelData
+                }
             }
-            CameraOverlay {
-                modelData: perScreen.modelData
+            Timer { id: regionHold; interval: 20000 }
+            LazyLoader {
+                id: captureLoader
+                property bool open: Capture.selecting !== ""
+                activeAsync: open || captureHold.running
+                onOpenChanged: if (!open && active) captureHold.restart()
+                CaptureOverlay {
+                    modelData: perScreen.modelData
+                }
             }
-            KeypressOverlay {
-                modelData: perScreen.modelData
+            Timer { id: captureHold; interval: 20000 }
+            LazyLoader {
+                id: cameraLoader
+                property bool open: Camera.active
+                activeAsync: open || cameraHold.running
+                onOpenChanged: if (!open && active) cameraHold.restart()
+                CameraOverlay {
+                    modelData: perScreen.modelData
+                }
             }
+            Timer { id: cameraHold; interval: 20000 }
+            LazyLoader {
+                id: keypressLoader
+                property bool open: Keypresses.active
+                activeAsync: open || keypressHold.running
+                onOpenChanged: if (!open && active) keypressHold.restart()
+                KeypressOverlay {
+                    modelData: perScreen.modelData
+                }
+            }
+            Timer { id: keypressHold; interval: 20000 }
             // Shown only on the monitor whose frame bar raised it; the positive
             // button runs the power action through the daemon, then clears.
-            RyokuConfirmationDialog {
-                modelData: perScreen.modelData
-                action: ShellState.sessionActionMonitor === perScreen.modelData.name ? ShellState.sessionAction : ""
-                message: ShellState.sessionMessage
-                positiveLabel: ShellState.sessionPositive
-                negativeLabel: I18n.tr("Cancel")
-                onConfirmed: a => { SessionActions.run(a); ShellState.clearSessionAction(); }
-                onCancelled: ShellState.clearSessionAction()
+            LazyLoader {
+                id: confirmLoader
+                property bool open: ShellState.sessionAction !== ""
+                activeAsync: open || confirmHold.running
+                onOpenChanged: if (!open && active) confirmHold.restart()
+                RyokuConfirmationDialog {
+                    modelData: perScreen.modelData
+                    action: ShellState.sessionActionMonitor === perScreen.modelData.name ? ShellState.sessionAction : ""
+                    message: ShellState.sessionMessage
+                    positiveLabel: ShellState.sessionPositive
+                    negativeLabel: I18n.tr("Cancel")
+                    onConfirmed: a => { SessionActions.run(a); ShellState.clearSessionAction(); }
+                    onCancelled: ShellState.clearSessionAction()
+                }
+            }
+            Timer { id: confirmHold; interval: 5000 }
+        }
+    }
+
+    // The single surface-toggle mapping. Every shell surface id resolves to one
+    // transition here: a per-monitor ShellState flip, a global config toggle, or
+    // a request onto the frame menu bus. Both routes to a surface end in this one
+    // call -- a CustomShortcut press where the compositor bridges global
+    // shortcuts, and the surfaceRequested bus a `ryoku-shell <id>` spawn drives
+    // where that protocol is absent (niri) -- so a toggle is defined once.
+    function toggleSurface(id) {
+        const st = ShellState.forActive();
+        switch (id) {
+        case "barToggle":
+            if (st)
+                st.barRevealed = !st.barRevealed;
+            break;
+        case "launcher":
+            if (st)
+                st.launcherOpen = !st.launcherOpen;
+            break;
+        case "overview":
+            if (Wm.caps.nativeOverview)
+                Wm.toggleOverview();
+            else if (Wm.caps.windowGeometry && st)
+                st.overviewOpen = !st.overviewOpen;
+            break;
+        case "visualizer":
+            VizCfg.Config.setEnabled(!VizCfg.Config.enabled);
+            break;
+        case "visualizer-overlay":
+            if (st)
+                st.visualizerOverlay = !st.visualizerOverlay;
+            break;
+        case "visualizer-place":
+            if (st)
+                root.placeVisualizer(!st.visualizerPlacing);
+            break;
+        case "quicksettings":
+            ShellState.requestSurfaceActive("quick-settings", undefined);
+            break;
+        case "wallpaper-menu":
+            ShellState.requestSurfaceActive("wallpaper", undefined);
+            break;
+        case "clipboard":
+            if (st)
+                st.clipboardOpen = !st.clipboardOpen;
+            break;
+        case "stash":
+            ShellState.requestSurfaceActive("stash", undefined);
+            break;
+        case "screenshot":
+            ShellState.requestSurfaceActive("quick-settings#capture", undefined);
+            break;
+        case "compress":
+            ShellState.requestSurfaceActive("stash#compress", undefined);
+            break;
+        case "install":
+            ShellState.requestSurfaceActive("stash#install", undefined);
+            break;
+        }
+    }
+
+    // The style-independent half of the surface bus. With no global-shortcuts
+    // protocol a keybind reaches a surface only by spawning `ryoku-shell <id>`,
+    // which arrives here as a surfaceRequested. Frame-menu surfaces are opened by
+    // the per-monitor FrameMenuManager (Frame.qml), which maps in every bar
+    // style; the shell-wide flag surfaces have no such host, so this routes them
+    // through the same toggleSurface a shortcut press uses. Frame-menu ids never
+    // match here, so a surface still opens exactly once.
+    Connections {
+        target: ShellState
+        function onSurfaceRequested(id, mon, ctx) {
+            switch (id) {
+            case "barToggle":
+            case "launcher":
+            case "overview":
+            case "clipboard":
+            case "visualizer":
+            case "visualizer-overlay":
+            case "visualizer-place":
+                root.toggleSurface(id);
+                break;
             }
         }
     }
 
-    // In-process global shortcuts. Each flips the focused monitor's ShellState
-    // flag that the per-screen surfaces above bind their visibility to, so a
-    // keybind is a property write, not the old ryoku-shell client spawn. Names
-    // match the compositor binds (rewired to global:ryoku:<name> in Phase 10) so
-    // `hyprctl dispatch "hl.dsp.global('ryoku:<name>')"` lands here (the Lua
-    // dispatch form this Hyprland takes; the old `dispatch global ryoku:x` errors).
+    // In-process global shortcuts. Each dispatches to the one toggleSurface
+    // mapping above, so the compositor's global-shortcut bind and a `ryoku-shell`
+    // spawn drive the identical transition. Names match the compositor binds.
     CustomShortcut {
         name: "barToggle"
         description: I18n.tr("Toggle the Ryoku frame bar on the active monitor")
-        onPressed: {
-            const st = ShellState.forActive();
-            if (st)
-                st.barRevealed = !st.barRevealed;
-        }
+        onPressed: root.toggleSurface("barToggle")
     }
     CustomShortcut {
         name: "launcher"
         description: I18n.tr("Toggle the app launcher on the active monitor")
-        onPressed: {
-            const st = ShellState.forActive();
-            if (st)
-                st.launcherOpen = !st.launcherOpen;
-        }
+        onPressed: root.toggleSurface("launcher")
     }
     CustomShortcut {
         name: "overview"
         description: I18n.tr("Toggle the workspace overview on the active monitor")
-        onPressed: {
-            const st = ShellState.forActive();
-            if (st)
-                st.overviewOpen = !st.overviewOpen;
-        }
+        onPressed: root.toggleSurface("overview")
     }
     // On/off is the persisted key, so the keybind, the Hub switch and the next
     // restart all read the same answer. Only the layer is per-monitor memory.
     CustomShortcut {
         name: "visualizer"
         description: I18n.tr("Cycle the desktop audio visualiser off and on")
-        onPressed: VizCfg.Config.setEnabled(!VizCfg.Config.enabled)
+        onPressed: root.toggleSurface("visualizer")
     }
     CustomShortcut {
         name: "visualizer-overlay"
         description: I18n.tr("Toggle the audio visualiser overlay over windows")
-        onPressed: {
-            const st = ShellState.forActive();
-            if (st)
-                st.visualizerOverlay = !st.visualizerOverlay;
-        }
+        onPressed: root.toggleSurface("visualizer-overlay")
     }
     CustomShortcut {
         name: "visualizer-place"
         description: I18n.tr("Grab the audio visualiser's ring or orb and drag it into place")
-        onPressed: {
-            const st = ShellState.forActive();
-            if (st)
-                root.placeVisualizer(!st.visualizerPlacing);
-        }
+        onPressed: root.toggleSurface("visualizer-place")
     }
 
     // Aiming a hidden spectrum aims nothing, so placing it shows it first.
@@ -368,9 +591,8 @@ ShellRoot {
     // reload/restart: ryoku-cmd-caffeine runs systemd-inhibit independent of our
     // lifetime, while the Wayland IdleInhibitor below only gives compositor-level
     // effect. Every surface toggle just flips Flags.keepAwake. (pill 246-257)
-    readonly property string caffeineScript: (Quickshell.env("HOME") || "") + "/.config/hypr/scripts/ryoku-cmd-caffeine"
     function syncCaffeine(action) {
-        Quickshell.execDetached([root.caffeineScript, action]);
+        Quickshell.execDetached(["ryoku-cmd-caffeine", action]);
     }
     Connections {
         target: Flags
@@ -379,13 +601,17 @@ ShellRoot {
         }
     }
 
-    // Game mode's compositor + WiFi tuning lives outside the shell, same shape as
-    // Keep-Awake: ryoku-cmd-game-mode drives hyprctl and NetworkManager so the
-    // tuning survives a reload. The deck toggle just flips Flags.gameMode.
-    // (pill 264-275)
-    readonly property string gameModeScript: (Quickshell.env("HOME") || "") + "/.config/hypr/scripts/ryoku-cmd-game-mode"
+    // Game mode's compositor and WiFi tuning lives outside the shell, same shape
+    // as Keep-Awake: ryoku-cmd-game-mode (on PATH) drives it so the tuning
+    // survives a reload. The deck toggle just flips Flags.gameMode. It is
+    // compositor tuning though (Hyprland live config eval), so it only fires
+    // where the window manager can run it -- the deck tile and the launcher
+    // action hide it there, and this stands down to match instead of running a
+    // script that would no-op.
     function syncGameMode(action) {
-        Quickshell.execDetached([root.gameModeScript, action]);
+        if (Wm.caps.liveConfigEval !== true)
+            return;
+        Quickshell.execDetached(["ryoku-cmd-game-mode", action]);
     }
     Connections {
         target: Flags
@@ -488,7 +714,14 @@ ShellRoot {
     // runtime socket and produces zero live side effects alongside the daemon.
     IpcHandler {
         target: "shell"
-        function openSurface(mon: string, id: string): void { ShellState.requestSurface(id, mon, undefined); }
+        // An empty monitor means "wherever focus is": the daemon sends "" when
+        // its focused-output cache is cold.
+        function openSurface(mon: string, id: string): void {
+            if (mon && mon.length > 0)
+                ShellState.requestSurface(id, mon, undefined);
+            else
+                ShellState.requestSurfaceActive(id, undefined);
+        }
         function closeSurface(mon: string, id: string): void { ShellState.closeSurface(id, mon); }
         function keyringPrompt(payload: string): void {
             Keyring.apply(payload);
@@ -542,56 +775,43 @@ ShellRoot {
         }
         function toggle(): void { Keypresses.toggle(); }
     }
-    // Menu global shortcuts (Phase 10): open a bar menu/surface on the focused
-    // monitor via the ShellState bus, replacing the old `ryoku-shell menu <id>`
-    // spawn. binds.lua dispatches global:ryoku:<name> straight here.
+    // Menu global shortcuts: open a bar surface on the focused monitor. Each
+    // dispatches to the one toggleSurface mapping so the compositor bind and the
+    // `ryoku-shell <id>` spawn open the identical surface.
     CustomShortcut {
         name: "quicksettings"
         description: I18n.tr("Open quick settings on the active monitor")
-        onPressed: ShellState.requestSurfaceActive("quick-settings", undefined)
+        onPressed: root.toggleSurface("quicksettings")
     }
     CustomShortcut {
         name: "wallpaper-menu"
         description: I18n.tr("Open the wallpaper and theme menu on the active monitor")
-        onPressed: ShellState.requestSurfaceActive("wallpaper", undefined)
+        onPressed: root.toggleSurface("wallpaper-menu")
     }
     CustomShortcut {
         name: "clipboard"
         description: I18n.tr("Open the clipboard history on the active monitor")
-        onPressed: ShellState.requestSurfaceActive("quick-settings#clipboard", undefined)
+        onPressed: root.toggleSurface("clipboard")
     }
     CustomShortcut {
         name: "stash"
         description: I18n.tr("Open the feature sidebar on the active monitor")
-        onPressed: ShellState.requestSurfaceActive("stash", undefined)
+        onPressed: root.toggleSurface("stash")
     }
     CustomShortcut {
         name: "screenshot"
         description: I18n.tr("Open the capture tab in quick settings on the active monitor")
-        onPressed: ShellState.requestSurfaceActive("quick-settings#capture", undefined)
+        onPressed: root.toggleSurface("screenshot")
     }
     CustomShortcut {
         name: "compress"
         description: I18n.tr("Open the feature sidebar's file picker to compress media")
-        onPressed: ShellState.requestSurfaceActive("stash#compress", undefined)
+        onPressed: root.toggleSurface("compress")
     }
     CustomShortcut {
         name: "install"
         description: I18n.tr("Open the feature sidebar's file picker to install a package")
-        onPressed: ShellState.requestSurfaceActive("stash#install", undefined)
+        onPressed: root.toggleSurface("install")
     }
 
-    // External surface opener: the ryoku-shell daemon calls
-    // `qs ipc call shell openSurface <monitor> <id>` for its `menu`/tool verbs
-    // (install-app and compress-video launch through here). It routes the id onto
-    // the same surfaceRequested bus the global-shortcut keybinds use.
-    IpcHandler {
-        target: "shell"
-        function openSurface(monitor: string, id: string): void {
-            if (monitor && monitor.length > 0)
-                ShellState.requestSurface(id, monitor, "");
-            else
-                ShellState.requestSurfaceActive(id, undefined);
-        }
-    }
 }

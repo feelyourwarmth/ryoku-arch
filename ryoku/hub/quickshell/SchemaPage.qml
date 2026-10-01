@@ -5,6 +5,7 @@ import Quickshell
 import Quickshell.Io
 import Ryoku.Ui
 import Ryoku.Ui.Singletons
+import "Singletons"
 import "ReloadCoverModel.js" as ReloadCoverModel
 
 // Every settings page, once. A page supplies its schema, its draft and its
@@ -27,8 +28,13 @@ Item {
     property string blurb: ""
     property string query: ""
     property alias tab: sheet.tab
+    // The card measure the grid below uses, so a page's own block can sit on the
+    // same grid instead of spanning the window with an empty half.
+    readonly property alias cardWidth: sheet.cardW
     property alias advanced: sheet.advanced
-    default property alias extras: extraSlot.data
+    // extras ride inside the sheet's scroll area, not pinned above it, so a page
+    // with a tall extra block still scrolls as one surface.
+    default property alias extras: sheet.lead
     property var pendingImageRow: null
     property string externalReloadCoverError: ""
     property string importReloadCoverError: ""
@@ -48,23 +54,48 @@ Item {
     // a search jump forwards here; the sheet switches tab, scrolls, and flashes.
     function focusKey(k) { sheet.focusKey(k) }
 
+    // A row the active compositor cannot back is dropped, not shown dead. Three
+    // gates: caps (a behavioural capability), modelsKey (a store leaf nothing
+    // would write), and the tiling illustration -- a bespoke keyless control the
+    // key gate cannot see, which needs a tiled layout to mean anything. Empty
+    // groups and tabs fall away on their own, both being derived from what
+    // survives here.
+    readonly property var capsSchema: (schema || []).filter(function (r) {
+        if (!Settings.supports(r.caps)) return false;
+        if (r.ctl === "layoutdemo" && !Settings.supports("tiledLayout")) return false;
+        return Settings.modelsKey(r.key);
+    })
+
+    // A page may add a tab that holds no settings rows, for content that belongs
+    // to the page rather than to a group of controls. It goes last so the page
+    // still opens on its first real tab.
+    property var tailTabs: []
+
     readonly property var tabs: {
         var t = [];
-        for (var i = 0; i < schema.length; i++) {
-            var x = schema[i].tab;
+        for (var i = 0; i < capsSchema.length; i++) {
+            var x = capsSchema[i].tab;
             if (x && t.indexOf(x) < 0) t.push(x);
         }
+        for (var j = 0; j < page.tailTabs.length; j++)
+            if (t.indexOf(page.tailTabs[j]) < 0) t.push(page.tailTabs[j]);
         return t;
     }
 
     Column {
         id: head
-        anchors { left: parent.left; right: parent.right; top: parent.top }
-        spacing: Tokens.s2
+        anchors { left: parent.left; top: parent.top }
+        anchors.leftMargin: sheet.sheetX
+        width: sheet.sheetWidth
+        // the register row sits off the title: a rule over a 32px
+        // title needs more than the gap between two lines of body text
+        spacing: Tokens.s3
 
         Item {
             width: parent.width
-            height: 14
+            // an eyebrow that only repeats the title is noise, not a register
+            visible: I18n.tr(page.eyebrow).toLowerCase() !== page.title.toLowerCase()
+            height: 18
             Row {
                 id: ebrow
                 spacing: Tokens.s2
@@ -83,25 +114,9 @@ Item {
             // the band runs to the page edge and closes with the sheet's marks:
             // a register cross and the /// cluster, per the reference poster.
             Rectangle {
-                anchors { left: ebrow.right; right: crossMark.left; verticalCenter: parent.verticalCenter }
-                anchors.leftMargin: Tokens.s3; anchors.rightMargin: Tokens.s3
+                anchors { left: ebrow.right; right: parent.right; verticalCenter: parent.verticalCenter }
+                anchors.leftMargin: Tokens.s3
                 height: 1; color: Tokens.lineSoft
-            }
-            Text {
-                visible: Tokens.showGrid
-                id: crossMark
-                anchors { right: slashMark.left; rightMargin: Tokens.s2; verticalCenter: parent.verticalCenter }
-                text: "+"; color: Tokens.inkFaint
-                font.family: Tokens.mono; font.pixelSize: 10
-            }
-            Text {
-                visible: Tokens.showGrid
-                id: slashMark
-                // clear the shared top-right FILES/UPDATES chips so the register
-                // marks never ride under them.
-                anchors { right: parent.right; rightMargin: 150; verticalCenter: parent.verticalCenter }
-                text: "///"; color: Tokens.inkFaint
-                font.family: Tokens.mono; font.pixelSize: 10
             }
         }
         Text {
@@ -130,22 +145,15 @@ Item {
         }
     }
 
-    Item {
-        id: extraSlot
-        anchors { left: parent.left; right: parent.right; top: head.bottom; topMargin: childrenRect.height > 0 ? Tokens.s4 : 0 }
-        height: childrenRect.height
-        visible: children.length > 0
-    }
-
     SettingsSheet {
         id: sheet
         anchors {
             left: parent.left; right: parent.right
-            top: extraSlot.visible ? extraSlot.bottom : head.bottom
+            top: head.bottom
             bottom: parent.bottom
             topMargin: Tokens.s5
         }
-        schema: page.schema
+        schema: page.capsSchema
         draft: page.draft
         defaults: page.defaults
         query: page.query

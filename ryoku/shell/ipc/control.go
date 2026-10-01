@@ -5,6 +5,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"time"
+
+	wm "ryoku-wm"
 )
 
 // control.go adds the reference control surface to the CLI over the existing
@@ -92,16 +94,14 @@ func (d *daemon) brightness(sub string) string {
 	return "ok"
 }
 
-// isLocked reports whether the session is locked: the compositor-confirmed lock
-// marker exists and its locker is still running. A marker left by a killed
-// locker is stale and cleared here, mirroring lockSession's own staleness
-// handling, so a crash never reports a locked screen that is really open.
+// isLocked accepts only generation- and session-bound compositor proof. A
+// marker from a killed or different-session locker is stale and removed.
 func isLocked() bool {
 	marker := lockMarker()
 	if _, err := os.Stat(marker); err != nil {
 		return false
 	}
-	if !pgrepRunning("quickshell.*quickshell-lockscreen.*/lock_shell.qml") {
+	if !lockProofValid() {
 		_ = os.Remove(marker)
 		return false
 	}
@@ -154,11 +154,11 @@ func hubAlive() bool {
 	return exec.Command("qs", argv...).Run() == nil
 }
 
-// hubRaise brings the Hub window to the focused workspace. The Hub is the
-// only floating org.quickshell client the shell spawns, so class targeting
-// is unambiguous here.
-func hubRaise() {
-	_ = exec.Command("hyprctl", "dispatch", "focuswindow", "class:org.quickshell").Run()
+// hubRaise brings the Hub window to the focused workspace. The Hub is the only
+// floating org.quickshell client the shell spawns, so app-id targeting is
+// unambiguous.
+func (d *daemon) hubRaise() {
+	_ = d.wmc.Act(wm.ActionAppFocus, "org.quickshell")
 }
 
 func (d *daemon) hub(sub, section string) string {
@@ -169,7 +169,7 @@ func (d *daemon) hub(sub, section string) string {
 				if section != "" {
 					hubNav(section)
 				}
-				hubRaise()
+				d.hubRaise()
 				return
 			}
 			// -o, or the Hub's own children inherit the locked descriptor:

@@ -4,6 +4,8 @@ import QtQuick
 import QtQuick.Controls
 import Ryoku.Ui
 import Ryoku.Ui.Singletons
+import ".."
+import "../Singletons"
 
 // Layer Rules (DESIGN.md section 11, ADVANCED). Per-namespace layer-shell tweaks
 // (blur, dim, no-animation, show above lock) applied to Hyprland layer surfaces
@@ -22,9 +24,44 @@ Item {
     property var hub
 
     // the live rules array from the draft: { namespace, action, value } entries.
-    readonly property var rules: pg.hub ? (pg.hub.hyprVal("layerRules") || []) : []
+    readonly property var rules: pg.hub ? (pg.hub.hyprVal("wm.hyprland.layerRules") || []) : []
     // gated so the empty state does not flash before `hypr get` returns.
-    readonly property bool ready: pg.hub ? pg.hub.hyprLoaded === true : false
+    readonly property bool ready: pg.hub ? pg.hub.wmLoaded === true : false
+
+    // Hyprland drives its own layer rules through the bespoke editor below, bound
+    // to wm.hyprland.layerRules; every other provider drives this page through
+    // its own page:"layerrules" schema rows and the shared record editor. The
+    // only compositor name on this page is that one store key, and it is guarded
+    // by modelsKey so the bespoke editor stands down the moment another provider
+    // owns the session.
+    readonly property bool bespoke: pg.hub ? Settings.modelsKey("wm.hyprland.layerRules") : false
+    // the running provider's layer-rule rows, kept to the ones it actually backs.
+    readonly property var provRows: {
+        ProviderSchema.revision;
+        var out = [], rs = ProviderSchema.rowsFor("layerrules");
+        for (var i = 0; i < rs.length; i++) {
+            var r = rs[i];
+            if (!r || !r.key) continue;
+            if (String(r.key).indexOf("[") >= 0) continue;
+            if (r.caps && !Settings.supports(r.caps)) continue;
+            if (!Settings.modelsKey(r.key)) continue;
+            out.push(r);
+        }
+        return out;
+    }
+    readonly property bool hasProvRows: pg.provRows.length > 0
+    // flat dotted-key maps the shared sheet reads, rebuilt on every draft edit.
+    readonly property var provDraft: {
+        var d = {};
+        if (pg.hub) for (var i = 0; i < pg.provRows.length; i++) { var k = pg.provRows[i].key; if (k) d[k] = pg.hub.hyprVal(k); }
+        return d;
+    }
+    readonly property var provCommitted: {
+        var d = {};
+        if (pg.hub) for (var i = 0; i < pg.provRows.length; i++) { var k = pg.provRows[i].key; if (k) d[k] = pg.hub.hyprCommittedVal(k); }
+        return d;
+    }
+    function focusKey(k) { if (schemaLoader.item) schemaLoader.item.focusKey(k); }
 
     // the seven layer-shell tweaks. Only ignorealpha carries a value (a 0..1
     // threshold); dimaround and the rest emit a plain bool on the compositor
@@ -57,43 +94,43 @@ Item {
     // hyprEdit swaps the whole array, so the Repeater rebinds and rebuilds the
     // card owning a focused field. cards therefore commit on editing-finished
     // only, and every helper hands hyprEdit a fresh slice rather than mutating
-    // the live list. (Same discipline as EnvironmentPage.)
+    // the live list. (Same discipline as SessionPage.)
     function patch(i, key, val) {
         if (!pg.hub)
             return;
-        var a = (pg.hub.hyprVal("layerRules") || []).slice();
+        var a = (pg.hub.hyprVal("wm.hyprland.layerRules") || []).slice();
         a[i] = Object.assign({}, a[i]);
         a[i][key] = val;
-        pg.hub.hyprEdit("layerRules", a);
+        pg.hub.hyprEdit("wm.hyprland.layerRules", a);
     }
     // switching action seeds ignorealpha's default and clears the value for
     // every valueless action so nothing stale lingers in the draft.
     function setAction(i, key) {
         if (!pg.hub)
             return;
-        var a = (pg.hub.hyprVal("layerRules") || []).slice();
+        var a = (pg.hub.hyprVal("wm.hyprland.layerRules") || []).slice();
         a[i] = Object.assign({}, a[i]);
         a[i].action = key;
         a[i].value = key === "ignorealpha" ? "0.5" : "";
-        pg.hub.hyprEdit("layerRules", a);
+        pg.hub.hyprEdit("wm.hyprland.layerRules", a);
     }
     function addRule() {
         if (!pg.hub)
             return;
-        var a = (pg.hub.hyprVal("layerRules") || []).slice();
+        var a = (pg.hub.hyprVal("wm.hyprland.layerRules") || []).slice();
         a.push({ "namespace": "", "action": "blur", "value": "" });
-        pg.hub.hyprEdit("layerRules", a);
+        pg.hub.hyprEdit("wm.hyprland.layerRules", a);
     }
     function removeRule(i) {
         if (!pg.hub)
             return;
-        var a = (pg.hub.hyprVal("layerRules") || []).slice();
+        var a = (pg.hub.hyprVal("wm.hyprland.layerRules") || []).slice();
         a.splice(i, 1);
-        pg.hub.hyprEdit("layerRules", a);
+        pg.hub.hyprEdit("wm.hyprland.layerRules", a);
     }
     function clearAll() {
         if (pg.hub)
-            pg.hub.hyprEdit("layerRules", []);
+            pg.hub.hyprEdit("wm.hyprland.layerRules", []);
     }
 
     // head: eyebrow, Fraunces title, blurb (matches every settings page). The
@@ -102,10 +139,18 @@ Item {
     // nothing is a no-op.
     Column {
         id: head
-        anchors { left: parent.left; right: parent.right; top: parent.top }
-        spacing: Tokens.s2
+        visible: pg.bespoke
+        // the head sits on the body's grid, so the title starts over the first
+        // card column instead of floating in a page-wide window
+        anchors { top: parent.top; left: parent.left; right: parent.right }
+        // the register row sits off the title: a rule over a 32px
+        // title needs more than the gap between two lines of body text
+        spacing: Tokens.s3
 
         Row {
+            // the register row holds a fixed box, so the rule and the seal keep
+            // their distance from the title on every page
+            height: Tokens.s5
             spacing: Tokens.s2
             Rectangle {
                 width: 16; height: 1; color: Tokens.ink
@@ -116,7 +161,7 @@ Item {
                 font.pixelSize: 11; anchors.verticalCenter: parent.verticalCenter
             }
             Text {
-                text: I18n.tr("APPS & KEYS"); color: Tokens.inkMuted; font.family: Tokens.ui
+                text: I18n.tr("COMPOSITOR"); color: Tokens.inkMuted; font.family: Tokens.ui
                 font.pixelSize: 9; font.weight: Font.Medium; font.letterSpacing: Tokens.trackMark
                 anchors.verticalCenter: parent.verticalCenter
             }
@@ -127,7 +172,7 @@ Item {
         }
         Text {
             width: Math.min(parent.width, 720)
-            text: I18n.tr("Fine-tune layer-shell surfaces (the bar, launcher, notifications) by namespace: blur or dim them, drop their animations, or show them above the lockscreen. Applied on Save, not live; a namespace that matches nothing has no effect.")
+            text: I18n.tr("Layer surfaces by namespace: blur, dim, motion, order.")
             color: Tokens.inkMuted; font.family: Tokens.ui
             font.pixelSize: Tokens.fBody; wrapMode: Text.WordWrap
         }
@@ -136,6 +181,7 @@ Item {
     // section head: dot + RULES + leader + count + clear all + add.
     Item {
         id: sect
+        visible: pg.bespoke
         anchors { left: parent.left; right: parent.right; top: head.bottom; topMargin: Tokens.s5 }
         height: 32
 
@@ -193,6 +239,7 @@ Item {
     // the scrolling card list.
     Flickable {
         id: flick
+        visible: pg.bespoke
         anchors {
             left: parent.left; right: parent.right
             top: sect.bottom; bottom: parent.bottom
@@ -203,11 +250,15 @@ Item {
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+        WheelScroll { }
 
-        Column {
-            id: col
-            width: flick.width - Tokens.s3   // reserve a lane for the scroll rail
+        CardColumns {
+
+        id: col
+            // a body of cards fills the measure and splits into balanced columns
+            width: flick.width - Tokens.s3
             spacing: Tokens.s2
+            fillTo: flick.height
 
             Repeater {
                 model: pg.rules
@@ -219,7 +270,7 @@ Item {
 
                     readonly property bool needsValue: pg.valueActions.indexOf(rowItem.modelData.action) >= 0
 
-                    width: col.width
+                    width: col.colWidth
                     // the card grows a row when the action needs a value and
                     // shrinks when it does not: the reflow the old page did by
                     // recomputing the namespace field width, done by height here.
@@ -319,7 +370,40 @@ Item {
     // empty state, gated on load so it does not flash before data arrives.
     Empty {
         anchors.centerIn: flick
-        visible: pg.ready && pg.rules.length === 0
+        visible: pg.bespoke && pg.ready && pg.rules.length === 0
         caption: I18n.tr("No custom layer rules yet. Add one to get started.")
+    }
+
+    // Any other provider's layer-rule rows, drawn by the shared renderer the same
+    // way the Window Manager page draws its provider rows.
+    Loader {
+        id: schemaLoader
+        anchors.fill: parent
+        active: !pg.bespoke && pg.hasProvRows
+        sourceComponent: schemaComp
+    }
+    Component {
+        id: schemaComp
+        SchemaPage {
+            anchors.fill: parent
+            schema: pg.provRows
+            draft: pg.provDraft
+            defaults: pg.provCommitted
+            advanced: pg.hub ? pg.hub.advanced : false
+            title: I18n.tr("Layer Rules")
+            eyebrow: I18n.tr("COMPOSITOR")
+            blurb: I18n.tr("Layer surfaces by namespace: blur, shadow, opacity and geometry.")
+            query: pg.hub ? pg.hub.query : ""
+            onEdited: (k, v) => { if (pg.hub) pg.hub.hyprEdit(k, v); }
+            onPickRequested: (r) => { if (pg.hub) pg.hub.openPick(r); }
+        }
+    }
+
+    // Capability present, but the provider ships no rows to edit: an honest
+    // empty state rather than a blank page.
+    Empty {
+        anchors.centerIn: parent
+        visible: !pg.bespoke && !pg.hasProvRows && ProviderSchema.ready && Settings.supports("layerRules")
+        caption: I18n.tr("This compositor supports layer rules but has no editor to show yet.")
     }
 }

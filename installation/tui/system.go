@@ -22,6 +22,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"ryoku-i18n"
+	wm "ryoku-wm"
 )
 
 // run executes a command and returns its trimmed stdout, plus whether it worked.
@@ -1093,6 +1094,10 @@ func (m model) installEnv() []string {
 	} else {
 		env = append(env, "RYOKU_ONLINE=1")
 	}
+	// backend picks the ryoku-desktop-<name> variant and seeds ConfigDir(name);
+	// an unknown name yields an empty dir the backend refuses on.
+	comp := m.picks["compositor"]
+	env = append(env, "RYOKU_COMPOSITOR="+comp, "RYOKU_COMPOSITOR_CONFIG_DIR="+wm.ConfigDir(comp))
 	if m.picks["gpu"] != "" {
 		env = append(env, "RYOKU_GPU_MODE="+m.picks["gpu"])
 	}

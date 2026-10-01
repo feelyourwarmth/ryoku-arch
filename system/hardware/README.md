@@ -29,23 +29,28 @@ in the machine, and do not waste power doing it.
     `lib32-mesa` + `lib32-vulkan-icd-loader` baseline.
   - `90-ryoku-gpu.rules` A udev rule that gives every GPU a stable, predictable
     name under `/dev/dri` so the pin keeps working across reboots.
-- `display/`
-  - `ryoku-monitor` Sets each monitor's scale from its real pixel density, so a
-    dense laptop panel is zoomed and a normal external screen is left alone.
-    `autoscale` applies it live and saves it; `persist` just saves the current
-    layout.
+- `display/` Backlight and output policy. The scaling tool itself moved to the
+  compositor payload (`ryoku/hyprland/scripts/ryoku-monitor`): it speaks the
+  compositor's output config, so each window manager ships its own.
 - `power/`
   - `ryoku-hw-laptop` Classifies the host as laptop or desktop from DMI chassis
     type, battery presence, and lid switches. It is shared by GPU and idle policy.
-  - `ryoku-idle` Starts `hypridle` only on laptops, using Ryoku's dim/lock/DPMS/
-    suspend timeouts.
+  - `ryoku-idle` Renders `~/.config/ryoku/hypridle.conf` from the idle policy in
+    `power.json` and runs `hypridle` for Ryoku's dim, lock, screen-off and suspend
+    timers; the timers are hypridle's whole job. Screen-off goes through
+    `ryoku wm act output.power`, and suspend calls `ryoku-shell suspend`, so
+    neither path names a compositor. `apply` re-renders and restarts a running
+    hypridle after a change. The fail-closed lock transaction, final login1
+    handshake, output wake and lighting restore belong to the always-on shell
+    daemon, even when idle timers are disabled.
   - `ryoku-power` Owns the CPU and power knobs the Hub's Machine page drives.
     `capabilities --json` reports what this machine actually exposes;
     `profile get|set <profile> <key> <value>` stores a per-profile definition
     (governor, EPP, `maxFreqPct`, `platformProfile`) in `~/.config/ryoku/power.json`;
     `apply-profile` writes one to sysfs; `charge-limit` caps the battery charge
     ceiling (the biggest lever on cell lifetime; the kernel reports no value at all
-    until something writes one) and `aspm` sets the PCIe link policy. `apply` is
+    until something writes one) and `aspm` sets the PCIe link policy. `idle get|set`
+    stores the dim/lock/screen-off/suspend policy that `ryoku-idle` renders. `apply` is
     the idempotent pass that converges the globals plus the active profile, and
     exits quietly on a desktop or a machine without the knobs.
 
@@ -65,20 +70,35 @@ in the machine, and do not waste power doing it.
     ASPM policy and governor from the kernel's own lists, `maxFreqPct` 20-100 --
     so the passwordless grant stays safe. The rule pins `/usr/bin/ryoku-power`
     on purpose: granting it to a user-writable path would be a privilege hole.
-  - `ryoku-clamshell` macOS-style clamshell for laptops: a daemon that holds a
-    systemd `handle-lid-switch` inhibitor while on AC power with an external
-    display, so closing the lid keeps the session on the external instead of
-    suspending (and suspends when either is lost with the lid already shut), plus
-    a `lid` subcommand the Hyprland lid-switch bind calls to blank the internal
-    panel on close and restore it on open. Autostarted like `ryoku-idle`; a
-    desktop start exits at once.
+  - `ryoku-clamshell` macOS-style clamshell for laptops, and the sole owner of
+    lid policy for the active login1 session. Its daemon holds
+    `handle-lid-switch` only while active, follows session activity, and
+    reacquires after a login1 restart. A close on AC with an external display
+    remains awake; every other close uses `ryoku-shell suspend`, and a docked
+    machine requests the same transaction if power or the external display
+    disappears while its lid is shut. ACPI is the live physical-state source;
+    UPower seeds an already-closed daemon startup where ACPI exposes no lid, but
+    never vetoes the ordered compositor edge. Hyprland serializes panel handoff
+    and restores only outputs the helper disabled. niri sends both native close
+    and open events through `policy` and retains its topology.
   - `logind-ryoku-lid.conf` The logind drop-in (installed to
-    `/etc/systemd/logind.conf.d/10-ryoku-lid.conf`). It makes logind suspend on
-    lid close in every case, so `ryoku-clamshell` is the only thing that keeps a
-    closed lid awake, and only on AC power with an external display. It also
-    raises `InhibitDelayMaxSec` to 15s: `hypridle` delays sleep while it runs
-    `ryoku-shell lock`, and logind's 5s default let the machine suspend before
-    the lockscreen was up.
+    `/etc/systemd/logind.conf.d/10-ryoku-lid.conf`). It suspends on an undocked
+    lid close when no Ryoku session owns the switch, ignores a docked close, and
+    gives every shell daemon a 15-second delay budget. The package ships the
+    drop-in and a checkout deploy seeds it; an unowned copy is adopted on the
+    next update, per `docs/updates.md`.
+  - `ryoku-power-cutover` Is the session-lifecycle and package-adoption boundary
+    for the power policy. It selects one confirmed active Ryoku session per
+    user, binds `ryoku-session.target` to login1 activity and logout, and
+    recovers its watcher without a finite restart burst. Login, deploy, update,
+    and paired libalpm hooks use it to reload compositor power bindings and
+    replace clamshell, idle, qylock, shell and wallpaper owners under a durable
+    sleep block. Doctor uses the same qylock generation guard to stage a repair
+    for the next managed shell activation; it does not claim a live lifecycle
+    cutover. Greeter, lock-screen, stale lingering managers and unrelated
+    desktops are excluded. Each live replacement must report `ryoku-shell
+    sleep-ready`; a failed or partial cutover remains blocked until a successful
+    retry or reboot.
 - `audio/`
   - `ryoku-mic` Caps the default microphone at its Base Volume (the level the
     device reports as 0 dB hardware gain, no amplification) so a codec that runs
@@ -132,13 +152,39 @@ screens up to 2x for very dense panels. Nothing is hardcoded per model, so a new
 monitor is handled sensibly the first time it is plugged in. GTK and older apps
 get a matching `GDK_SCALE` so they stay crisp too.
 
-## Laptop idle policy
+## Idle policy
 
-`ryoku-idle start` is launched from Hyprland autostart. On desktops it exits
-without starting anything. On laptops it starts `hypridle` with
-`~/.config/hypr/hypridle.conf`: 5 minutes dims, 10 minutes locks, 11 minutes
-powers displays down, and 30 minutes suspends. The shell's Keep Awake toggle uses
-Wayland idle inhibition, so hypridle stays paused while that toggle is on.
+`ryoku-idle` renders `~/.config/ryoku/hypridle.conf` from the `idle` section of
+`power.json` and starts `hypridle`, an `ext-idle-notify` client every supported
+compositor serves. Both session entries go through the guarded
+`ryoku-power-cutover session-start` lifecycle; it starts idle timers only after
+the foreground shell and compositor bindings are ready. By default timers run
+on laptops only; `idle.onDesktops` opts a desktop in, and `idle.enabled` false
+turns them off. Each stage has a battery-aggressive and an AC-relaxed timeout
+(shipped defaults: dim 2/5 min, lock 5/10, screen off 5.5/11, suspend 15/30),
+and a stage set to 0 is dropped. The screen-off stage reaches the display
+through `ryoku wm act output.power`, so the config names no compositor.
+Edit the timeouts from the Hub's Machine page or with `ryoku-power idle set`; a
+change runs `ryoku-idle apply`. The shell's Keep Awake toggle uses Wayland idle
+inhibition, so hypridle stays paused while that toggle is on.
+
+Idle timers are all hypridle owns. The suspend path itself is the shell daemon's.
+The daemon bound to the foreground login1 session holds the delay inhibitor and
+the long-lived hard sleep block. Before ownership moves, it synchronously locks
+the outgoing session and proves that session's live qylock generation. Other
+online sessions are locked directly with their own compositor environment and
+kept under login1 observers; they never need a second user-daemon delay FD.
+Only the foreground session may accept `ryoku-shell suspend` or unlock its own
+proof.
+
+The authorized suspend transaction secures qylock before releasing the active
+block, then releases the one delay FD only after compositor coverage. On resume
+the active session immediately wakes outputs across the retrain window with a
+deadline on every provider attempt and restores lighting. Lost login1 signal or
+owner connections reconnect in-process without dropping still-valid hard
+protection. This remains active when idle timers are disabled.
+`ryoku-clamshell` owns lid events only for the foreground session; logind
+supplies the fallback when no session owner is present.
 
 ## How mic normalization works
 

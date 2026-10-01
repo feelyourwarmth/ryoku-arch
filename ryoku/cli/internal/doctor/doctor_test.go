@@ -11,6 +11,8 @@ import (
 	"ryoku-cli/internal/sys"
 	"strings"
 	"testing"
+
+	wm "ryoku-wm"
 )
 
 func TestParseProcSwaps(t *testing.T) {
@@ -175,9 +177,9 @@ func TestShellDaemonReachable(t *testing.T) {
 }
 
 func TestReconcileShellDaemonOutsideSession(t *testing.T) {
-	t.Setenv("HYPRLAND_INSTANCE_SIGNATURE", "")
+	t.Setenv("PATH", t.TempDir()) // no provider binary resolves, so no live instance
 	if r := reconcileShellDaemon(true); r.status != recOK {
-		t.Fatalf("outside a Hyprland session the daemon check must be ok, got %q: %s", r.status.label(), r.detail)
+		t.Fatalf("outside a live session the daemon check must be ok, got %q: %s", r.status.label(), r.detail)
 	}
 }
 
@@ -218,20 +220,28 @@ func TestDaemonBinaryReplaced(t *testing.T) {
 	}
 }
 
-// A reachable daemon pinned to a previous Hyprland instance must be flagged for a
-// restart, not passed as healthy -- the frozen-workspaces / dead-power bug.
+// A reachable daemon bound to a previous compositor instance must be flagged for
+// a restart, not passed as healthy -- the frozen-workspaces / dead-power bug.
 func TestReconcileShellDaemonStale(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", dir)
-	t.Setenv("HYPRLAND_INSTANCE_SIGNATURE", "live-instance")
 
-	// a fake ryoku-shell on PATH so the reconciler clears its install check;
-	// check-only mode never executes it (it only detects and reports).
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "ryoku-shell"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	// A fake provider whose caps report a live instance handle, resolved
+	// hermetically through RYOKU_WM so the test needs no session.
+	caps := `#!/bin/sh
+if [ "$1" = caps ]; then
+  echo '{"name":"hyprland","instance":"live-instance","supports":[],"workspaceModel":"fixed"}'
+fi
+`
+	if err := os.WriteFile(filepath.Join(bin, "ryoku-wm-hyprland"), []byte(caps), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("RYOKU_WM", "hyprland")
 
 	ln, err := net.Listen("unix", filepath.Join(dir, "ryoku-shell.sock"))
 	if err != nil {
@@ -279,145 +289,12 @@ func TestHyprLuaSane(t *testing.T) {
 	}
 }
 
-// Hyprland files a Lua dispatch error in the same buffer `hyprctl configerrors`
-// reports, so doctor must tell the two apart by Lua's chunk name: the dispatched
-// source for a dispatch, a config file path for a config error.
-func TestHyprDispatchNoise(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want bool
-	}{
-		{
-			"dispatch probe",
-			"return hl.dispatch(hl.dsp):1: hl.dispatch: expected a dispatcher (e.g. hl.dsp.window.close())",
-			true,
-		},
-		{
-			"dispatch typo",
-			"return hl.dispatch(hl.dsp.workspace):1: hl.dispatch: expected a dispatcher",
-			true,
-		},
-		{
-			"config lua error",
-			"/home/u/.config/hypr/user.lua:12: hl.dispatch: expected a dispatcher",
-			false,
-		},
-		{
-			"config parse error",
-			"/home/u/.config/hypr/hyprland.lua:3: unexpected symbol near ')'",
-			false,
-		},
-		{"clean", "", false},
-	}
-	for _, c := range cases {
-		if got := hyprDispatchNoise(c.in); got != c.want {
-			t.Errorf("%s: hyprDispatchNoise()=%v, want %v", c.name, got, c.want)
-		}
-	}
-}
-
-// A live session holding nothing but a stale dispatch error is healthy: check
-// mode says so instead of blaming the config, and fix mode reloads to clear it.
-// A stubbed hyprctl stands in for the compositor: `configerrors` answers from a
-// file the stub's own `reload` empties, exactly as Hyprland behaves.
-func TestReconcileHyprlandConfigClearsStaleDispatchError(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-
-	hypr := filepath.Join(home, ".config", "hypr")
-	if err := os.MkdirAll(hypr, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(hypr, "hyprland.lua"), []byte("-- config\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	bin := filepath.Join(home, "bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	errsFile := filepath.Join(home, "configerrors")
-	noise := "return hl.dispatch(hl.dsp):1: hl.dispatch: expected a dispatcher\n"
-	if err := os.WriteFile(errsFile, []byte(noise), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	// Builtins only: PATH holds nothing but the stub itself.
-	stub := "#!/bin/sh\n" +
-		"case \"$1\" in\n" +
-		"version) exit 0 ;;\n" +
-		"configerrors) while IFS= read -r line; do echo \"$line\"; done <" + errsFile + " ;;\n" +
-		"reload) : >" + errsFile + "; echo ok ;;\n" +
-		"esac\n"
-	if err := os.WriteFile(filepath.Join(bin, "hyprctl"), []byte(stub), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin)
-
-	r := reconcileHyprlandConfig(true)
-	if r.status != recWouldFix || !strings.Contains(r.detail, "stale") {
-		t.Fatalf("check-only: status=%s detail=%q, want a stale-dispatch todo", r.status.label(), r.detail)
-	}
-	if strings.Contains(r.detail, "rejecting its config") {
-		t.Fatalf("check-only must not blame the config: %q", r.detail)
-	}
-	if b, err := os.ReadFile(errsFile); err != nil || string(b) != noise {
-		t.Fatal("check-only must not reload the compositor")
-	}
-
-	if r := reconcileHyprlandConfig(false); r.status != recFixed {
-		t.Fatalf("fix: status=%s detail=%q, want fixed", r.status.label(), r.detail)
-	}
-	if b, err := os.ReadFile(errsFile); err != nil || strings.TrimSpace(string(b)) != "" {
-		t.Fatalf("fix must clear the error buffer, got %q", string(b))
-	}
-	if r := reconcileHyprlandConfig(false); r.status != recOK {
-		t.Fatalf("second run: status=%s, want ok", r.status.label())
-	}
-}
-
-// A real config error still reads as one, reload or not.
-func TestReconcileHyprlandConfigKeepsRealConfigError(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-
-	hypr := filepath.Join(home, ".config", "hypr")
-	if err := os.MkdirAll(hypr, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(hypr, "hyprland.lua"), []byte("-- config\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	bin := filepath.Join(home, "bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	stub := "#!/bin/sh\n" +
-		"case \"$1\" in\n" +
-		"version) exit 0 ;;\n" +
-		"configerrors) echo \"" + filepath.Join(hypr, "user.lua") + ":9: unexpected symbol near ')'\" ;;\n" +
-		"reload) echo ok ;;\n" +
-		"esac\n"
-	if err := os.WriteFile(filepath.Join(bin, "hyprctl"), []byte(stub), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", bin)
-
-	if r := reconcileHyprlandConfig(false); r.status != recWarn || !strings.Contains(r.detail, "rejecting its config") {
-		t.Fatalf("fix: status=%s detail=%q, want a config-rejection warning", r.status.label(), r.detail)
-	}
-	if r := reconcileHyprlandConfig(true); r.status != recWouldFix || !strings.Contains(r.detail, "emergency mode") {
-		t.Fatalf("check-only: status=%s detail=%q, want the emergency-mode todo", r.status.label(), r.detail)
-	}
-}
-
 // torn generated drop-in -> detected and repaired to a parseable safe seed;
 // a valid sibling stays untouched, and the fix is idempotent. PATH is wiped
-// so the test never touches luac/hyprctl/ryoku-monitor: just the structural
+// so the test never touches luac/the provider/ryoku-monitor: just the structural
 // check + the safe-seed fallback, deterministically.
 func TestReconcileHyprlandConfigRepairsCorruptDropin(t *testing.T) {
+	t.Setenv("RYOKU_WM", "hyprland") // this reconciler is Hyprland's; pin the provider
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
@@ -466,6 +343,7 @@ func TestReconcileHyprlandConfigRepairsCorruptDropin(t *testing.T) {
 }
 
 func TestReconcileHyprlandConfigNoConfig(t *testing.T) {
+	t.Setenv("RYOKU_WM", "hyprland") // this reconciler is Hyprland's; pin the provider
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
@@ -624,8 +502,8 @@ func TestMergedConfdRoot(t *testing.T) {
 	}
 }
 
-// reconcileDisplayModes delegates to `ryoku-monitor settle`; stub both it
-// and hyprctl on PATH so hyprLive() + the settle outcomes stay deterministic.
+// reconcileDisplayModes gates on a live session and delegates to `ryoku-monitor
+// settle`; drive detection and stub ryoku-monitor so the outcomes are deterministic.
 func TestReconcileDisplayModes(t *testing.T) {
 	bin := t.TempDir()
 	mkExec := func(name, body string) {
@@ -634,13 +512,12 @@ func TestReconcileDisplayModes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// a present, answering hyprctl makes hyprLive() report a live session.
-	mkExec("hyprctl", "#!/bin/sh\nexit 0\n")
 	// ryoku-monitor stub: `settle --check` exits $CHK, `settle` exits $SET.
 	mkExec("ryoku-monitor", "#!/bin/sh\n"+
 		"if [ \"$1\" = settle ] && [ \"$2\" = --check ]; then exit ${CHK:-0}; fi\n"+
 		"if [ \"$1\" = settle ]; then exit ${SET:-0}; fi\nexit 0\n")
 	t.Setenv("PATH", bin)
+	t.Setenv("XDG_CURRENT_DESKTOP", "hyprland") // a live session for wm.Detect()
 
 	t.Setenv("CHK", "0") // every display at its best available mode
 	if r := reconcileDisplayModes(false); r.status != recOK {
@@ -658,21 +535,9 @@ func TestReconcileDisplayModes(t *testing.T) {
 	if r := reconcileDisplayModes(false); r.status != recWarn {
 		t.Fatalf("settle failed: got %s, want warn", r.status.label())
 	}
-	t.Setenv("PATH", t.TempDir()) // no hyprctl -> no live session
+	t.Setenv("RYOKU_WM", "none") // no live session for wm.Detect()
 	if r := reconcileDisplayModes(false); r.status != recOK {
 		t.Fatalf("no session: got %s, want ok", r.status.label())
-	}
-}
-
-// off a Hyprland desktop the cursor-theme check must stay quiet -- no nagging
-// a server or a non-Ryoku box to install a desktop cursor theme.
-func TestReconcileCursorThemeNotDesktop(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("PATH", t.TempDir()) // no Hyprland on PATH
-	if r := reconcileCursorTheme(true); r.status != recOK {
-		t.Fatalf("off a Hyprland desktop the cursor check must be ok, got %q: %s", r.status.label(), r.detail)
 	}
 }
 
@@ -680,11 +545,38 @@ func TestConfiguredCursor(t *testing.T) {
 	if th, sz := configuredCursor(nil); th != defaultCursorTheme || sz != 24 {
 		t.Fatalf("no store: got %q/%d, want %s/24", th, sz, defaultCursorTheme)
 	}
-	if th, sz := configuredCursor([]byte(`{"cursor":{"theme":"phinger-cursors","size":32}}`)); th != "phinger-cursors" || sz != 32 {
+	if th, sz := configuredCursor([]byte(`{"desktop":{"cursor":{"theme":"phinger-cursors","size":32}}}`)); th != "phinger-cursors" || sz != 32 {
 		t.Fatalf("override: got %q/%d, want phinger-cursors/32", th, sz)
 	}
 	if th, sz := configuredCursor([]byte(`not json`)); th != defaultCursorTheme || sz != 24 {
 		t.Fatalf("garbage store must fall back to the default: got %q/%d", th, sz)
+	}
+	// "Follow the wallpaper" is a role, not a theme name; the check must see the
+	// concrete theme it resolves to, or it resets a working pick.
+	if th, _ := configuredCursor([]byte(`{"desktop":{"cursor":{"theme":"DYNAMIC"}}}`)); th != wm.CursorThemeMaterial {
+		t.Fatalf("DYNAMIC resolved to %q, want %q", th, wm.CursorThemeMaterial)
+	}
+}
+
+func TestStripCursorMaterial(t *testing.T) {
+	raw := []byte(`{"desktop":{"cursor":{"material":true,"size":18}}}`)
+	out, changed, err := stripCursorMaterial(raw)
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v, want the key dropped", changed, err)
+	}
+	if _, sz := configuredCursor(out); sz != 18 {
+		t.Fatalf("strip lost the size: got %d", sz)
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(out, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	cur := cfg["desktop"].(map[string]any)["cursor"].(map[string]any)
+	if _, ok := cur["material"]; ok {
+		t.Fatal("material survived")
+	}
+	if _, changed, err := stripCursorMaterial([]byte(`{"desktop":{"cursor":{"size":18}}}`)); changed || err != nil {
+		t.Fatalf("a clean store must not rewrite: changed=%v err=%v", changed, err)
 	}
 }
 
@@ -710,7 +602,7 @@ func TestCursorThemeInstalled(t *testing.T) {
 }
 
 func TestResetCursorTheme(t *testing.T) {
-	out, err := resetCursorTheme([]byte(`{"cursor":{"theme":"phinger-cursors","size":32},"input":{"sensitivity":0.2}}`), defaultCursorTheme)
+	out, err := resetCursorTheme([]byte(`{"desktop":{"cursor":{"theme":"phinger-cursors","size":32},"input":{"sensitivity":0.2}}}`), defaultCursorTheme)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -729,7 +621,7 @@ func TestReconcileCursorThemeConverge(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	t.Setenv("PATH", t.TempDir()) // no hyprctl; the live setcursor no-ops
+	t.Setenv("PATH", t.TempDir()) // no provider on PATH; the live setcursor no-ops
 	if err := os.MkdirAll(filepath.Join(home, ".config", "hypr"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -737,11 +629,11 @@ func TestReconcileCursorThemeConverge(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".local", "share", "icons", defaultCursorTheme, "cursors"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	store := filepath.Join(home, ".config", "ryoku", "hypr.json")
+	store := filepath.Join(home, ".config", "ryoku", "desktop.json")
 	if err := os.MkdirAll(filepath.Dir(store), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(store, []byte(`{"cursor":{"theme":"No-Such-Cursor-Theme","size":28}}`), 0o644); err != nil {
+	if err := os.WriteFile(store, []byte(`{"desktop":{"cursor":{"theme":"No-Such-Cursor-Theme","size":28}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if r := reconcileCursorTheme(true); r.status != recWouldFix {
@@ -796,10 +688,41 @@ func TestSDDMWaylandBodyForcesQtWayland(t *testing.T) {
 		"GreeterEnvironment=QT_QPA_PLATFORM=wayland,XCURSOR_THEME=Bibata-Modern-Ice,XCURSOR_SIZE=24,QML_XHR_ALLOW_FILE_READ=1",
 		"[Wayland]",
 		"CompositorCommand=",
+		"SessionCommand=",
 	} {
 		if !strings.Contains(body, line) {
 			t.Errorf("sddmWaylandBody() missing %q:\n%s", line, body)
 		}
+	}
+}
+
+// the greeter compositor fallback must pin weston's software cursor path on
+// NVIDIA: the driver accepts the hardware cursor plane without displaying it,
+// so the login pointer vanishes (#184).
+func TestGreeterCompositorSoftwareCursorOnNVIDIA(t *testing.T) {
+	wrapper, vendorGlob := greeterCompositorBin, nvidiaVendorGlob
+	defer func() { greeterCompositorBin, nvidiaVendorGlob = wrapper, vendorGlob }()
+
+	dir := t.TempDir()
+	vendor := filepath.Join(dir, "card0", "device", "vendor")
+	if err := os.MkdirAll(filepath.Dir(vendor), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(vendor, []byte("0x8086\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	nvidiaVendorGlob = filepath.Join(dir, "card*", "device", "vendor")
+
+	greeterCompositorBin = "/nonexistent/greeter"
+	if got := greeterCompositor(); got != "weston --shell=kiosk" {
+		t.Errorf("greeterCompositor() on Intel = %q", got)
+	}
+
+	if err := os.WriteFile(vendor, []byte("0x10de\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := greeterCompositor(); got != "weston --shell=kiosk --renderer=pixman" {
+		t.Errorf("greeterCompositor() on NVIDIA = %q", got)
 	}
 }
 
@@ -1306,10 +1229,10 @@ func TestParseEspDiskPart(t *testing.T) {
 	}
 }
 
-// hyprSetFollowMouse must flip only input.followMouse and preserve every other
-// field, so the healed JSON round-trips cleanly through `ryoku-hub hypr save`.
+// hyprSetFollowMouse must flip only desktop.input.followMouse and preserve every
+// other field.
 func TestHyprFollowMouseRewrite(t *testing.T) {
-	raw := `{"input":{"kbLayout":"us","followMouse":1,"tapToClick":true},"appearance":{"gapsIn":5}}`
+	raw := `{"desktop":{"input":{"kbLayout":"us","followMouse":1,"tapToClick":true},"appearance":{"gapsIn":5}}}`
 	if fm, ok := hyprGetFollowMouse(raw); !ok || fm != 1 {
 		t.Fatalf("get: got (%d,%v), want (1,true)", fm, ok)
 	}
@@ -1320,8 +1243,8 @@ func TestHyprFollowMouseRewrite(t *testing.T) {
 	if fm, ok := hyprGetFollowMouse(fixed); !ok || fm != 2 {
 		t.Errorf("after set: got (%d,%v), want (2,true)", fm, ok)
 	}
-	// untouched fields survive.
-	for _, want := range []string{`"kbLayout":"us"`, `"tapToClick":true`, `"gapsIn":5`} {
+	// untouched fields survive (the store is written indented).
+	for _, want := range []string{`"kbLayout": "us"`, `"tapToClick": true`, `"gapsIn": 5`} {
 		if !strings.Contains(fixed, want) {
 			t.Errorf("healed JSON dropped %s: %s", want, fixed)
 		}
@@ -1330,10 +1253,10 @@ func TestHyprFollowMouseRewrite(t *testing.T) {
 
 // A config that never held the retired default (or has no followMouse) is a no-op.
 func TestHyprFollowMouseNotDefault(t *testing.T) {
-	if fm, ok := hyprGetFollowMouse(`{"input":{"followMouse":2}}`); !ok || fm != 2 {
+	if fm, ok := hyprGetFollowMouse(`{"desktop":{"input":{"followMouse":2}}}`); !ok || fm != 2 {
 		t.Errorf("followMouse=2: got (%d,%v)", fm, ok)
 	}
-	if _, ok := hyprGetFollowMouse(`{"input":{}}`); ok {
+	if _, ok := hyprGetFollowMouse(`{"desktop":{"input":{}}}`); ok {
 		t.Errorf("missing followMouse should report absent")
 	}
 }
@@ -1735,7 +1658,7 @@ func TestLimineDropFlatAdoptedLayout(t *testing.T) {
 // portals.conf routing to the gnome backend, which hangs app launches under
 // Hyprland. hyprland anywhere in the default list means the file is intent,
 // not residue.
-func TestPortalRoutesHyprland(t *testing.T) {
+func TestPortalRoutesBackend(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
@@ -1752,8 +1675,8 @@ func TestPortalRoutesHyprland(t *testing.T) {
 		{"empty file", "", false},
 	}
 	for _, c := range cases {
-		if got := portalRoutesHyprland(c.in); got != c.want {
-			t.Errorf("%s: portalRoutesHyprland = %v, want %v", c.name, got, c.want)
+		if got := portalRoutesBackend(c.in, "hyprland"); got != c.want {
+			t.Errorf("%s: portalRoutesBackend = %v, want %v", c.name, got, c.want)
 		}
 	}
 }
@@ -1767,7 +1690,7 @@ func TestPortalConfigCandidatesOrder(t *testing.T) {
 	t.Setenv("XDG_CONFIG_DIRS", "")
 	t.Setenv("XDG_DATA_HOME", "")
 	t.Setenv("XDG_DATA_DIRS", "")
-	got := portalConfigCandidates(home)
+	got := portalConfigCandidates(home, "hyprland")
 	idx := func(p string) int {
 		for i, c := range got {
 			if c == p {
@@ -1790,6 +1713,60 @@ func TestPortalConfigCandidatesOrder(t *testing.T) {
 	}
 }
 
+// The desktop token drives which <desktop>-portals.conf the portal loads: the
+// running session's first XDG_CURRENT_DESKTOP entry wins, the provider name is
+// the fallback, and the packaged candidate is named for that token (so a niri
+// box looks for niri-portals.conf, not hyprland's).
+func TestPortalDesktopToken(t *testing.T) {
+	// table-driven so the desktop names read as data, not as a branch on which
+	// compositor is running (the isolation gate's whole point).
+	cases := []struct {
+		env, provider, want string
+	}{
+		{"niri:wayland", "niri", "niri"},
+		{"GNOME", "gnome", "gnome"},
+		{"", "Niri", "niri"}, // empty session env falls back to the provider
+		{"", "", ""},         // neither: nothing desktop-specific to look for
+	}
+	for _, c := range cases {
+		if got := portalDesktopToken(c.env, c.provider); got != c.want {
+			t.Errorf("portalDesktopToken(%q, %q) = %q, want %q", c.env, c.provider, got, c.want)
+		}
+	}
+}
+
+// A niri session's packaged candidate is niri-portals.conf, and it outranks the
+// generic portals.conf in the same directory (portals.conf(5) order).
+func TestPortalConfigCandidatesNiri(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_CONFIG_DIRS", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_DATA_DIRS", "")
+	got := portalConfigCandidates(home, "niri")
+	idx := func(p string) int {
+		for i, c := range got {
+			if c == p {
+				return i
+			}
+		}
+		t.Fatalf("candidate %s missing from %v", p, got)
+		return -1
+	}
+	if idx(filepath.Join(home, ".config/xdg-desktop-portal/niri-portals.conf")) != 0 {
+		t.Error("the user niri-portals.conf must lead the order")
+	}
+	if idx("/usr/share/xdg-desktop-portal/niri-portals.conf") > idx("/usr/share/xdg-desktop-portal/portals.conf") {
+		t.Error("the packaged niri-portals.conf must outrank the generic one")
+	}
+	// an empty token yields only the generic candidate, never a bare -portals.conf.
+	for _, c := range portalConfigCandidates(home, "") {
+		if strings.HasSuffix(c, "/-portals.conf") {
+			t.Fatalf("empty token produced %s", c)
+		}
+	}
+}
+
 // End to end on a temp home: the winning user file routes to gnome, doctor in
 // fix mode moves it aside and the packaged-style file behind it wins again.
 func TestReconcilePortalRoutingHealsUserHijack(t *testing.T) {
@@ -1800,12 +1777,20 @@ func TestReconcilePortalRoutingHealsUserHijack(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local/share"))
 	data := filepath.Join(home, "data")
 	t.Setenv("XDG_DATA_DIRS", data)
-	t.Setenv("PATH", "") // the fix's systemctl nudge must never reach the live session
-
-	// the gate needs a Hyprland box marker
-	if err := os.MkdirAll(filepath.Join(home, ".config/hypr"), 0o755); err != nil {
+	// A fake provider reporting a portal backend, resolved via RYOKU_WM; PATH
+	// holds only it, so the fix's systemctl nudge never reaches a live session.
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	caps := "#!/bin/sh\n[ \"$1\" = caps ] && echo '{\"name\":\"hyprland\",\"portalBackend\":\"hyprland\",\"supports\":[],\"workspaceModel\":\"fixed\"}'\n"
+	if err := os.WriteFile(filepath.Join(bin, "ryoku-wm-hyprland"), []byte(caps), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("RYOKU_WM", "hyprland")
+	// no session env: the token falls back to the provider name (hyprland).
+	t.Setenv("XDG_CURRENT_DESKTOP", "")
 	userDir := filepath.Join(home, ".config/xdg-desktop-portal")
 	if err := os.MkdirAll(userDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -1837,6 +1822,44 @@ func TestReconcilePortalRoutingHealsUserHijack(t *testing.T) {
 	}
 	if r := reconcilePortalRouting(true); r.status != recOK {
 		t.Errorf("healed box must be ok, got %q: %s", r.status.label(), r.detail)
+	}
+}
+
+// A niri box routes portals through the packaged niri-portals.conf (gnome
+// backend, FileChooser to gtk). Before the candidate list was desktop-aware the
+// doctor only ever looked for hyprland-portals.conf, so it could not see this
+// file and falsely warned that nothing routes to gnome. The session env names
+// the desktop, so the token is niri and the packaged file reads as healthy.
+func TestReconcilePortalRoutingNiriPackaged(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CONFIG_DIRS", filepath.Join(home, "empty-etc-xdg"))
+	t.Setenv("XDG_DATA_HOME", filepath.Join(home, ".local/share"))
+	data := filepath.Join(home, "data")
+	t.Setenv("XDG_DATA_DIRS", data)
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	caps := "#!/bin/sh\n[ \"$1\" = caps ] && echo '{\"name\":\"niri\",\"portalBackend\":\"gnome\",\"supports\":[],\"workspaceModel\":\"dynamic\"}'\n"
+	if err := os.WriteFile(filepath.Join(bin, "ryoku-wm-niri"), []byte(caps), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("RYOKU_WM", "niri")
+	t.Setenv("XDG_CURRENT_DESKTOP", "niri")
+	packaged := filepath.Join(data, "xdg-desktop-portal")
+	if err := os.MkdirAll(packaged, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// the shipped routing: gnome default, FileChooser pinned to gtk.
+	if err := os.WriteFile(filepath.Join(packaged, "niri-portals.conf"),
+		[]byte("[preferred]\ndefault=gnome;gtk\norg.freedesktop.impl.portal.FileChooser=gtk\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if r := reconcilePortalRouting(true); r.status != recOK {
+		t.Fatalf("packaged niri box = %q (%s), want ok", r.status.label(), r.detail)
 	}
 }
 
@@ -2331,6 +2354,7 @@ func TestStripLegacyStyleKnobs(t *testing.T) {
 // mode with no way back (a snapshot restores /, not ~/.config on /home).
 // doctor must reseed it like any other drop-in.
 func TestReconcileHyprlandConfigRepairsCorruptKeyboard(t *testing.T) {
+	t.Setenv("RYOKU_WM", "hyprland") // this reconciler is Hyprland's; pin the provider
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
@@ -2395,6 +2419,8 @@ func TestStrayRyokuFilesSelectsUnownedOnly(t *testing.T) {
 			return []string{"/usr/lib/systemd/system/ryoku-network-kill-guard.service"}, nil
 		case "/usr/share/ryoku/boot/*":
 			return []string{"/usr/share/ryoku/boot/default.conf"}, nil
+		case "/etc/systemd/logind.conf.d/10-ryoku-lid.conf":
+			return []string{"/etc/systemd/logind.conf.d/10-ryoku-lid.conf"}, nil
 		}
 		return nil, nil
 	}
@@ -2409,9 +2435,10 @@ func TestStrayRyokuFilesSelectsUnownedOnly(t *testing.T) {
 		"/usr/share/plymouth/themes/ryoku/bullet.png":              true,
 		"/usr/lib/systemd/system/ryoku-network-kill-guard.service": true,
 		"/usr/share/ryoku/boot/default.conf":                       true,
+		"/etc/systemd/logind.conf.d/10-ryoku-lid.conf":             true,
 	}
 	if len(got) != len(want) {
-		t.Fatalf("strayRyokuFiles = %v, want exactly the three unowned paths", got)
+		t.Fatalf("strayRyokuFiles = %v, want exactly the unowned paths", got)
 	}
 	for _, g := range got {
 		if !want[g] {
@@ -2491,5 +2518,47 @@ func TestStaleUserRyotunesSpotsTheWrapperOnly(t *testing.T) {
 	}
 	if got := staleUserRyotunes(filepath.Join(dir, "missing")); got != "" {
 		t.Fatalf("missing file must be nothing, got %q", got)
+	}
+}
+
+// The portal frontend a session needs is the one its compositor declares
+// (wm.Caps.PortalBackend): a niri box must not be told to install Hyprland's.
+func TestPortalFrontendCheckFollowsTheDeclaredBackend(t *testing.T) {
+	cases := []struct{ provider, backend, wantPkg string }{
+		{"niri", "gnome", "xdg-desktop-portal-gnome"},
+		{"hyprland", "hyprland", "xdg-desktop-portal-hyprland"},
+	}
+	for _, c := range cases {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+		bin := filepath.Join(home, "bin")
+		if err := os.MkdirAll(bin, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		caps := "#!/bin/sh\n[ \"$1\" = caps ] && echo '{\"name\":\"" + c.provider +
+			"\",\"portalBackend\":\"" + c.backend + "\",\"supports\":[],\"workspaceModel\":\"fixed\"}'\nexit 0\n"
+		if err := os.WriteFile(filepath.Join(bin, "ryoku-wm-"+c.provider), []byte(caps), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", bin)
+		t.Setenv("RYOKU_WM", c.provider)
+
+		fix, pkgs := portalFrontendCheck()
+		if len(pkgs) != 1 || pkgs[0] != c.wantPkg {
+			t.Errorf("%s: pkgs=%v, want [%s]", c.provider, pkgs, c.wantPkg)
+		}
+		if !strings.Contains(fix, c.wantPkg) {
+			t.Errorf("%s: fix hint %q should name %s", c.provider, fix, c.wantPkg)
+		}
+	}
+
+	// With no provider answering, every frontend is accepted rather than one
+	// compositor's: the old behaviour pointed a niri box at Hyprland's portal.
+	t.Setenv("RYOKU_WM", "none")
+	t.Setenv("PATH", t.TempDir())
+	fix, pkgs := portalFrontendCheck()
+	if fix != "" || len(pkgs) < 2 {
+		t.Fatalf("no provider: fix=%q pkgs=%v, want no hint and every frontend", fix, pkgs)
 	}
 }

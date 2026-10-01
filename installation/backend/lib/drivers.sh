@@ -50,21 +50,26 @@ ryoku_drivers() {
 #   offload -> hybrid       (no pin; Hyprland's iGPU-first default, for battery)
 #   sync    -> performance  (pin the dGPU as the primary renderer)
 #   vfio    -> passthrough  (pin the iGPU alone, freeing the dGPU for a VM)
-# run `ryoku-gpu mode <mapped>` as the user against their Hyprland pin file, via
-# runuser like deploy.sh's materialize. ryoku-gpu's analyze reads /sys/class/drm,
+# run `ryoku-gpu mode <mapped>` as the user against the provider's gpu.lua render
+# pin, via runuser like deploy.sh's materialize. only a compositor whose config
+# ships that Lua pin has a writer here: niri picks its own render device and ships
+# gpu.kdl, so the render pin is skipped for it (niri's gpu.kdl still gets the
+# cursor half of the policy from `ryoku-gpu persist`, which lands at login).
+# ryoku-gpu's analyze reads /sys/class/drm,
 # which arch-chroot bind-mounts, so detection sees the real target GPUs; the tool
 # self-gates (a single GPU no-ops, a missing iGPU refuses passthrough), so a
 # non-hybrid box is harmless. best-effort: a failure only skips the pin.
 #
 # config path = gpu.lua (GPU_CONF_DEFAULT), NOT user.lua. Hyprland autostart runs
-# `ryoku-gpu persist` every login, which rewrites gpu.lua ONLY when a discrete
-# pin is "beneficial" (see ryoku-gpu-detect beneficial(): an eGPU, or a DESKTOP
-# whose strongest GPU is discrete). on the hybrid LAPTOP this feature targets,
-# persist is NOT beneficial, so it leaves gpu.lua alone and our pick survives.
-# gpu.lua is also the single file the Hub GPU page, `ryoku doctor`, and `ryoku
-# materialize` all manage; user.lua would survive persist on every box but the
-# Hub can neither see nor rewrite it, stranding the mode as an override no tool
-# owns (a worse trap than the desktop/eGPU re-pin, which the Hub still governs).
+# `ryoku-gpu persist` every login, which rewrites gpu.lua from the policy in
+# ryoku-gpu-detect beneficial(): pin the strongest GPU on any multi-GPU box,
+# unless the file carries a stored `-- ryoku-gpu-mode: hybrid|passthrough`
+# stamp, in which case persist honours that choice and leaves the file alone.
+# `ryoku-gpu mode <m>` writes the stamp, so the installer's pick survives every
+# login. gpu.lua is also the single file the Hub GPU page, `ryoku doctor`, and
+# `ryoku materialize` all manage; user.lua would survive persist on every box
+# but the Hub can neither see nor rewrite it, stranding the mode as an override
+# no tool owns.
 ryoku_gpu_mode() {
 	[[ -n ${RYOKU_GPU_MODE:-} ]] || return 0
 	local mapped
@@ -74,9 +79,15 @@ ryoku_gpu_mode() {
 		vfio)    mapped=passthrough ;;
 		*) log 'GPU mode: ignoring unknown RYOKU_GPU_MODE='\''%s'\'' (want offload|sync|vfio)' "$RYOKU_GPU_MODE"; return 0 ;;
 	esac
-	local u=$RYOKU_USERNAME dest="/home/$RYOKU_USERNAME/.config/hypr/gpu.lua"
+	local u=$RYOKU_USERNAME dest="/home/$RYOKU_USERNAME/.config/$RYOKU_COMPOSITOR_CONFIG_DIR/gpu.lua"
 	if [[ -n ${RYOKU_DRYRUN:-} ]]; then
 		log "DRYRUN: arch-chroot /mnt runuser -u $u -- env HOME=/home/$u ryoku-gpu mode $mapped $dest"
+		return 0
+	fi
+	# only a compositor whose config ships a gpu.lua pin has a ryoku-gpu writer;
+	# niri ships gpu.kdl (comment-only, it picks its own render device), so skip.
+	if [[ ! -f /mnt/usr/share/ryoku/config/$RYOKU_COMPOSITOR_CONFIG_DIR/gpu.lua ]]; then
+		log 'GPU mode: skipped (the %s compositor has no ryoku-gpu render pin)' "$RYOKU_COMPOSITOR"
 		return 0
 	fi
 	if [[ ! -x /mnt/usr/bin/ryoku-gpu ]]; then

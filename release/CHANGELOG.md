@@ -150,6 +150,14 @@
   an old stable for days. The rclone remote is written by one script,
   `bin/ryoku-r2-config`, shared with the ISO workflow.
 
+### Fixed
+- **gpk tracks its upstream again.** The pinned GlazePKG release binary sat at
+  0.5.8 while upstream had moved to 0.6.10, so a box fully up to date against
+  the [ryoku] repo still ran a package manager two minor generations old, and
+  "up to date" read as a false claim to the person who owns the tool. The pin,
+  both architecture checksums and pkgrel move to the current release
+  (`release/packages/gpk/PKGBUILD`).
+
 ### Added
 - **Release lines have names.** `CODENAME` holds the current line's name
   (Onogoro before 1.0; Amaterasu for 1.0) and `release/names.md` tells each
@@ -552,12 +560,21 @@
   let `ddcutil` drive external-monitor brightness with no group setup; and
   `ryoku/ui/i18n-sync.py` installs as `/usr/bin/ryoku-i18n` for the Hub's
   Language > Generate with AI button and the autostart key-file seed.
-- **`ryoku-desktop` ships the laptop clamshell policy.** The `ryoku-clamshell`
-  helper lands on `/usr/bin` via the `system/hardware/*/ryoku-*` glob, and the
-  logind drop-in `system/hardware/power/logind-ryoku-lid.conf` installs to
-  `/etc/systemd/logind.conf.d/10-ryoku-lid.conf`; the `.install` reloads
-  `systemd-logind` (session-safe) so the lid policy applies without a reboot.
-  Closing the lid on AC power with an external display no longer suspends.
+- **`ryoku-desktop` ships the complete lock, lid and session-lifecycle policy.**
+  `ryoku-clamshell`, `ryoku-idle`, their user units and the login1 fallback
+  drop-in land together. A session watcher selects the confirmed active
+  Hyprland/niri login, binds `ryoku-session.target` to activity and logout, and
+  has unlimited restart recovery across login1 or D-Bus outages. Paired libalpm
+  hooks preserve the old executor and acquire a verified durable sleep block
+  before package extraction or removal, then keep it while every real
+  graphical user reloads compositor power bindings and replaces qylock, shell,
+  idle, clamshell and Ryogami owners; greeter, lock and stale lingering
+  sessions are excluded. The first release runs this all-session cutover
+  synchronously from managed updater stage two, or schedules an unlimited-retry
+  transient after pacman's lock for a direct install. Every new shell must
+  report its sleep guard and service owners ready before protection is released.
+  Removal keeps sleep blocked for remaining live sessions and restores logind's
+  fallback. Closing a lid on AC with an external display remains awake.
 - **`ryoku-desktop` ships the decor art set to `/usr/share/ryoku/ryodecors`.** The
   `Decor` and `Placard` components render from `~/Pictures/ryodecors`; the package
   carries the shipped set so `ryoku doctor` can lay it there on update (the

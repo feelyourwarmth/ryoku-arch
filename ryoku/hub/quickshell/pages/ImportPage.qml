@@ -4,9 +4,9 @@ import QtQuick
 import QtQuick.Controls
 import Quickshell
 import Quickshell.Io
-import Quickshell.Hyprland
 import Ryoku.Ui
 import Ryoku.Ui.Singletons
+import "../Singletons"
 import "../Combos.js" as Combos
 
 // Import config (TOOLS, ADVANCED). The drop-and-go migration wizard: bring an
@@ -48,11 +48,44 @@ Item {
     property bool undone: false
     property string pendingDecisions: ""
 
-    // a previous non-Ryoku setup sitting in ~/.config (Ryoku loads hyprland.lua,
-    // never a monolithic hyprland.conf), offered as a one-tap source.
+    // a previous non-Ryoku setup sitting in the running provider's config tree
+    // (Ryoku writes a generated config, never a hand-rolled monolith), offered as
+    // a one-tap source. Only meaningful on a desktop whose format import reads.
     property bool autoDetected: false
     property string urlText: ""
     readonly property string home: Quickshell.env("HOME") || ""
+
+    // The desktop the user runs and the root of its config tree, both read off the
+    // provider's declared config files rather than named here. The importer turns a
+    // hand-rolled monolith's keybinds and rules into Ryoku settings, so it only
+    // lands on a desktop whose own config is that same format.
+    readonly property var configFiles: Settings.configFiles || []
+    readonly property string providerName: Settings.provider
+    function providerCased() {
+        var p = pg.providerName;
+        return p.length ? p.charAt(0).toUpperCase() + p.slice(1) : "";
+    }
+    readonly property bool importSupported: {
+        for (var i = 0; i < pg.configFiles.length; i++) {
+            var f = ("" + pg.configFiles[i]).toLowerCase();
+            if (f.indexOf(".conf") >= 0 || f.indexOf(".lua") >= 0)
+                return true;
+        }
+        return false;
+    }
+    readonly property string providerCfgDir: {
+        if (pg.configFiles.length === 0) return "";
+        var first = "" + pg.configFiles[0];
+        var slash = first.indexOf("/");
+        return slash > 0 ? first.slice(0, slash) : first;
+    }
+    // detection only makes sense once we know import can read this desktop; run it
+    // on load and again when that answer arrives from the provider frame.
+    function runDetect() {
+        if (pg.importSupported && pg.providerCfgDir.length)
+            detectProc.running = true;
+    }
+    onImportSupportedChanged: pg.runDetect()
 
     readonly property var stepDefs: [
         { key: "source", label: I18n.tr("Source") }, { key: "review", label: I18n.tr("Review") },
@@ -264,7 +297,7 @@ Item {
         undoProc.command = ["ryoku-hub", "import", "undo"];
         undoProc.running = true;
     }
-    function reloadDesktop() { Quickshell.execDetached(["hyprctl", "reload"]); }
+    function reloadDesktop() { if (pg.hub) pg.hub.wmAct("config.reload"); }
     function restart() {
         pg.scan = null;
         pg.applyResult = null;
@@ -294,12 +327,14 @@ Item {
     }
     readonly property bool footerVisible: pg.step === "review" || pg.step === "resolve" || pg.step === "preview"
 
-    Component.onCompleted: detectProc.running = true
+    Component.onCompleted: pg.runDetect()
 
     Process {
         id: detectProc
         running: false
-        command: ["sh", "-c", "[ -e \"$HOME/.config/hypr/hyprland.conf\" ] && echo yes || true"]
+        command: ["sh", "-c", pg.providerCfgDir.length
+            ? "[ -e \"$HOME/.config/" + pg.providerCfgDir + "/hyprland.conf\" ] && echo yes || true"
+            : "true"]
         stdout: StdioCollector {
             onStreamFinished: pg.autoDetected = this.text.indexOf("yes") >= 0
         }
@@ -422,10 +457,15 @@ Item {
     Column {
         id: head
         anchors { left: parent.left; right: parent.right; top: parent.top }
-        anchors.leftMargin: Tokens.s6; anchors.rightMargin: Tokens.s6; anchors.topMargin: Tokens.s6
-        spacing: Tokens.s2
+        anchors.topMargin: Tokens.s6
+        // the register row sits off the title: a rule over a 32px
+        // title needs more than the gap between two lines of body text
+        spacing: Tokens.s3
 
         Row {
+            // the register row holds a fixed box, so the rule and the seal keep
+            // their distance from the title on every page
+            height: Tokens.s5
             spacing: Tokens.s2
             Rectangle {
                 width: 16; height: 1; color: Tokens.ink
@@ -447,23 +487,16 @@ Item {
         }
         Text {
             width: Math.min(parent.width, 720)
-            text: I18n.tr("Bring an existing setup onto Ryoku. Drop a config folder, point at an existing ~/.config, or paste a git URL; Ryoku layers it over the defaults, shows every keybind clash to resolve in place, and backs up everything so you can undo the whole import.")
+            text: I18n.tr("Bring another setup onto Ryoku. Everything it touches is backed up.")
             color: Tokens.inkMuted; font.family: Tokens.ui
             font.pixelSize: Tokens.fBody; wrapMode: Text.WordWrap
         }
     }
 
-    Marginalia {
-        anchors { right: parent.right; top: head.top }
-        anchors.rightMargin: Tokens.s6; anchors.topMargin: Tokens.s1
-        kana: "取込"
-        index: "05"; label: I18n.tr("IMPORT")
-        glyph: "meander"; glyph2: "torii"
-    }
-
     // ── the step rail: where you are in the five-step wizard ───────────────────
     Row {
         id: rail
+        visible: pg.importSupported
         anchors.left: parent.left
         anchors.leftMargin: Tokens.s6
         anchors.top: head.bottom
@@ -478,7 +511,17 @@ Item {
                 required property int index
                 readonly property bool active: pg.step === stepPip.modelData.key
                 readonly property bool done: pg.stepIndex(pg.step) > stepPip.index
-                spacing: Tokens.s2
+                // a little air around the hairline connectors, so the numbers and
+                // labels do not sit on the line that joins them
+                spacing: Tokens.s3
+                // a hairline between the steps, so the row reads as one path
+                // walked left to right rather than five loose labels
+                Rectangle {
+                    visible: stepPip.index > 0
+                    width: 20; height: 1
+                    color: stepPip.active || stepPip.done ? Tokens.line : Tokens.lineSoft
+                    anchors.verticalCenter: parent.verticalCenter
+                }
                 Text {
                     text: (stepPip.index + 1)
                     color: stepPip.active ? Tokens.sun : (stepPip.done ? Tokens.inkDim : Tokens.inkFaint)
@@ -487,7 +530,7 @@ Item {
                 }
                 Text {
                     text: I18n.tr(stepPip.modelData.label)
-                    color: stepPip.active ? Tokens.ink : (stepPip.done ? Tokens.inkDim : Tokens.inkFaint)
+                    color: stepPip.active ? Tokens.ink : (stepPip.done ? Tokens.inkDim : Tokens.inkMuted)
                     font.family: Tokens.ui; font.pixelSize: Tokens.fMicro
                     font.weight: stepPip.active ? Font.Medium : Font.Normal
                     font.letterSpacing: Tokens.trackLabel
@@ -506,10 +549,45 @@ Item {
             leftMargin: Tokens.s6; rightMargin: Tokens.s6
             topMargin: Tokens.s4; bottomMargin: Tokens.s5
         }
-        sourceComponent: pg.step === "source" ? sourceComp
+        sourceComponent: !pg.importSupported ? notSupportedComp
+            : (pg.step === "source" ? sourceComp
             : (pg.step === "review" ? reviewComp
             : (pg.step === "resolve" ? resolveComp
-            : (pg.step === "preview" ? previewComp : doneComp)))
+            : (pg.step === "preview" ? previewComp : doneComp))))
+    }
+
+    // Import reads one desktop's config format today; on a desktop it cannot read
+    // the wizard would dead-end, so the body carries a plain note there instead.
+    Component {
+        id: notSupportedComp
+        Item {
+            Column {
+                anchors.centerIn: parent
+                width: Math.min(parent.width - Tokens.s6 * 2, 520)
+                spacing: Tokens.s3
+                Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "\uf0ee"
+                    color: Tokens.inkDim; font.family: Tokens.mono; font.pixelSize: 30
+                }
+                Text {
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    text: I18n.tr("Import comes to this desktop soon")
+                    color: Tokens.ink; font.family: Tokens.ui
+                    font.pixelSize: Tokens.fRow; font.weight: Font.Medium; wrapMode: Text.WordWrap
+                }
+                Text {
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    text: pg.providerName.length
+                        ? I18n.tr("Bringing an existing setup across, its keybinds, window rules and app configs, is available on another Ryoku desktop today. It lands on the %1 desktop in a future release.").arg(pg.providerName)
+                        : I18n.tr("Bringing an existing setup across, its keybinds, window rules and app configs, is available on another Ryoku desktop today. It lands on this desktop in a future release.")
+                    color: Tokens.inkMuted; font.family: Tokens.ui
+                    font.pixelSize: Tokens.fSmall; wrapMode: Text.WordWrap
+                }
+            }
+        }
     }
 
     // ── Source: four affordances, no dead ends ─────────────────────────────────
@@ -521,53 +599,37 @@ Item {
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+            WheelScroll { }
 
             Column {
                 id: srcCol
                 width: parent.width - Tokens.s3
                 spacing: Tokens.s4
 
-                // what Ryoku can bring over: mirrors the engine's scanners
-                // (import_parse.go). Shown first so you know what to drop.
-                Plate {
+                // What Ryoku can bring over, on the same row rhythm as every other
+                // sheet in the Hub: a card with value rows parted by hairlines,
+                // rather than a bespoke plate with its own tighter spacing.
+                SettingCard {
                     width: srcCol.width
-                    height: supCol.implicitHeight + Tokens.s4 * 2
-                    Column {
-                        id: supCol
-                        anchors.fill: parent
-                        anchors.margins: Tokens.s4
-                        spacing: Tokens.s2
-                        Text {
-                            text: I18n.tr("WHAT IT BRINGS OVER")
-                            color: Tokens.inkMuted; font.family: Tokens.ui
-                            font.pixelSize: Tokens.fMicro; font.weight: Font.Medium
-                            font.letterSpacing: Tokens.trackMark
-                        }
-                        Repeater {
-                            model: [
-                                { app: "Hyprland", note: "keybinds and window rules become Ryoku settings; the rest layers into hypr/user.lua and wins" },
-                                { app: "Kitty", note: "kitty.conf, layered into kitty/user.conf" },
-                                { app: "Fish", note: "config.fish, functions and conf.d, layered into fish/user.fish" },
-                                { app: "Fastfetch", note: "config.jsonc, layered into fastfetch/user.jsonc" },
-                                { app: "Other apps", note: "any other config folder, dropped into its own override slot" }
-                            ]
-                            delegate: Row {
-                                required property var modelData
-                                width: supCol.width
-                                spacing: Tokens.s3
-                                Text {
-                                    width: 96
-                                    text: I18n.tr(modelData.app)
-                                    color: Tokens.ink; font.family: Tokens.ui
-                                    font.pixelSize: Tokens.fSmall; font.weight: Font.Medium
-                                }
-                                Text {
-                                    width: supCol.width - 96 - Tokens.s3
-                                    text: I18n.tr(modelData.note)
-                                    color: Tokens.inkMuted; font.family: Tokens.ui
-                                    font.pixelSize: Tokens.fSmall; wrapMode: Text.WordWrap
-                                }
-                            }
+                    collapsible: false
+                    title: I18n.tr("WHAT IT BRINGS OVER")
+
+                    Repeater {
+                        model: [
+                            { app: "Hyprland", note: "keybinds and window rules become Ryoku settings; the rest layers into hypr/user.lua and wins" },
+                            { app: "Kitty", note: "kitty.conf, layered into kitty/user.conf" },
+                            { app: "Fish", note: "config.fish, functions and conf.d, layered into fish/user.fish" },
+                            { app: "Fastfetch", note: "config.jsonc, layered into fastfetch/user.jsonc" },
+                            { app: "Other apps", note: "any other config folder, dropped into its own override slot" }
+                        ]
+                        delegate: SettingRow {
+                            required property var modelData
+                            required property int index
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            divider: index > 0
+                            label: I18n.tr(modelData.app)
+                            desc: I18n.tr(modelData.note)
                         }
                     }
                 }
@@ -594,7 +656,7 @@ Item {
                             }
                             Text {
                                 width: parent.width
-                                text: I18n.tr("It looks like you came from another Hyprland setup. Scan it to bring your keybinds, rules and app configs onto Ryoku.")
+                                text: I18n.tr("It looks like you came from another %1 setup. Scan it to bring your keybinds, rules and app configs onto Ryoku.").arg(pg.providerCased())
                                 color: Tokens.inkMuted; font.family: Tokens.ui
                                 font.pixelSize: Tokens.fSmall; wrapMode: Text.WordWrap
                             }
@@ -706,6 +768,7 @@ Item {
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+            WheelScroll { }
 
             Column {
                 id: revCol
@@ -803,6 +866,7 @@ Item {
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+            WheelScroll { }
 
             Column {
                 id: resCol
@@ -971,6 +1035,7 @@ Item {
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+            WheelScroll { }
 
             Column {
                 id: preCol
@@ -1054,6 +1119,7 @@ Item {
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+            WheelScroll { }
 
             Column {
                 id: doneCol
@@ -1187,7 +1253,7 @@ Item {
         anchors.leftMargin: Tokens.s6; anchors.rightMargin: Tokens.s6; anchors.bottomMargin: Tokens.s5
         height: 60
         color: "transparent"
-        visible: pg.footerVisible
+        visible: pg.importSupported && pg.footerVisible
         Rectangle {
             anchors { left: parent.left; right: parent.right; top: parent.top }
             height: 1; color: Tokens.line
@@ -1270,8 +1336,8 @@ Item {
     property string remapNorm: ""
     readonly property bool recording: pg.remapNorm.length > 0
 
-    function enterRecordSubmap() { Quickshell.execDetached(["hyprctl", "dispatch", "hl.dsp.submap(\"record\")"]); }
-    function exitRecordSubmap() { Quickshell.execDetached(["hyprctl", "dispatch", "hl.dsp.submap(\"reset\")"]); }
+    function enterRecordSubmap() { if (pg.hub) pg.hub.wmAct("submap.enter", ["record"]); }
+    function exitRecordSubmap() { if (pg.hub) pg.hub.wmAct("submap.reset"); }
     function startRemap(norm) {
         if (!norm)
             return;

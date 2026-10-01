@@ -104,6 +104,23 @@ nvidia_is_kepler() {
   lspci | grep -i 'nvidia' | grep -qE '(^|[^[:alnum:]])GK[0-9]+'
 }
 
+# prebuilt_for <kernel-pkgbase>: print the kernel-matched prebuilt open-module
+# package for that kernel when a synced repo actually carries one, else fail.
+# Stock linux is nvidia-open in [extra]; distro kernels follow the
+# <pkgbase>-nvidia-open convention (CachyOS ships linux-cachyos-nvidia-open,
+# #214). The repo query is what makes the mapping honest: a name no synced db
+# carries (a hand-built kernel, or an offline ISO that never baked it) must
+# fall through to DKMS rather than abort the transaction. The query is
+# read-only (no sudo needed) and rides the same pacman config the install
+# uses, so an offline install sees the baked repo, not an unsynced host db.
+prebuilt_for() {
+  local kb=$1 cand
+  if [[ $kb == linux ]]; then cand=nvidia-open; else cand="$kb-nvidia-open"; fi
+  local q=(pacman -Si "$cand")
+  [[ -n ${RYOKU_PACMAN_CONF:-} ]] && q=(pacman --config "$RYOKU_PACMAN_CONF" -Si "$cand")
+  "${q[@]}" >/dev/null 2>&1 && printf '%s\n' "$cand"
+}
+
 if ! has_nvidia; then
   echo "nvidia.sh: no NVIDIA GPU detected, nothing to do."
   exit 0
@@ -122,7 +139,7 @@ have_module_pkg() {
 nvidia_module_present() {
   [[ $RYOKU_DRYRUN == 1 ]] && return 0
   local d kv
-  for d in /usr/lib/modules/*/; do
+  for d in "${RYOKU_MODULES_DIR:-/usr/lib/modules}"/*/; do
     [[ -d $d ]] || continue
     kv=${d%/}; kv=${kv##*/}
     modinfo -k "$kv" nvidia >/dev/null 2>&1 && return 0
@@ -136,7 +153,7 @@ if have_module_pkg; then
 else
   # enumerate the installed kernels via pkgbase (linux, linux-zen, ...).
   kernels=()
-  for pb in /usr/lib/modules/*/pkgbase; do
+  for pb in "${RYOKU_MODULES_DIR:-/usr/lib/modules}"/*/pkgbase; do
     [[ -r $pb ]] || continue
     read -r kb <"$pb"
     kernels+=("$kb")
@@ -144,14 +161,17 @@ else
   (( ${#kernels[@]} )) || kernels=(linux)
   mapfile -t kernels < <(printf '%s\n' "${kernels[@]}" | sort -u)
 
-  # NVIDIA driver by GPU generation. Turing+ (GSP firmware) runs the open modules:
-  # the prebuilt nvidia-open on stock linux (no DKMS build to fail on a fresh
-  # kernel), nvidia-open-dkms on a custom kernel, both with the official
-  # nvidia-utils. Kepler is the older 470xx legacy branch. Maxwell/Pascal/Volta
-  # are not covered by the open modules and use the AUR 580xx branch. The ISO
-  # bakes both legacy branches into the offline repo best-effort (they are large
-  # vendor blobs), so these usually install with no network; when a bake was
-  # skipped the card falls back to nouveau/mesa. Headers cover the DKMS build.
+  # NVIDIA driver by GPU generation. Turing+ (GSP firmware) runs the open
+  # modules, and the prebuilt kernel-matched package is always preferred over
+  # DKMS: stock linux has nvidia-open in [extra], and distro kernels ship their
+  # own (CachyOS: linux-cachyos-nvidia-open), so those boxes never pay a
+  # per-kernel-transaction compile (#214). Only a kernel with no prebuilt in
+  # any synced repo falls to nvidia-open-dkms. Kepler is the older 470xx legacy
+  # branch. Maxwell/Pascal/Volta are not covered by the open modules and use
+  # the AUR 580xx branch. The ISO bakes both legacy branches into the offline
+  # repo best-effort (they are large vendor blobs), so these usually install
+  # with no network; when a bake was skipped the card falls back to
+  # nouveau/mesa. Headers cover the DKMS build.
   headers=()
   for kb in "${kernels[@]}"; do headers+=("${kb}-headers"); done
   multilib=0
@@ -159,11 +179,15 @@ else
   if nvidia_has_gsp; then
     base=(nvidia-utils libva-nvidia-driver)
     if (( multilib )); then base+=(lib32-nvidia-utils); fi
-    if [[ ${#kernels[@]} -eq 1 && ${kernels[0]} == linux ]]; then
-      echo "nvidia.sh: Turing+ GPU on stock linux, using the prebuilt open module (nvidia-open)."
-      pkgs=(nvidia-open "${base[@]}")
+    prebuilts=()
+    for kb in "${kernels[@]}"; do
+      if p=$(prebuilt_for "$kb" open); then prebuilts+=("$p"); else prebuilts=(); break; fi
+    done
+    if (( ${#prebuilts[@]} )); then
+      echo "nvidia.sh: Turing+ GPU, using the prebuilt open module(s): ${prebuilts[*]}."
+      pkgs=("${prebuilts[@]}" "${base[@]}")
     else
-      echo "nvidia.sh: Turing+ GPU, custom kernel(s), using nvidia-open-dkms."
+      echo "nvidia.sh: Turing+ GPU, no prebuilt module for kernel(s) ${kernels[*]}, using nvidia-open-dkms."
       pkgs=(nvidia-open-dkms "${base[@]}" "${headers[@]}")
     fi
   elif nvidia_is_kepler; then

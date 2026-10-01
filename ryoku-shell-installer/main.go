@@ -56,11 +56,12 @@ type model struct {
 	dry        bool
 	ref        string
 	payload    string
+	compositor string // --compositor pick; "" installs the default variant
 	exitReboot bool
 }
 
-func newTUIModel(dry bool, ref, payload string) model {
-	return model{state: "scan", dry: dry, ref: ref, payload: payload}
+func newTUIModel(dry bool, ref, payload, compositor string) model {
+	return model{state: "scan", dry: dry, ref: ref, payload: payload, compositor: compositor}
 }
 
 func (m model) tickCmd() tea.Cmd {
@@ -218,6 +219,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case scanMsg:
 		m.f = msg.f
 		m.p = defaultPlan(m.f)
+		if m.compositor != "" {
+			m.p.compositor = m.compositor
+		}
 		m.items = groupPlanItems(buildItems(m.f, m.p))
 		m.sel = firstToggle(m.items)
 		if needsManjaroAck(m.f) {
@@ -670,7 +674,7 @@ func (m model) viewFailed() string {
 
 // ---- headless (--yes) ----
 
-func runHeadless(dry bool, ref, payload string) int {
+func runHeadless(dry bool, ref, payload, compositor string) int {
 	fmt.Println(bold(cBrand, "ryoku-shell-install") + fg(cSub, " "+i18n.T("(headless)")))
 	f := detect()
 	if needsManjaroAck(f) {
@@ -680,6 +684,9 @@ func runHeadless(dry bool, ref, payload string) int {
 		return 1
 	}
 	p := defaultPlan(f)
+	if compositor != "" {
+		p.compositor = compositor
+	}
 	fmt.Println(i18n.Tf("system: %s | gpu: %s | dm: %s", f.distroName, f.gpuSummary(), f.currentDM))
 	if len(f.riceFound) > 0 {
 		fmt.Println(i18n.Tf("rice found: %s (daemons replaced, configs ride the backup)", strings.Join(f.riceFound, ", ")))
@@ -767,9 +774,11 @@ func main() {
 	uninstall := flag.Bool("uninstall", false, i18n.T("remove the ryoku packages and restore the backup chain"))
 	ref := flag.String("ref", envOr("RYOKU_SHELL_REF", "main"), i18n.T("ryoku-arch git ref for the payload"))
 	payload := flag.String("payload", os.Getenv("RYOKU_SHELL_PAYLOAD"), i18n.T("use a local ryoku-arch checkout as the payload"))
+	compositor := flag.String("compositor", "", i18n.T("window manager to install: hyprland or niri (default hyprland)"))
 	flag.Parse()
 
 	initGlyphs()
+	comp := chooseCompositor(*compositor)
 
 	if os.Geteuid() == 0 {
 		die(i18n.T("run as your normal user, not root; sudo is used where needed"))
@@ -794,13 +803,13 @@ func main() {
 		os.Exit(runUninstall(*yes, *dry))
 	}
 	if *yes {
-		os.Exit(runHeadless(*dry, *ref, *payload))
+		os.Exit(runHeadless(*dry, *ref, *payload, comp))
 	}
 	if !stdoutIsTTY() {
 		die(i18n.T("unable to run interactively; re-run with --yes for the default plan"))
 	}
 
-	fm, err := tea.NewProgram(newTUIModel(*dry, *ref, *payload)).Run()
+	fm, err := tea.NewProgram(newTUIModel(*dry, *ref, *payload, comp)).Run()
 	if err != nil {
 		die(err.Error())
 	}
@@ -813,6 +822,21 @@ func main() {
 // refusal (--yes); RYOKU_ALLOW_MANJARO=1 waves both through.
 func needsManjaroAck(f *facts) bool {
 	return f.distroID == "manjaro" && os.Getenv("RYOKU_ALLOW_MANJARO") != "1"
+}
+
+// chooseCompositor validates a --compositor pick against the shipped variants,
+// returning "" for the default (the first). An unknown name dies with the list.
+func chooseCompositor(choice string) string {
+	if choice == "" {
+		return ""
+	}
+	for _, c := range compositors() {
+		if c == choice {
+			return choice
+		}
+	}
+	die(i18n.Tf("unknown compositor %q; choose one of: %s", choice, strings.Join(compositors(), ", ")))
+	return ""
 }
 
 func envOr(k, def string) string {

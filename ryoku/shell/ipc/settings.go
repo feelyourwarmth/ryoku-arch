@@ -5,10 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
+
+	wm "ryoku-wm"
 )
 
 // settings.go is the shell's typed configuration, owned by the daemon and served
@@ -58,7 +61,7 @@ var (
 	notificationPosValues = []string{"Left", "Right", "Center"}
 	menuExpansionValues   = []string{"AlwaysExpanded", "ExpandBothWays", "ExpandUp", "ExpandDown"}
 	tempUnitValues        = []string{"Metric", "Imperial"}
-	contentFitValues      = []string{"Contain", "Cover", "Fill", "ScaleDown"}
+	contentFitValues      = []string{"Contain", "Cover", "Fill", "ScaleDown", "Center", "Tile"}
 	videoEngineValues     = []string{"ryogami", "in_shell"}
 	quickSettingsIconVals = []string{"Arch", "Fedora", "Hyprland", "Nix"}
 	matugenPrefValues     = []string{"Darkness", "Lightness", "Saturation", "LessSaturation", "Value"}
@@ -633,6 +636,20 @@ func getByPath(m map[string]any, segs []string) (any, error) {
 	return cur, nil
 }
 
+// boolAt reads a boolean leaf ("clipboard.pruneWeekly") out of the loaded file --
+// schema keys and passthrough alike, since a key the daemon carries verbatim is
+// still a key it has to act on. A missing or non-boolean value is false.
+func (s *settingsStore) boolAt(path string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, err := getByPath(s.raw, strings.Split(path, "."))
+	if err != nil {
+		return false
+	}
+	b, _ := v.(bool)
+	return b
+}
+
 // deepCopyMap clones a decoded JSON object so a patch can be validated on a copy
 // and only committed if it holds together.
 func deepCopyMap(m map[string]any) map[string]any {
@@ -717,7 +734,14 @@ func buildSettings(raw map[string]any, strict bool) (*settings, error) {
 
 // settingsStore owns the file in memory: raw is the whole file (schema keys
 // normalised, passthrough keys verbatim), cur is the typed view of the schema
-// keys. onChange, when set, delivers a fresh frame to subscribers.
+// keys. onChange, when set, delivers a fresh frame to subscribers. caps and
+// deadKeys ride in every frame so the Hub gates its settings surface from the
+// same stream it reads values from: caps is behavioural gating (every
+// capability an explicit boolean, all-false when no provider answers, so a
+// missing key never reads as supported), deadKeys is provider store leaves some
+// installed provider models but the active one does not, which nothing would
+// write. Both are fixed for the daemon's life (the active provider does not
+// change without a re-login), set once before the first publish.
 type settingsStore struct {
 	mu       sync.Mutex
 	path     string
@@ -725,6 +749,12 @@ type settingsStore struct {
 	cur      *settings
 	mtime    time.Time
 	onChange func([]byte)
+	caps     map[string]bool
+	deadKeys []string
+	// windowRuleActions is the active provider's window-rule action list, ridden
+	// in the frame beside caps/deadKeys so the Hub's window-rules editor offers
+	// only ids this compositor can apply. Empty when no provider answers.
+	windowRuleActions []string
 }
 
 func newSettingsStore(path string) *settingsStore {
@@ -804,10 +834,33 @@ func loadSettingsPatchBase(path string, fallback map[string]any) (map[string]any
 	return raw, cur, nil
 }
 
-// frameLocked marshals the whole file for a subscriber. Map marshalling sorts
-// keys, so the frame is byte-stable and the topic suppresses no-op re-pushes.
+// frameLocked marshals the whole file for a subscriber, plus the runtime gating
+// keys the Hub reads off the same stream. caps and deadKeys are not part of the
+// file (they are never persisted), so they overlay a shallow copy rather than
+// s.raw itself. Before the daemon sets caps (a bare store in a test) the frame
+// is the file alone, unchanged. Map marshalling sorts keys, so the frame is
+// byte-stable and the topic suppresses no-op re-pushes.
 func (s *settingsStore) frameLocked() []byte {
-	b, _ := json.Marshal(s.raw)
+	if s.caps == nil {
+		b, _ := json.Marshal(s.raw)
+		return b
+	}
+	out := make(map[string]any, len(s.raw)+3)
+	for k, v := range s.raw {
+		out[k] = v
+	}
+	out["caps"] = s.caps
+	dead := s.deadKeys
+	if dead == nil {
+		dead = []string{}
+	}
+	out["deadKeys"] = dead
+	wra := s.windowRuleActions
+	if wra == nil {
+		wra = []string{}
+	}
+	out["windowRuleActions"] = wra
+	b, _ := json.Marshal(out)
 	return b
 }
 
@@ -1024,7 +1077,17 @@ func (d *daemon) startSettings() {
 	d.settings = store
 	t := d.registerTopic("settings")
 
+	// The Hub gates its settings surface off this frame, so the gating state
+	// rides with it. Both are fixed for the daemon's life, so the providers are
+	// probed once here, not on every emission.
+	caps := d.capsMap()
+	dead := d.deadSettingKeys()
+	wra := d.windowRuleActions()
+
 	store.mu.Lock()
+	store.caps = caps
+	store.deadKeys = dead
+	store.windowRuleActions = wra
 	frame := store.frameLocked()
 	// Nudge the paint worker whenever the theme keys the matugen pipeline reads
 	// (the active theme and the scheme knobs) change, so a knob patch retunes the
@@ -1071,4 +1134,105 @@ func (d *daemon) startSettings() {
 	})
 
 	go store.watch(d.quit)
+}
+
+// capsMap is every capability with an explicit boolean for the active provider,
+// so the Hub never reads a missing key as supported. It reuses the client's
+// cached probe (the wm topic's source), so it never forks the provider a second
+// time; a failed or absent probe yields all-false, the safe default for gating.
+func (d *daemon) capsMap() map[string]bool {
+	caps, _ := d.wmc.Caps()
+	all := wm.All()
+	m := make(map[string]bool, len(all))
+	for _, c := range all {
+		m[string(c)] = caps.Has(c)
+	}
+	return m
+}
+
+// windowRuleActions is the active provider's window-rule action list, ridden in
+// the settings frame beside caps/deadKeys so the Hub's window-rules editor
+// offers only ids this compositor's config writer can apply. It reuses the
+// cached probe; a failed or absent probe yields an empty list, the safe default
+// that offers no action.
+func (d *daemon) windowRuleActions() []string {
+	caps, err := d.wmc.Caps()
+	if err != nil || caps.WindowRuleActions == nil {
+		return []string{}
+	}
+	return caps.WindowRuleActions
+}
+
+// deadSettingKeys are the provider store leaves that some installed provider
+// models but the active one does not: nothing would write them, so the Hub
+// drops a row keyed on one rather than show a control with no writer. A leaf no
+// installed provider models is Hub-owned (the Hub acts on it itself) and never
+// appears here, which is why the owned set is the union across providers, not
+// the active one alone. Sorted, so the frame stays byte-stable.
+func (d *daemon) deadSettingKeys() []string {
+	activeName := ""
+	if caps, err := d.wmc.Caps(); err == nil {
+		activeName = caps.Name
+	}
+	owned := map[string]bool{}
+	active := map[string]bool{}
+	for _, name := range wm.Providers() {
+		c := wm.OpenNamed(name)
+		if !c.Available() {
+			continue
+		}
+		leaves := providerLeafKeys(c)
+		for k := range leaves {
+			owned[k] = true
+		}
+		if name == activeName {
+			active = leaves
+		}
+	}
+	dead := make([]string, 0, len(owned))
+	for k := range owned {
+		if !active[k] {
+			dead = append(dead, k)
+		}
+	}
+	sort.Strings(dead)
+	return dead
+}
+
+// providerLeafKeys flattens a provider's default subtree to the dotted paths of
+// the leaves it models (desktop.appearance.rounding, wm.niri.overviewZoom). A
+// list is a whole-collection affordance a list editor owns, so it counts as one
+// key at its own path and is not descended into: a provider that models
+// wm.<name>.layerRules owns that collection, and the other provider's page for
+// it must read as dead. A failed or unparseable probe yields the empty set, so
+// the active provider then models nothing and every provider-owned row is
+// treated as dead, the safe default.
+func providerLeafKeys(c *wm.Client) map[string]bool {
+	out := map[string]bool{}
+	b, err := c.Defaults()
+	if err != nil {
+		return out
+	}
+	var tree map[string]any
+	if json.Unmarshal(b, &tree) != nil {
+		return out
+	}
+	flattenLeaves("", tree, out)
+	return out
+}
+
+// flattenLeaves records every scalar leaf and every list under v as a dotted
+// path in out.
+func flattenLeaves(prefix string, v map[string]any, out map[string]bool) {
+	for k, child := range v {
+		path := k
+		if prefix != "" {
+			path = prefix + "." + k
+		}
+		if obj, ok := child.(map[string]any); ok {
+			flattenLeaves(path, obj, out)
+			continue
+		}
+		out[path] = true
+	}
 }

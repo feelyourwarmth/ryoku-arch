@@ -9,16 +9,18 @@ import "../Singletons"
 import "lib/arrange.js" as Arrange
 
 // Displays (SYSTEM). Detect every connected monitor, arrange them to scale on a
-// drag canvas (no coordinate math), and tune resolution, scale, rotation, colour
-// (HDR) and mirror per monitor. Apply writes the layout to the live session via
-// ryoku-monitor (over hyprctl) and persists it, so it returns at next login; a
-// named profile is hardware-keyed so it returns when the same displays are
-// plugged in. Edits stage in a draft and only touch real screens on Apply, so
-// fiddling never nukes a display. Full-bleed: this page owns the whole content
-// region (its backend is the ryoku-monitor helper, not the shared settings
-// store), so it draws its own head, canvas, controls and action bar. Every
-// value reads from Tokens; the only change from the old page is monochrome:
-// hairline rects, an ink active border, no colour.
+// drag canvas (no coordinate math), and tune resolution, scale, rotation, adaptive
+// sync and, where the compositor supports them, colour (HDR) and mirroring per
+// monitor. Apply writes the layout to the live session through the window-manager
+// seam, which persists it so it returns at next login; a named profile is a stored
+// layout replayed the same way, so it comes back when the displays reconnect and
+// survives a compositor switch. Edits stage in a draft and only touch real screens
+// on Apply, so fiddling never nukes a display. Full-bleed: this page owns the whole
+// content region (its backend is the seam's output list and apply, not the shared
+// settings store), so it draws its own head, canvas, controls and action bar. The
+// mirror and colour controls are gated on the output-mirroring and output-HDR
+// capabilities, so a compositor that lacks them shows no dead knob. Every value
+// reads from Tokens; monochrome throughout: hairline rects, an ink active border.
 Item {
     id: pg
 
@@ -27,7 +29,7 @@ Item {
     // its side panel and global action bar and keeps only the rail.
     readonly property bool fullBleed: true
 
-    // ── state: live baseline (ryoku-monitor list) + the editable draft ──
+    // ── state: live baseline (the seam's output list) + the editable draft ──
     // monCount is the canvas Repeater model (an int, deliberately not the draft
     // array) so in-place edits never rebuild tiles; `tick` drives reactivity for
     // those mutations, so a drag never rebuilds a tile mid-drag.
@@ -43,16 +45,16 @@ Item {
     property bool dragging: false
     property var frozen: ({ "k": 1, "ox": 0, "oy": 0 })
 
-    // the "main" display: the one at the global origin (0,0), Hyprland's primary
-    // reference corner (cursor home, XWayland primary). Derived on load and
-    // re-anchored by normalize(); "Set as main" re-bases the layout onto it.
+    // the "main" display: the one at the global origin (0,0), the compositor's
+    // primary reference corner (cursor home, XWayland primary). Derived on load
+    // and re-anchored by normalize(); "Set as main" re-bases the layout onto it.
     property string mainName: ""
 
     // which catalogue overlay is open: "" | "mode" | "mirror" | "custom".
     property string pickKind: ""
     // "Custom…" chip in the mode picker opens a W×H@Hz form; the typed mode
-    // stages into the draft like any other, and ryoku-monitor forces a
-    // non-advertised one via a CVT modeline on Apply.
+    // stages into the draft like any other, and on Apply the provider forces a
+    // non-advertised timing where it can and reports it where it cannot.
     readonly property string customLabel: I18n.tr("Custom\u2026")
     // timed keep-changes safety after applying a custom mode: apply() stashes the
     // prior layout here and counts revertSecs down; not kept in time -> re-apply.
@@ -67,9 +69,9 @@ Item {
     // keyed by output name), so one screen's bar, menus and this Hub can shrink
     // or grow without touching the crisp compositor scale apps render at. A shell
     // setting, so it live-patches straight through the daemon (Settings.patch),
-    // NOT the ryoku-monitor draft/Apply flow. uiScaleLive is an optimistic
-    // per-name override so the stepper reads back instantly, before the shell.json
-    // round-trip lands in Tokens.uiScales.
+    // NOT the output draft/Apply flow. uiScaleLive is an optimistic per-name
+    // override so the stepper reads back instantly, before the shell.json round
+    // trip lands in Tokens.uiScales.
     property var uiScaleLive: ({})
     function uiScalePct(name) {
         void pg.tick;
@@ -91,10 +93,137 @@ Item {
         pg.tick++;
     }
 
-    // ── data load (backend unchanged) ───────────────────────────────────────
+    property var barLive: ({})
+    property var widgetLive: ({})
+
+    function displayFlag(name, kind) {
+        void pg.tick;
+        if (!name)
+            return true;
+        const live = kind === "bar" ? pg.barLive : pg.widgetLive;
+        if (typeof live[name] === "boolean")
+            return live[name];
+        return kind === "bar"
+            ? Tokens.barEnabledFor(name)
+            : Tokens.widgetsEnabledFor(name);
+    }
+
+    function setDisplayFlag(name, kind, enabled) {
+        if (!name)
+            return;
+
+        const source = kind === "bar" ? pg.barLive : pg.widgetLive;
+        const next = {};
+        for (var k in source)
+            next[k] = source[k];
+        next[name] = !!enabled;
+
+        if (kind === "bar")
+            pg.barLive = next;
+        else
+            pg.widgetLive = next;
+
+        Settings.patch("displays." + kind + "." + name, !!enabled);
+        pg.tick++;
+    }
+
+    // ── night light (a display-wide comfort setting on the daemon topic) ─────
+    // The daemon owns the on/off truth (the provider's backend process) and the
+    // saved temperature; the page reads the pushed frame and sends the intent
+    // back on a second socket, the split the Settings singleton uses. Gated on
+    // the nightLight capability, so a compositor with no backend shows no group.
+    property bool nightOn: false
+    property int nightTemp: 4000
+    // "off" | "sun": the daemon's follow-the-sun schedule, carried on the same
+    // frame so the switch never reads stale after a toggle from elsewhere.
+    property string nightSchedule: "off"
+    property int nightMargin: 60
+
+    function applyNightFrame(line) {
+        try {
+            var f = JSON.parse(line);
+            if (f && typeof f === "object" && !Array.isArray(f)) {
+                pg.nightOn = f.on === true;
+                if (typeof f.temperature === "number" && f.temperature > 0)
+                    pg.nightTemp = f.temperature;
+                if (f.schedule === "off" || f.schedule === "sun")
+                    pg.nightSchedule = f.schedule;
+                if (typeof f.marginMin === "number" && f.marginMin >= 0)
+                    pg.nightMargin = f.marginMin;
+            }
+        } catch (e) {}
+    }
+
+    function sendNight(obj) {
+        nlCtl.queued += "call nightlight.set " + JSON.stringify(obj) + "\n";
+        if (nlCtl.connected)
+            nlCtl.flushQueued();
+        else
+            nlCtl.connected = true;
+    }
+
+    // Optimistic so the switch and stepper read back instantly; the confirming
+    // frame lands on the same values. Temperature applies live only while on
+    // (nightlight.set with on:false just turns off), so the row is inert when off.
+    function setNight(on) {
+        pg.nightOn = on === true;
+        pg.sendNight({ on: pg.nightOn, temperature: pg.nightTemp });
+    }
+    function setNightTemp(temp) {
+        pg.nightTemp = temp;
+        if (pg.nightOn)
+            pg.sendNight({ on: true, temperature: temp });
+    }
+    // The schedule rides the same call with its own fields: turning it on
+    // applies the window immediately (the daemon ticks), and a manual toggle
+    // stays honoured until the next edge.
+    function setNightSchedule(sun) {
+        pg.nightSchedule = sun ? "sun" : "off";
+        pg.sendNight({ schedule: pg.nightSchedule, marginMin: pg.nightMargin });
+    }
+    function setNightMargin(mins) {
+        pg.nightMargin = mins;
+        if (pg.nightSchedule === "sun")
+            pg.sendNight({ schedule: "sun", marginMin: mins });
+    }
+
+    Socket {
+        id: nlSub
+        path: Settings.sockPath
+        parser: SplitParser { onRead: line => pg.applyNightFrame(line) }
+        Component.onCompleted: connected = true
+        onConnectionStateChanged: {
+            if (connected) {
+                write("subscribe nightlight\n");
+                flush();
+            } else {
+                nlRetry.restart();
+            }
+        }
+    }
+    Timer {
+        id: nlRetry
+        interval: 2000
+        onTriggered: if (!nlSub.connected) nlSub.connected = true
+    }
+    Socket {
+        id: nlCtl
+        path: Settings.sockPath
+        property string queued: ""
+        function flushQueued() {
+            if (queued.length === 0)
+                return;
+            write(queued);
+            flush();
+            queued = "";
+        }
+        onConnectionStateChanged: if (connected) flushQueued()
+    }
+
+    // ── data load: the seam's output list + saved profiles ──────────────────
     Process {
         id: listProc
-        command: ["ryoku-monitor", "list"]
+        command: ["ryoku-hub", "outputs"]
         running: true
         stdout: StdioCollector {
             onStreamFinished: {
@@ -108,12 +237,12 @@ Item {
                     pg.draft = d;
                     pg.monCount = d.length;
                     pg.mainName = pg.deriveMain();
-                    // committed is the LIVE baseline (what Hyprland has now); a
-                    // gapped live layout stays the baseline so tidying it below
-                    // reads as a pending Apply, not a silent no-op.
+                    // committed is the LIVE baseline (what the compositor has
+                    // now); a gapped live layout stays the baseline so tidying it
+                    // below reads as a pending Apply, not a silent no-op.
                     pg.committed = JSON.stringify(pg.specsAll());
-                    // Hyprland cannot move the cursor across a gap, so a layout left
-                    // separated strands a display. Pull any detached display flush
+                    // A layout left separated can strand a display where the
+                    // cursor cannot cross the gap. Pull any detached display flush
                     // so opening Displays proposes the fix.
                     if (pg.tidyGaps()) pg.normalize();
                     if (pg.selected >= d.length)
@@ -124,7 +253,7 @@ Item {
                 } catch (e) {
                     pg.listFailed = true;
                     pg.listed = true;
-                    console.log("hub: monitor list failed (is ryoku-monitor up to date?): " + e);
+                    console.log("hub: display enumeration failed: " + e);
                 }
             }
         }
@@ -132,7 +261,7 @@ Item {
 
     Process {
         id: profilesProc
-        command: ["ryoku-monitor", "profiles"]
+        command: ["ryoku-hub", "outputs", "profiles"]
         running: true
         stdout: StdioCollector {
             onStreamFinished: {
@@ -147,7 +276,7 @@ Item {
     function reload() { listProc.running = true; profilesProc.running = true; }
     function reloadProfiles() { profilesProc.running = true; }
 
-    // ── model helpers (backend unchanged) ───────────────────────────────────
+    // ── model helpers ───────────────────────────────────────────────────────
     function parseMode(s) {
         var m = /^(\d+)x(\d+)@([\d.]+)/.exec(s);
         if (!m)
@@ -180,40 +309,38 @@ Item {
     }
     function clone(mon) {
         return {
-            "id": mon.id, "name": mon.name, "modes": (mon.modes || []),
-            "scaleLadders": (mon.scaleLadders || null),
+            "name": mon.name, "modes": (mon.modes || []),
             "width": mon.width, "height": mon.height, "refresh": mon.refresh,
-            "mode": pg.pickCurrentMode(mon),
+            "physicalWidth": (mon.physicalWidth || 0),
+            "mode": (mon.mode || pg.pickCurrentMode(mon)),
             "scale": mon.scale, "x": mon.x, "y": mon.y, "transform": mon.transform || 0,
-            "vrr": (mon.vrr === true ? 1 : (mon.vrr | 0)),
+            "vrr": (mon.vrr === true),
             "mirror": (mon.mirror && mon.mirror !== "none") ? mon.mirror : "",
-            "disabled": mon.disabled === true,
-            "cm": (mon.cm || "srgb"), "sdrbrightness": (mon.sdrbrightness || 1.0)
+            "colorMode": (mon.colorMode || "srgb"), "sdrBrightness": (mon.sdrBrightness || 1.0),
+            "disabled": mon.disabled === true
         };
     }
-    // Hyprland only accepts a scale that is a 1/120 multiple dividing the
-    // mode's pixels into whole logical pixels; the helper precomputes that
-    // ladder per resolution (`scaleLadders` from `ryoku-monitor list`). The
-    // stepper walks this ladder instead of doing +-25% arithmetic, which
-    // almost always landed between valid values -- the compositor substituted
-    // its own and the readback looked like noise (omarchy steps a fixed list
-    // the same way). An old helper without ladders degrades to a locked
-    // stepper rather than wrong arithmetic.
+    // A crisp scale divides the mode's pixels into whole logical pixels. The
+    // stepper walks that per-resolution ladder instead of doing +-25% arithmetic,
+    // which almost always lands between valid values (the compositor substitutes
+    // its own and the readback looks like noise). computeLadder derives the ladder
+    // for the selected mode, and a compositor that accepts a finer scale still
+    // accepts every value it offers.
     function scaleLadder(m) {
-        var l = m && m.scaleLadders ? m.scaleLadders[m.width + "x" + m.height] : null;
-        // a custom W×H is absent from the precomputed map; derive the valid
-        // ladder the same way the helper does so the scale stepper still works.
-        return (l && l.length) ? l : pg.computeLadder(m.width, m.height);
+        return pg.computeLadder(m.width, m.height, (m.transform & 1) ? 1 : 0);
     }
-    // Hyprland-valid scales for an arbitrary mode: k/120 (k in 30..720) dividing
-    // both dimensions to whole logical pixels, floored at 1x and never shrinking
-    // the logical desktop below 640×360 (mirrors ryoku-monitor's ladder()).
-    function computeLadder(w, h) {
+    // Whole-logical-pixel scales for a mode: k/120 (k in 30..720) dividing both
+    // dimensions to whole logical pixels, floored at 1x and never shrinking the
+    // logical desktop below 640×360. The floor applies to the on-screen
+    // rectangle, so a rotated panel is capped by its (shorter) vertical width
+    // rather than being offered landscape-appropriate scales.
+    function computeLadder(w, h, tf) {
+        var lw = tf ? h : w, lh = tf ? w : h;
         var out = [];
         for (var k = 30; k <= 720; k++)
             if ((w * 120) % k === 0 && (h * 120) % k === 0) {
                 var s = Math.round(k / 120 * 10000) / 10000;
-                if (s >= 1 && s <= 3 && (w / s) >= 640 && (h / s) >= 360)
+                if (s >= 1 && s <= 3 && (lw / s) >= 640 && (lh / s) >= 360)
                     out.push(s);
             }
         return out.length ? out : [1];
@@ -238,10 +365,10 @@ Item {
         for (var i = 0; i < pg.draft.length; i++) {
             var m = pg.draft[i];
             out.push({
-                "id": m.id, "output": m.name, "mode": m.mode, "position": m.x + "x" + m.y,
-                "scale": m.scale, "transform": m.transform, "vrr": m.vrr,
-                "mirror": m.mirror, "disabled": m.disabled,
-                "cm": m.cm, "sdrbrightness": m.sdrbrightness
+                "name": m.name, "enabled": !m.disabled, "mode": m.mode,
+                "scale": m.scale, "x": m.x, "y": m.y,
+                "transform": m.transform, "vrr": !!m.vrr,
+                "mirror": m.mirror, "colorMode": m.colorMode, "sdrBrightness": m.sdrBrightness
             });
         }
         return out;
@@ -273,8 +400,8 @@ Item {
         pg.tick++;
     }
     // stage a hand-entered resolution into the draft. The mode is "WxH@Hz"; on
-    // Apply ryoku-monitor forces a non-advertised one via a CVT modeline. Scale
-    // re-snaps to the new mode's valid ladder.
+    // Apply the provider forces a non-advertised one where it can. Scale re-snaps
+    // to the new mode's valid ladder.
     function setCustomMode(i, w, h, hz) {
         if (i < 0 || i >= pg.draft.length)
             return;
@@ -300,7 +427,7 @@ Item {
         return out;
     }
 
-    // ── canvas geometry (backend unchanged) ─────────────────────────────────
+    // ── canvas geometry ─────────────────────────────────────────────────────
     function bbox() {
         var minX = 1e9, minY = 1e9, maxX = -1e9, maxY = -1e9, any = false;
         for (var i = 0; i < pg.draft.length; i++) {
@@ -369,8 +496,8 @@ Item {
     }
     // On drop, fine-snap this display's near edge to 0 or a neighbour's edges
     // (zoom-independent ~22 screen px), then guarantee contiguity via the
-    // unit-tested arrange lib (Hyprland cannot cross a gap), then re-anchor on
-    // the main display.
+    // unit-tested arrange lib (a gap the cursor cannot cross strands a display),
+    // then re-anchor on the main display.
     function endDrag(i) {
         if (i < 0 || i >= pg.draft.length) {
             pg.dragging = false;
@@ -417,20 +544,87 @@ Item {
         pg.normalize();
         pg.tick++;
     }
-    // re-base so the main display sits at the global origin (0,0), Hyprland's
-    // primary/reference corner; other displays keep their relative offsets
-    // (may go negative, which Hyprland accepts).
+    // re-base so the main display sits at the global origin (0,0), the compositor's
+    // primary reference corner; other displays keep their relative offsets (may go
+    // negative, which the compositor accepts).
     function normalize() {
         var mons = pg.monsView();
         Arrange.rebaseToMain(mons, pg.mainName);
         pg.applyMons(mons);
     }
 
-    // ── apply / profiles (backend unchanged) ────────────────────────────────
+    // ── quick actions: layouts computed from the enumerated set, then applied ──
+    // clear mirroring and lay every enabled display in one flush left-to-right row.
+    function extend() {
+        var order = [];
+        for (var i = 0; i < pg.draft.length; i++)
+            order.push(i);
+        order.sort((a, b) => pg.draft[a].x - pg.draft[b].x);
+        var x = 0;
+        for (var k = 0; k < order.length; k++) {
+            var m = pg.draft[order[k]];
+            m.mirror = "";
+            if (m.disabled)
+                continue;
+            m.x = x; m.y = 0;
+            x += pg.footW(m);
+        }
+        pg.mainName = pg.deriveMain();
+        pg.tick++;
+        pg.apply();
+    }
+    // a scale derived from the panel's pixel density (px / physical mm), snapped to
+    // the mode's valid ladder. Mirrors the buckets the shell uses at login.
+    function dpiScale(m) {
+        var mm = m.physicalWidth || 0, px = m.width || 0, target = 1.0;
+        if (mm > 0 && px > 0) {
+            var dpi = px * 25.4 / mm;
+            if (dpi < 40 || dpi > 700) target = 1.0;
+            else if (dpi <= 120) target = 1.0;
+            else if (dpi <= 150) target = 1.25;
+            else if (dpi <= 230) target = 1.5;
+            else if (dpi <= 290) target = 1.75;
+            else target = 2.0;
+        }
+        var l = pg.scaleLadder(m);
+        return l[pg.nearestScaleIdx(l, target)];
+    }
+    function dpiAutoscale() {
+        for (var i = 0; i < pg.draft.length; i++) {
+            var m = pg.draft[i];
+            if (m.disabled)
+                continue;
+            m.scale = pg.dpiScale(m);
+        }
+        // a scale change resizes footprints, so re-flush before applying.
+        if (pg.tidyGaps()) pg.normalize();
+        pg.tick++;
+        pg.apply();
+    }
+    // clone every other enabled display onto the main one (output mirroring: only
+    // offered where CapOutputMirror is present).
+    function mirrorAll() {
+        var src = pg.mainName;
+        if (!src)
+            for (var i = 0; i < pg.draft.length; i++)
+                if (!pg.draft[i].disabled) { src = pg.draft[i].name; break; }
+        if (!src)
+            return;
+        for (var j = 0; j < pg.draft.length; j++) {
+            var m = pg.draft[j];
+            if (m.disabled)
+                continue;
+            m.mirror = (m.name === src) ? "" : src;
+        }
+        pg.tick++;
+        pg.apply();
+    }
+
+    // ── apply ───────────────────────────────────────────────────────────────
     function apply() {
         var prev = pg.committed;
         var next = JSON.stringify(pg.specsAll());
-        applyProc.command = ["ryoku-monitor", "apply", next];
+        applyProc.command = ["ryoku-hub", "outputs", "apply", next];
         applyProc.running = true;
         pg.committed = next;
         pg.tick++;
@@ -472,16 +666,18 @@ Item {
         pg.revertSecs = 0;
         if (pg.revertBaseline === "")
             return;
-        applyProc.command = ["ryoku-monitor", "apply", pg.revertBaseline];
+        applyProc.command = ["ryoku-hub", "outputs", "apply", pg.revertBaseline];
         applyProc.running = true;
         pg.committed = pg.revertBaseline;
         pg.revertBaseline = "";
         listRefresh.start();
     }
+
+    // ── profiles: a stored layout, replayed through the seam ────────────────
     function saveProfile(name) {
         if (name.trim() === "")
             return;
-        profileProc.command = ["ryoku-monitor", "save", name.trim(), JSON.stringify(pg.specsAll())];
+        profileProc.command = ["ryoku-hub", "outputs", "save", name.trim(), JSON.stringify(pg.specsAll())];
         profileProc.running = true;
         pg.committed = JSON.stringify(pg.specsAll());
         pg.tick++;
@@ -489,22 +685,17 @@ Item {
         profileRefresh.start();
     }
     function loadProfile(name) {
-        profileProc.command = ["ryoku-monitor", "load", name];
+        profileProc.command = ["ryoku-hub", "outputs", "load", name];
         profileProc.running = true;
         listRefresh.start();
     }
     function deleteProfile(name) {
-        profileProc.command = ["ryoku-monitor", "rm", name];
+        profileProc.command = ["ryoku-hub", "outputs", "rm", name];
         profileProc.running = true;
         profileRefresh.start();
     }
-    function quick(cmd, arg) {
-        applyProc.command = arg ? ["ryoku-monitor", cmd, arg] : ["ryoku-monitor", cmd];
-        applyProc.running = true;
-        listRefresh.start();
-    }
 
-    // fixed-delay refreshes after helper writes, kept from the old page.
+    // fixed-delay refreshes after an apply, so the readback reflects the settled layout.
     Timer { id: listRefresh; interval: 700; onTriggered: pg.reload() }
     Timer { id: profileRefresh; interval: 300; onTriggered: pg.reloadProfiles() }
     // counts the keep-or-revert window down; if it reaches zero unconfirmed, the
@@ -516,23 +707,19 @@ Item {
         onTriggered: { pg.revertSecs--; if (pg.revertSecs <= 0) pg.doRevert(); }
     }
 
-    // ── presentation helpers (rotation/vrr labels, catalogue mapping) ──
+    // ── presentation helpers (rotation labels, colour mapping) ──
     function rotLabel(t) { return (t * 90) + "\u00b0"; }
     function rotKey(label) { return parseInt(label) / 90; }
-    readonly property var vrrLabels: ["Off", "On", "Fullscreen"]
-    function vrrLabel(v) { return pg.vrrLabels[v] !== undefined ? pg.vrrLabels[v] : "Off"; }
-    function vrrKey(label) { var k = pg.vrrLabels.indexOf(label); return k < 0 ? 0 : k; }
-    // colour management: the cm preset drives HDR. sRGB is the safe default,
-    // Wide is wide-gamut (BT2020), HDR turns on the PQ transfer + 10-bit. The
-    // labels round-trip to Hyprland's `cm` value (bitdepth is derived downstream).
+    // colour management: the mode drives HDR. sRGB is the safe default, Wide is
+    // wide-gamut (BT2020), HDR turns on the PQ transfer + 10-bit. Only shown where
+    // the output-HDR capability is present.
     readonly property var cmLabels: ["sRGB", "Wide", "HDR"]
     readonly property var cmKeys: ["srgb", "wide", "hdr"]
     function cmLabel(v) { var i = pg.cmKeys.indexOf(v); return i < 0 ? "sRGB" : pg.cmLabels[i]; }
     function cmKey(label) { var i = pg.cmLabels.indexOf(label); return i < 0 ? "srgb" : pg.cmKeys[i]; }
-    // SDR content brightness in HDR: 1.0x-2.0x, the Hyprland-typical range.
-    // Fine steps through the usual range, then coarser to the top: a bright
-    // panel (miniLED, high-nit OLED) needs well past 2 before SDR content stops
-    // looking dim in HDR, and the old ladder stopped there.
+    // SDR content brightness in HDR: 1.0x-6.0x. Fine steps through the usual range,
+    // then coarser to the top for a bright panel (miniLED, high-nit OLED) where SDR
+    // content stays dim in HDR well past 2x.
     readonly property var sdrLadder: [1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8, 1.9, 2.0,
         2.25, 2.5, 2.75, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0]
     function labelForKey(opts, key) {
@@ -553,10 +740,15 @@ Item {
     Column {
         id: head
         anchors { left: parent.left; right: parent.right; top: parent.top }
-        anchors.leftMargin: Tokens.s6; anchors.rightMargin: Tokens.s6; anchors.topMargin: Tokens.s6
-        spacing: Tokens.s2
+        anchors.topMargin: Tokens.s6
+        // the register row sits off the title: a rule over a 32px
+        // title needs more than the gap between two lines of body text
+        spacing: Tokens.s3
 
         Row {
+            // the register row holds a fixed box, so the rule and the seal keep
+            // their distance from the title on every page
+            height: Tokens.s5
             spacing: Tokens.s2
             Rectangle {
                 width: 16; height: 1; color: Tokens.ink
@@ -585,20 +777,21 @@ Item {
                 font.family: Tokens.display; font.pixelSize: Tokens.fTitle
             }
             // the page's utility actions sit beside the title, per DESIGN section
-            // 8. Each rewrites the live layout via the shared helper, so they are
-            // kept as buttons.
+            // 8. Each computes a layout and applies it through the seam. MIRROR is
+            // gated on the output-mirroring capability, so it is absent where the
+            // compositor cannot clone one output onto another.
             Row {
                 anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                 spacing: Tokens.s2
-                Btn { text: I18n.tr("MIRROR"); armed: pg.monCount > 1; onAct: pg.quick("mirror") }
-                Btn { text: I18n.tr("EXTEND"); armed: pg.monCount > 1; onAct: pg.quick("extend") }
-                Btn { text: I18n.tr("DPI AUTO-SCALE"); armed: pg.monCount > 0; onAct: pg.quick("autoscale", "--no-profile") }
+                Btn { visible: Settings.supports("outputMirror"); text: I18n.tr("MIRROR"); armed: pg.monCount > 1; onAct: pg.mirrorAll() }
+                Btn { text: I18n.tr("EXTEND"); armed: pg.monCount > 1; onAct: pg.extend() }
+                Btn { text: I18n.tr("DPI AUTO-SCALE"); armed: pg.monCount > 0; onAct: pg.dpiAutoscale() }
             }
         }
 
         Text {
             width: Math.min(parent.width, 720)
-            text: I18n.tr("Detect connected displays, drag to arrange them to scale, and tune resolution, scale, rotation, colour (including HDR) and mirroring per monitor. Apply writes the layout to your live session and persists it; save a named profile to restore this arrangement when you plug the same displays in again.")
+            text: I18n.tr("Arrange your displays and set each one's mode. Save a layout to reuse it.")
             color: Tokens.inkMuted; font.family: Tokens.ui
             font.pixelSize: Tokens.fBody; wrapMode: Text.WordWrap
         }
@@ -760,7 +953,7 @@ Item {
                     visible: pg.listFailed
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
-                    text: I18n.tr("The ryoku-monitor helper looks out of date. Run 'ryoku deploy' (or update the desktop) and retry.")
+                    text: I18n.tr("The display backend looks out of date. Run 'ryoku deploy' (or update the desktop) and retry.")
                     color: Tokens.inkMuted; font.family: Tokens.ui; font.pixelSize: Tokens.fSmall
                 }
                 Btn {
@@ -793,6 +986,7 @@ Item {
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+            WheelScroll { }
 
             Column {
                 id: ctlCol
@@ -871,8 +1065,8 @@ Item {
                         Step {
                             id: scaleStep
                             anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
-                            // value is an index into the per-resolution ladder
-                            // of Hyprland-valid scales (see scaleLadder).
+                            // value is an index into the per-resolution ladder of
+                            // valid whole-logical-pixel scales (see scaleLadder).
                             readonly property var ladder: { void pg.tick; return pg.sel ? pg.scaleLadder(pg.sel) : [1]; }
                             from: 0; to: ladder.length - 1; stepBy: 1
                             value: { void pg.tick; return pg.sel ? pg.nearestScaleIdx(scaleStep.ladder, pg.sel.scale) : 0; }
@@ -901,6 +1095,42 @@ Item {
                     SettingRow {
                         anchors.left: parent.left; anchors.right: parent.right
                         divider: true
+                        label: I18n.tr("SHOW BAR")
+                        desc: I18n.tr("Show the active Ryoku bar style on this display.")
+                        source: "shell.json"
+                        controlWidth: 54
+                        Sw {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            on: {
+                                void pg.tick;
+                                return pg.sel ? pg.displayFlag(pg.sel.name, "bar") : true;
+                            }
+                            onToggled: value => pg.setDisplayFlag(
+                                pg.sel ? pg.sel.name : "", "bar", value)
+                        }
+                    }
+                    SettingRow {
+                        anchors.left: parent.left; anchors.right: parent.right
+                        divider: true
+                        label: I18n.tr("DESKTOP WIDGETS")
+                        desc: I18n.tr("Show desktop widgets and desktop-widget plugins on this display.")
+                        source: "shell.json"
+                        controlWidth: 54
+                        Sw {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            on: {
+                                void pg.tick;
+                                return pg.sel ? pg.displayFlag(pg.sel.name, "widgets") : true;
+                            }
+                            onToggled: value => pg.setDisplayFlag(
+                                pg.sel ? pg.sel.name : "", "widgets", value)
+                        }
+                    }
+                    SettingRow {
+                        anchors.left: parent.left; anchors.right: parent.right
+                        divider: true
                         label: I18n.tr("ROTATION")
                         block: true
                         Seg {
@@ -915,26 +1145,28 @@ Item {
                         anchors.left: parent.left; anchors.right: parent.right
                         divider: true
                         label: I18n.tr("ADAPTIVE SYNC")
-                        block: true
-                        Seg {
-                            anchors.left: parent.left; anchors.right: parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            options: pg.vrrLabels
-                            current: { void pg.tick; return pg.sel ? pg.vrrLabel(pg.sel.vrr) : "Off"; }
-                            onChose: (label) => pg.setField(pg.selected, "vrr", pg.vrrKey(label))
+                        controlWidth: 54
+                        Sw {
+                            anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                            on: { void pg.tick; return pg.sel ? !!pg.sel.vrr : false; }
+                            onToggled: (v) => pg.setField(pg.selected, "vrr", v)
                         }
                     }
+                    // COLOUR + SDR BRIGHTNESS: only where the output-HDR behaviour
+                    // exists, so a compositor without an HDR pipeline shows no dead
+                    // colour knob.
                     SettingRow {
                         anchors.left: parent.left; anchors.right: parent.right
                         divider: true
+                        visible: Settings.supports("outputHdr")
                         label: I18n.tr("COLOUR")
                         block: true
                         Seg {
                             anchors.left: parent.left; anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
                             options: pg.cmLabels
-                            current: { void pg.tick; return pg.sel ? pg.cmLabel(pg.sel.cm) : "sRGB"; }
-                            onChose: (label) => pg.setField(pg.selected, "cm", pg.cmKey(label))
+                            current: { void pg.tick; return pg.sel ? pg.cmLabel(pg.sel.colorMode) : "sRGB"; }
+                            onChose: (label) => pg.setField(pg.selected, "colorMode", pg.cmKey(label))
                         }
                     }
                     // SDR brightness only bites in HDR (it maps SDR content into the
@@ -942,23 +1174,25 @@ Item {
                     SettingRow {
                         anchors.left: parent.left; anchors.right: parent.right
                         divider: true
-                        visible: { void pg.tick; return pg.sel ? pg.sel.cm === "hdr" : false; }
+                        visible: { void pg.tick; return Settings.supports("outputHdr") && pg.sel && pg.sel.colorMode === "hdr"; }
                         label: I18n.tr("SDR BRIGHTNESS")
-                        value: { void pg.tick; return pg.sel ? (pg.sel.sdrbrightness.toFixed(1) + "\u00d7") : ""; }
+                        value: { void pg.tick; return pg.sel ? (pg.sel.sdrBrightness.toFixed(1) + "\u00d7") : ""; }
                         controlWidth: 58
                         Step {
                             id: sdrStep
                             anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                             readonly property var ladder: pg.sdrLadder
                             from: 0; to: ladder.length - 1; stepBy: 1
-                            value: { void pg.tick; return pg.sel ? pg.nearestScaleIdx(sdrStep.ladder, pg.sel.sdrbrightness) : 0; }
-                            onModified: (v) => pg.setField(pg.selected, "sdrbrightness",
+                            value: { void pg.tick; return pg.sel ? pg.nearestScaleIdx(sdrStep.ladder, pg.sel.sdrBrightness) : 0; }
+                            onModified: (v) => pg.setField(pg.selected, "sdrBrightness",
                                 sdrStep.ladder[Math.max(0, Math.min(sdrStep.ladder.length - 1, v))])
                         }
                     }
+                    // MIRROR OF: only where the output-mirroring behaviour exists.
                     SettingRow {
                         anchors.left: parent.left; anchors.right: parent.right
                         divider: true
+                        visible: Settings.supports("outputMirror")
                         label: I18n.tr("MIRROR OF")
                         footH: 32
                         PickBar {
@@ -1028,9 +1262,9 @@ Item {
                     }
                 }
 
-                // profiles: a hardware-keyed layout that returns when the same
-                // displays reconnect. The save field and saved-profile list stay a
-                // bespoke management surface, housed in the card for cohesion.
+                // profiles: a stored layout that returns when the same displays
+                // reconnect. Hub-owned (a saved OutputLayout replayed through the
+                // seam), so it works on every compositor and survives a switch.
                 SettingCard {
                     width: ctlCol.width
                     title: I18n.tr("PROFILES")
@@ -1040,7 +1274,7 @@ Item {
                         leftPadding: Tokens.s4; rightPadding: Tokens.s4
                         topPadding: Tokens.s3; bottomPadding: Tokens.s1
                         wrapMode: Text.WordWrap
-                        text: I18n.tr("Save this layout, keyed to the connected displays, so it returns automatically when you plug them in again.")
+                        text: I18n.tr("Save this layout under a name so it returns when you plug the same displays in again.")
                         color: Tokens.inkMuted; font.family: Tokens.ui; font.pixelSize: Tokens.fSmall
                     }
 
@@ -1069,23 +1303,42 @@ Item {
                         x: Tokens.s4
                         spacing: Tokens.s2
 
-                        // dynamic data from `ryoku-monitor profiles`.
+                        // dynamic data from `ryoku-hub outputs profiles`.
                         Repeater {
                             model: pg.profiles
 
-                            delegate: Rectangle {
+                            delegate: Item {
                                 id: prof
                                 required property var modelData
+                                required property int index
                                 width: parent.width
+                                // the row law the settings cards use: one row
+                                // height, a hairline between rows, no per-row box
                                 height: Tokens.rowH
-                                radius: Tokens.radius
-                                color: phov.hovered ? Tokens.tint5 : "transparent"
-                                border.width: Tokens.border
-                                // an ink border marks the profile whose hardware is
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    anchors.topMargin: 1; anchors.bottomMargin: 1
+                                    radius: Tokens.radius
+                                    color: phov.hovered ? Tokens.tint5 : "transparent"
+                                    Behavior on color { ColorAnimation { duration: Tokens.snap } }
+                                }
+                                Rectangle {
+                                    anchors { left: parent.left; right: parent.right; top: parent.top }
+                                    anchors.leftMargin: Tokens.s4; anchors.rightMargin: Tokens.s4
+                                    height: 1
+                                    color: Tokens.lineSoft
+                                    visible: prof.index > 0
+                                }
+                                // an ink edge marks the profile whose displays are
                                 // connected now; emphasis without colour.
-                                border.color: prof.modelData.matches ? Tokens.ink : Tokens.line
-                                Behavior on color { ColorAnimation { duration: Tokens.snap } }
-                                Behavior on border.color { ColorAnimation { duration: Tokens.snap } }
+                                Rectangle {
+                                    visible: prof.modelData.matches
+                                    anchors { left: parent.left; verticalCenter: parent.verticalCenter }
+                                    width: 2
+                                    height: parent.height - Tokens.s3
+                                    color: Tokens.ink
+                                }
 
                                 HoverHandler { id: phov }
 
@@ -1135,6 +1388,68 @@ Item {
 
                     // breathing room below the list so it clears the card border.
                     Item { width: parent.width; height: Tokens.s3 }
+                }
+
+                // Night light: a display-wide comfort setting, not per-monitor,
+                // so it sits in its own card. On/off and temperature ride the
+                // daemon `nightlight` topic; gated on the capability so a
+                // compositor with no backend shows nothing here.
+                SettingCard {
+                    width: ctlCol.width
+                    visible: Settings.supports("nightLight")
+                    title: I18n.tr("NIGHT LIGHT")
+
+                    SettingRow {
+                        anchors.left: parent.left; anchors.right: parent.right
+                        label: I18n.tr("WARM SCREEN")
+                        desc: I18n.tr("Cut blue light with a warmer screen tint.")
+                        controlWidth: 54
+                        Sw {
+                            anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                            on: pg.nightOn
+                            onToggled: (v) => pg.setNight(v)
+                        }
+                    }
+                    SettingRow {
+                        anchors.left: parent.left; anchors.right: parent.right
+                        divider: true
+                        enabled: pg.nightOn
+                        label: I18n.tr("TEMPERATURE")
+                        value: pg.nightTemp + " K"
+                        controlWidth: 58
+                        Step {
+                            anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                            from: 1000; to: 6500; stepBy: 100
+                            value: pg.nightTemp
+                            onModified: (v) => pg.setNightTemp(v)
+                        }
+                    }
+                    SettingRow {
+                        anchors.left: parent.left; anchors.right: parent.right
+                        divider: true
+                        label: I18n.tr("FOLLOW THE SUN")
+                        desc: I18n.tr("Warm the screen from sunset to sunrise, using your real sun times.")
+                        controlWidth: 54
+                        Sw {
+                            anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                            on: pg.nightSchedule === "sun"
+                            onToggled: (v) => pg.setNightSchedule(v)
+                        }
+                    }
+                    SettingRow {
+                        anchors.left: parent.left; anchors.right: parent.right
+                        divider: true
+                        enabled: pg.nightSchedule === "sun"
+                        label: I18n.tr("EDGE MARGIN")
+                        value: pg.nightMargin + " min"
+                        controlWidth: 58
+                        Step {
+                            anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                            from: 0; to: 180; stepBy: 15
+                            value: pg.nightMargin
+                            onModified: (v) => pg.setNightMargin(v)
+                        }
+                    }
                 }
             }
         }
@@ -1186,13 +1501,6 @@ Item {
             Btn { text: I18n.tr("APPLY"); primary: true; armed: pg.dirty; onAct: pg.apply() }
         }
 
-        // marginalia dressing the empty bar centre between status and actions -- a dead margin. Ink only.
-        Marginalia {
-            anchors.horizontalCenter: parent.horizontalCenter
-            anchors.verticalCenter: parent.verticalCenter
-            kana: "画面"
-            glyph: "column"; glyph2: "wave"
-        }
     }
 
     // ── the resolution / mirror catalogue overlay, shared across controls ───
@@ -1241,8 +1549,8 @@ Item {
     }
 
     // ── custom-resolution form: type W × H @ Hz. Stages into the draft like any
-    // mode; ryoku-monitor forces a non-advertised timing via a CVT modeline on
-    // Apply, and Apply arms the keep-or-revert banner below. ──────────────────
+    // mode; the provider forces a non-advertised timing where it can on Apply,
+    // and Apply arms the keep-or-revert banner below. ─────────────────────────
     MouseArea {
         id: customScrim
         anchors.fill: parent

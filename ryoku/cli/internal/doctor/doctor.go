@@ -17,6 +17,7 @@ import (
 	"time"
 
 	i18n "ryoku-i18n"
+	wm "ryoku-wm"
 )
 
 // doctor = the convergent reconcilers. idempotent checks (plus a fix where
@@ -103,6 +104,7 @@ func reconcilers() []reconciler {
 		{i18n.T("interface language"), reconcileShellLanguage},
 		{i18n.T("swap kept out of snapshots"), reconcileSwapSubvolume},
 		{i18n.T("snapper configuration"), reconcileSnapper},
+		{i18n.T("snapshot read access"), reconcileSnapperAccess},
 		{i18n.T("snapshot cleanup"), reconcileSnapperCleanup},
 		{i18n.T("limine boot menu layout"), reconcileLimineLayout},
 		{i18n.T("limine boot entry"), reconcileLimineBootEntry},
@@ -111,12 +113,14 @@ func reconcilers() []reconciler {
 		{i18n.T("limine kernel boot images"), reconcileLimineKernelImages},
 		{i18n.T("boot menu dead entries"), reconcileLimineDeadEntries},
 		{i18n.T("boot partition headroom"), reconcileBootSpace},
+		{i18n.T("boot volume writability"), reconcileBootRW},
 		{i18n.T("initramfs GPU trim"), reconcileInitramfsGPUTrim},
 		{i18n.T("limine autoboot"), reconcileLimineAutoboot},
 		{i18n.T("limine snapshot sync"), reconcileLimineOSName},
 		{i18n.T("updatedb snapshot prune"), reconcileUpdatedbPrune},
 		{i18n.T("pacman database lock"), reconcilePacmanLock},
 		{i18n.T("pacman progress bar"), reconcilePacmanCandy},
+		{i18n.T("multilib repository"), reconcileMultilibRepo},
 		{i18n.T("conflicting Ryoku files"), reconcileConflictingRyokuFiles},
 		{i18n.T("stale update run-state"), reconcileStaleUpdateRun},
 		{i18n.T("stale install crypt mapper"), reconcileStaleCryptMapper},
@@ -127,11 +131,15 @@ func reconcilers() []reconciler {
 		{i18n.T("update checkout pointer"), reconcileRepoPointer},
 		{i18n.T("stale dev residue"), reconcileDevResidue},
 		{i18n.T("ryostore cache location"), reconcileRyostoreCache},
+		{i18n.T("desktop settings store"), reconcileDesktopStore},
+		{i18n.T("retired cursor keys"), reconcileRetiredCursorLeaf},
+		{i18n.T("session target units"), reconcileSessionTarget},
 		{i18n.T("desktop session components"), reconcileSessionComponents},
 		{i18n.T("desktop portal routing"), reconcilePortalRouting},
 		{i18n.T("desktop portal session"), reconcilePortalSession},
 		{i18n.T("audio service health"), reconcileAudioService},
 		{i18n.T("audio playback routing"), reconcileAudioRouting},
+		{i18n.T("keyboard layout code"), reconcileKbLayoutCode},
 		{i18n.T("keyboard layout"), reconcileKeymap},
 		{i18n.T("keyboard layout detection"), reconcileKeyboardSeed},
 		{i18n.T("in-session lockscreen"), reconcileLockscreen},
@@ -140,11 +148,13 @@ func reconcilers() []reconciler {
 		{i18n.T("Material Symbols icon font"), reconcileIconFont},
 		{i18n.T("frame bar style name"), reconcileFrameBarsStyle},
 		{i18n.T("shell config schema"), reconcileShellConfig},
+		{i18n.T("login shell source"), reconcileLoginShell},
 		{i18n.T("shell style knobs"), reconcileLegacyStyleKnobs},
 		{i18n.T("sumi bar simplification"), reconcileSumiBar},
 		{i18n.T("dock config store"), reconcileDockStore},
 		{i18n.T("retired shell menus"), reconcileRetiredMenus},
 		{i18n.T("retired wallpaper keys"), reconcileRetiredWallpaperKeys},
+		{i18n.T("window width cycle"), reconcileWidthCycle},
 		{i18n.T("ryogami wallpaper daemon"), reconcileRyogamiWallpaper},
 		{i18n.T("ryowalls app leftovers"), reconcileRyowallsRemoval},
 		{i18n.T("quick-settings capture tab"), reconcileCaptureModule},
@@ -154,6 +164,7 @@ func reconcilers() []reconciler {
 		{i18n.T("retired system sidebar"), reconcileLegacySystemSidebar},
 		{i18n.T("stash features sidebar anchor"), reconcileStashSidebar},
 		{i18n.T("shipped app packages"), reconcileShippedApps},
+		{i18n.T("release control manifest"), reconcileManifest},
 		{i18n.T("ghostty theme include"), reconcileGhostty},
 		{i18n.T("obsidian palette snippet"), reconcileObsidianSnippet},
 		{i18n.T("flatpak app channel"), reconcileFlatpakRemote},
@@ -174,16 +185,20 @@ func reconcilers() []reconciler {
 		{i18n.T("brand mark image"), reconcileBrandLogo},
 		{i18n.T("decor art"), reconcileRyodecors},
 		{i18n.T("Hyprland config integrity"), reconcileHyprlandConfig},
-		{i18n.T("Hyprland plugin builds"), reconcileHyprPlugins},
+		{i18n.T("niri config integrity"), reconcileNiriConfig},
+		{i18n.T("window manager plugin builds"), reconcileWmPlugins},
 		{i18n.T("stale window-border pin"), reconcileBorderPin},
 		{i18n.T("orphaned theme.lua"), reconcileThemeLua},
 		{i18n.T("follow-mouse default"), reconcileFollowMouseDefault},
+		{i18n.T("follow-wallpaper default"), reconcileThemeFollowDefault},
 		{i18n.T("quickshell runtime"), reconcileQuickshell},
+		{i18n.T("compositor config tree"), reconcileConfigTree},
 		{i18n.T("desktop loads"), reconcileShellLoad},
 		{i18n.T("ryoku shell daemon"), reconcileShellDaemon},
 		{i18n.T("duplicate desktop instances"), reconcileShellInstances},
 		{i18n.T("rashin agent daemon"), reconcileRashinDaemon},
-		{i18n.T("prowl-agent for rashin"), reconcileProwlAgent},
+		{i18n.T("AI usage collector timer"), reconcileAiUsageTimer},
+		{i18n.T("prowl for rashin"), reconcileProwlAgent},
 		{i18n.T("recordings directory"), reconcileRecordingsDir},
 		{i18n.T("failed services"), reconcileFailedUnits},
 		{i18n.T("btrfs device health"), reconcileBtrfsHealth},
@@ -193,12 +208,15 @@ func reconcilers() []reconciler {
 		{i18n.T("display backlight"), reconcileBacklight},
 		{i18n.T("discrete GPU idle drain"), reconcileDgpuPanel},
 		{i18n.T("stale GPU render pin"), reconcileGpuPin},
+		{i18n.T("render pin vs panel driver"), reconcileRenderPinPanel},
 		{i18n.T("power profiles vs AMD GPU"), reconcilePpdAmdgpu},
 		{i18n.T("display resolution"), reconcileDisplayModes},
 		{i18n.T("phantom Wayland output"), reconcilePhantomOutput},
+		{i18n.T("fingerprint unlock module"), reconcileFingerprintModule},
 		{i18n.T("Kepler NVIDIA recovery"), reconcileKeplerNvidia},
 		{i18n.T("NVIDIA boot reliability"), reconcileNvidiaModeset},
 		{i18n.T("NVIDIA update guard hook"), reconcileNvidiaGuardHook},
+		{i18n.T("NVIDIA sleep units"), reconcileNvidiaSleepUnits},
 		{i18n.T("pending config (.pacnew)"), reconcilePacnew},
 		{i18n.T("orphaned packages"), reconcileOrphans},
 	}
@@ -608,6 +626,57 @@ func reconcileSnapper(checkOnly bool) recResult {
 			withFix(i18n.T("see https://wiki.archlinux.org/title/Snapper"))
 	}
 	return okRes(i18n.T("snapper root config is consistent"))
+}
+
+// reconcileSnapperAccess grants the primary user read access to the root
+// snapshots so `ryoku status` (and the Hub panel, the update island) can count
+// them without sudo -- snapper's own ALLOW_USERS + SYNC_ACL mechanism. Without
+// it the count came from a `sudo -n` that fails whenever no credential is cached,
+// and a failed read rendered as a bare "0", which reads as "no safety net" when
+// the safety net is fine. Idempotent and gated on whether an unprivileged read
+// already works, so it never has to read the 0640 config to know.
+func reconcileSnapperAccess(checkOnly bool) recResult {
+	if !sys.Has("snapper") || !sys.Exists("/etc/snapper/configs/root") {
+		return okRes(i18n.T("root snapshots not configured, no access to grant"))
+	}
+	user := doctorUser()
+	if user == "" || user == "root" {
+		return okRes(i18n.T("no primary user to grant snapshot access to"))
+	}
+	if snapperReadableUnprivileged() {
+		return okRes(i18n.T("snapshots are readable without sudo"))
+	}
+	if checkOnly {
+		return wouldRes(i18n.T("`ryoku status` cannot count snapshots without a cached sudo credential, so it can read as \"0\" on a machine that has them")).
+			withFix(i18n.T("grant %s read access (snapper ALLOW_USERS + SYNC_ACL)"), user)
+	}
+	if err := sys.Run("sudo", "snapper", "-c", "root", "set-config",
+		"ALLOW_USERS="+user, "SYNC_ACL=yes"); err != nil {
+		return failRes(i18n.T("granting %s snapshot read access: %v"), user, err).
+			withFix(i18n.T("sudo snapper -c root set-config ALLOW_USERS=%s SYNC_ACL=yes"), user)
+	}
+	if !snapperReadableUnprivileged() {
+		return warnRes(i18n.T("granted %s snapshot access, but an unprivileged read still fails; the ACL sync may land on the next snapshot"), user)
+	}
+	return fixedRes(i18n.T("granted %s read access to snapshots (ALLOW_USERS, SYNC_ACL); `ryoku status` counts them without sudo now"), user)
+}
+
+// snapperReadableUnprivileged reports whether the current user can list the root
+// snapshots without escalating -- i.e. the ALLOW_USERS + SYNC_ACL grant is in
+// effect. It runs snapper directly (no sudo), so it never prompts. A denied read
+// prints "No permissions." to stderr but still exits 0, so success is judged by
+// a real CSV listing on stdout (its header), not the exit code.
+func snapperReadableUnprivileged() bool {
+	out, err := sys.RunOut("snapper", "-c", "root", "--csvout", "list", "--columns", "number")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			return strings.HasPrefix(s, "number")
+		}
+	}
+	return false
 }
 
 // createSnapperRootConfig lays the installer's layout down on a live box.
@@ -1032,8 +1101,8 @@ func reconcileRyokuSyncDB(checkOnly bool) recResult {
 // their next full update; this heals git-channel boxes and anyone already
 // broken today.
 func reconcileIconFont(checkOnly bool) recResult {
-	if !sys.Exists(filepath.Join(sys.Home(), ".config", "hypr")) && !sys.Has("Hyprland") {
-		return okRes(i18n.T("not a Hyprland desktop"))
+	if wm.Detect().Name == "" {
+		return okRes(i18n.T("no window manager provider"))
 	}
 	if anyPkgInstalled("ttf-material-symbols-variable", "ttf-material-symbols-variable-git") {
 		return okRes(i18n.T("Material Symbols icon font installed"))
@@ -1838,16 +1907,52 @@ func migrateShellConfig(raw []byte) ([]byte, []string, error) {
 
 // ---- reconciler: desktop session components ----------------------------------
 
-func reconcileSessionComponents(_ bool) recResult {
-	if !sys.Exists(filepath.Join(sys.Home(), ".config", "hypr")) && !sys.Has("Hyprland") {
-		return okRes(i18n.T("not a Hyprland desktop"))
+// portalFrontends maps a declared backend to the frontend package that serves
+// it, keyed by the seam's own provider constant so no bare compositor name is
+// branched on here.
+var portalFrontends = map[string]struct {
+	fix  string
+	pkgs []string
+}{
+	wm.ProviderHyprland: {"sudo pacman -S xdg-desktop-portal-hyprland", []string{"xdg-desktop-portal-hyprland"}},
+	"gnome":             {"sudo pacman -S xdg-desktop-portal-gnome", []string{"xdg-desktop-portal-gnome"}},
+	"kde":               {"sudo pacman -S xdg-desktop-portal-kde", []string{"xdg-desktop-portal-kde"}},
+	"wlr":               {"sudo pacman -S xdg-desktop-portal-wlr", []string{"xdg-desktop-portal-wlr"}},
+}
+
+// portalFrontendCheck resolves the xdg-desktop-portal frontend this session
+// needs from the live provider's declared backend, with the command to install
+// it. With no provider answering (a broken or headless box) every frontend is
+// accepted rather than pointing at one compositor's, which is what the check
+// did before the backend was read.
+func portalFrontendCheck() (fix string, pkgs []string) {
+	backend := ""
+	if caps, err := wm.Open().Caps(); err == nil {
+		backend = caps.PortalBackend
 	}
+	if f, ok := portalFrontends[backend]; ok {
+		return f.fix, f.pkgs
+	}
+	return "", []string{
+		"xdg-desktop-portal-hyprland", "xdg-desktop-portal-gnome",
+		"xdg-desktop-portal-kde", "xdg-desktop-portal-wlr",
+	}
+}
+
+func reconcileSessionComponents(_ bool) recResult {
+	if wm.Detect().Name == "" {
+		return okRes(i18n.T("no window manager provider"))
+	}
+	portalFix, portalPkgs := portalFrontendCheck()
 	checks := []struct {
 		role, fix string
 		any       []string
 	}{
 		{i18n.T("authentication agent"), "sudo pacman -S hyprpolkitagent", []string{"hyprpolkitagent", "polkit-gnome", "polkit-kde-agent", "lxsession"}},
-		{i18n.T("desktop portal"), "sudo pacman -S xdg-desktop-portal-hyprland", []string{"xdg-desktop-portal-hyprland"}},
+		// The frontend the session needs is the one its compositor declares
+		// (Caps.PortalBackend): checking Hyprland's on a niri box reported the
+		// portal missing and told the user to install the wrong backend.
+		{i18n.T("desktop portal"), portalFix, portalPkgs},
 		{i18n.T("audio server"), "sudo pacman -S pipewire wireplumber", []string{"pipewire"}},
 		{i18n.T("network manager"), "sudo pacman -S networkmanager", []string{"networkmanager"}},
 	}
@@ -1865,13 +1970,28 @@ func reconcileSessionComponents(_ bool) recResult {
 
 // ---- reconciler: desktop portal routing ----------------------------------------
 
+// portalDesktopToken is the name xdg-desktop-portal prefixes its desktop
+// config with: the first XDG_CURRENT_DESKTOP entry, lowercased (portals.conf(5)
+// reads <desktop>-portals.conf). Outside a session that variable is empty, so
+// fall back to the detected provider name, which matches what the next login
+// will carry. An empty token means no desktop-specific file to look for.
+func portalDesktopToken(desktopEnv, provider string) string {
+	if v := strings.TrimSpace(desktopEnv); v != "" {
+		if i := strings.IndexByte(v, ':'); i >= 0 {
+			v = v[:i]
+		}
+		return strings.ToLower(strings.TrimSpace(v))
+	}
+	return strings.ToLower(strings.TrimSpace(provider))
+}
+
 // portalConfigCandidates lists every file xdg-desktop-portal consults on a
-// Hyprland session, highest precedence first (portals.conf(5)): user config,
+// <desktop> session, highest precedence first (portals.conf(5)): user config,
 // XDG_CONFIG_DIRS, /etc, user data, XDG_DATA_DIRS. in each location the
 // desktop-specific name is read before the generic one, and the first file
 // that exists wins outright, nothing merges. that order is the trap: a
-// user-level generic portals.conf beats the packaged hyprland-portals.conf.
-func portalConfigCandidates(home string) []string {
+// user-level generic portals.conf beats the packaged <desktop>-portals.conf.
+func portalConfigCandidates(home, desktop string) []string {
 	var dirs []string
 	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
 		dirs = append(dirs, v)
@@ -1902,17 +2022,18 @@ func portalConfigCandidates(home string) []string {
 			continue
 		}
 		seen[d] = true
-		out = append(out,
-			filepath.Join(d, "xdg-desktop-portal", "hyprland-portals.conf"),
-			filepath.Join(d, "xdg-desktop-portal", "portals.conf"))
+		if desktop != "" {
+			out = append(out, filepath.Join(d, "xdg-desktop-portal", desktop+"-portals.conf"))
+		}
+		out = append(out, filepath.Join(d, "xdg-desktop-portal", "portals.conf"))
 	}
 	return out
 }
 
-// portalRoutesHyprland: does this config hand the default portal role to the
-// hyprland backend? per-interface overrides next to a sane default are a
-// deliberate user tweak and stay untouched.
-func portalRoutesHyprland(content string) bool {
+// portalRoutesBackend: does this config hand the default portal role to backend?
+// per-interface overrides next to a sane default are a deliberate user tweak and
+// stay untouched.
+func portalRoutesBackend(content, backend string) bool {
 	section := ""
 	for _, ln := range strings.Split(content, "\n") {
 		t := strings.TrimSpace(ln)
@@ -1928,7 +2049,7 @@ func portalRoutesHyprland(content string) bool {
 			continue
 		}
 		for _, b := range strings.Split(v, ";") {
-			if strings.TrimSpace(b) == "hyprland" {
+			if strings.TrimSpace(b) == backend {
 				return true
 			}
 		}
@@ -1936,26 +2057,33 @@ func portalRoutesHyprland(content string) bool {
 	return false
 }
 
-// reconcilePortalRouting keeps xdg-desktop-portal pointed at the hyprland
-// backend. a migrated box can carry a leftover user or /etc portals.conf that
-// outranks the packaged hyprland one; the gnome backend it names hangs under
-// Hyprland and every app that reads the settings portal at startup waits out
-// a ~25s D-Bus timeout ("apps are slow to open"). heals boxes converted
-// before the installer started moving the user file aside, and the /etc case.
+// reconcilePortalRouting keeps xdg-desktop-portal pointed at the provider's
+// backend (Caps.PortalBackend). a migrated box can carry a leftover user or /etc
+// portals.conf that outranks the packaged one and names the gnome backend, which
+// hangs under a non-GNOME session: every app that reads the settings portal at
+// startup waits out a ~25s D-Bus timeout ("apps are slow to open"). heals boxes
+// converted before the installer started moving the user file aside, and /etc.
 func reconcilePortalRouting(checkOnly bool) recResult {
-	if !sys.Exists(filepath.Join(sys.Home(), ".config", "hypr")) && !sys.Has("Hyprland") {
-		return okRes(i18n.T("not a Hyprland desktop"))
+	caps, _ := wm.Open().Caps()
+	backend := caps.PortalBackend
+	if backend == "" {
+		// no provider, or a compositor that declares no preferred portal backend.
+		return okRes(i18n.T("no preferred portal backend to enforce"))
 	}
-	// the first existing candidate is the one the portal loads, so every
-	// misrouted file ahead of a healthy one has to move aside.
+	// the portal reads <desktop>-portals.conf for the running desktop, so that
+	// is the file to look for; the provider name is the fallback when the
+	// session has not exported XDG_CURRENT_DESKTOP yet. the first existing
+	// candidate is the one the portal loads, so every misrouted file ahead of a
+	// healthy one has to move aside.
+	desktop := portalDesktopToken(os.Getenv("XDG_CURRENT_DESKTOP"), caps.Name)
 	var offenders []string
 	healthy := ""
-	for _, p := range portalConfigCandidates(sys.Home()) {
+	for _, p := range portalConfigCandidates(sys.Home(), desktop) {
 		b, err := os.ReadFile(p)
 		if err != nil {
 			continue
 		}
-		if portalRoutesHyprland(string(b)) {
+		if portalRoutesBackend(string(b), backend) {
 			healthy = p
 			break
 		}
@@ -1963,19 +2091,17 @@ func reconcilePortalRouting(checkOnly bool) recResult {
 	}
 	if len(offenders) == 0 {
 		if healthy == "" {
-			// no config at all: xdg-desktop-portal-hyprland is missing and the
-			// session components check already flags that.
 			return okRes(i18n.T("no portal routing config found"))
 		}
 		return okRes(i18n.T("portal routing follows %s"), healthy)
 	}
 	if healthy == "" {
-		return warnRes(i18n.T("no config routes portals to the hyprland backend; screenshare and portal dialogs cannot work")).
-			withFix("sudo pacman -S xdg-desktop-portal-hyprland")
+		return warnRes(i18n.T("no config routes portals to the %s backend; screenshare and portal dialogs cannot work"), backend).
+			withFix(i18n.T("sudo pacman -S xdg-desktop-portal-%s"), backend)
 	}
 	list := strings.Join(offenders, ", ")
 	if checkOnly {
-		return wouldRes(i18n.T("%s routes portals away from hyprland; apps stall ~25s at launch and screenshare breaks"), list).
+		return wouldRes(i18n.T("%s routes portals away from the %s backend; apps stall ~25s at launch and screenshare breaks"), list, backend).
 			withFix(i18n.T("ryoku doctor moves the file(s) aside and restarts the portal"))
 	}
 	for _, p := range offenders {
@@ -2030,29 +2156,31 @@ func cursorThemeInstalled(theme string, dirs []string) bool {
 }
 
 // configuredCursor: the theme + size the desktop actually loads = the Hub
-// override in hypr.json when set, else the shipped env.lua default. pure, so the
-// converge decision is unit-testable without a live desktop.
+// override in desktop.json when set, else the shipped env.lua default. pure, so
+// the converge decision is unit-testable without a live desktop.
 func configuredCursor(raw []byte) (string, int) {
 	theme, size := defaultCursorTheme, 24
 	var cfg struct {
-		Cursor struct {
-			Theme string `json:"theme"`
-			Size  int    `json:"size"`
-		} `json:"cursor"`
+		Desktop struct {
+			Cursor struct {
+				Theme string `json:"theme"`
+				Size  int    `json:"size"`
+			} `json:"cursor"`
+		} `json:"desktop"`
 	}
 	if json.Unmarshal(raw, &cfg) == nil {
-		if cfg.Cursor.Theme != "" {
-			theme = cfg.Cursor.Theme
+		if cfg.Desktop.Cursor.Theme != "" {
+			theme = wm.ResolveCursorTheme(cfg.Desktop.Cursor.Theme)
 		}
-		if cfg.Cursor.Size > 0 {
-			size = cfg.Cursor.Size
+		if cfg.Desktop.Cursor.Size > 0 {
+			size = cfg.Desktop.Cursor.Size
 		}
 	}
 	return theme, size
 }
 
-// resetCursorTheme rewrites hypr.json's cursor.theme to def, leaving every other
-// key (size, the rest of the store) intact. pure and idempotent.
+// resetCursorTheme rewrites desktop.cursor.theme to def, leaving every other key
+// (size, the rest of the store) intact. pure and idempotent.
 func resetCursorTheme(raw []byte, def string) ([]byte, error) {
 	cfg := map[string]any{}
 	if len(raw) > 0 {
@@ -2060,12 +2188,17 @@ func resetCursorTheme(raw []byte, def string) ([]byte, error) {
 			return nil, err
 		}
 	}
-	cur, _ := cfg["cursor"].(map[string]any)
+	desktop, _ := cfg["desktop"].(map[string]any)
+	if desktop == nil {
+		desktop = map[string]any{}
+	}
+	cur, _ := desktop["cursor"].(map[string]any)
 	if cur == nil {
 		cur = map[string]any{}
 	}
 	cur["theme"] = def
-	cfg["cursor"] = cur
+	desktop["cursor"] = cur
+	cfg["desktop"] = desktop
 	out, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return nil, err
@@ -2082,11 +2215,11 @@ func resetCursorTheme(raw []byte, def string) ([]byte, error) {
 // pacman call. when even the default is absent (a dev checkout with no package)
 // there is nothing config can heal, so it only warns.
 func reconcileCursorTheme(checkOnly bool) recResult {
-	if !sys.Exists(filepath.Join(sys.Home(), ".config", "hypr")) && !sys.Has("Hyprland") {
-		return okRes(i18n.T("not a Hyprland desktop"))
+	if wm.Detect().Name == "" {
+		return okRes(i18n.T("no window manager provider"))
 	}
 	dirs := cursorSearchDirs()
-	store := filepath.Join(sys.ConfigHome(), "ryoku", "hypr.json")
+	store := filepath.Join(sys.ConfigHome(), "ryoku", "desktop.json")
 	raw, _ := os.ReadFile(store)
 	theme, size := configuredCursor(raw)
 	if cursorThemeInstalled(theme, dirs) {
@@ -2104,8 +2237,8 @@ func reconcileCursorTheme(checkOnly bool) recResult {
 	}
 	out, err := resetCursorTheme(raw, defaultCursorTheme)
 	if err != nil {
-		return warnRes(i18n.T("cursor theme %q missing on disk and hypr.json does not parse (%v)"), theme, err).
-			withFix(i18n.T("set cursor.theme to %s in %s"), defaultCursorTheme, store)
+		return warnRes(i18n.T("cursor theme %q missing on disk and desktop.json does not parse (%v)"), theme, err).
+			withFix(i18n.T("set desktop.cursor.theme to %s in %s"), defaultCursorTheme, store)
 	}
 	tmp := store + ".ryoku-tmp"
 	if err := os.WriteFile(tmp, out, 0o644); err != nil {
@@ -2116,7 +2249,7 @@ func reconcileCursorTheme(checkOnly bool) recResult {
 		return failRes(i18n.T("could not replace %s: %v"), store, err)
 	}
 	// best-effort live apply; no-ops off a running session.
-	_ = exec.Command("hyprctl", "setcursor", defaultCursorTheme, fmt.Sprintf("%d", size)).Run()
+	_ = wm.Open().Act(wm.ActionCursorSet, defaultCursorTheme, fmt.Sprintf("%d", size))
 	return fixedRes(i18n.T("cursor theme %q missing on disk; reset to %s (re-pick your theme in the Hub after installing it)"), theme, defaultCursorTheme)
 }
 
@@ -2312,7 +2445,41 @@ const sddmWaylandConf = "/etc/sddm.conf.d/10-ryoku-wayland.conf"
 // ryoku-desktop) it runs weston --shell=kiosk at each output's top mode; else
 // plain weston at its preferred mode. Never set DisplayServer=wayland without
 // weston present -- the greeter could not start.
-const greeterCompositorBin = "/usr/share/ryoku/lockscreen/ryoku-greeter"
+var greeterCompositorBin = "/usr/share/ryoku/lockscreen/ryoku-greeter"
+
+// nvidiaVendorGlob is where sysfs exposes each DRM card's PCI vendor id.
+var nvidiaVendorGlob = "/sys/class/drm/card*/device/vendor"
+
+// greeterCompositor picks the SDDM greeter compositor command. On NVIDIA the
+// weston cursor-plane path silently drops the greeter pointer (#184), so the
+// fallback runs the pixman renderer: a software cursor, always visible. The
+// wrapper script makes the same call at run time.
+func greeterCompositor() string {
+	if sys.Exists(greeterCompositorBin) {
+		return greeterCompositorBin
+	}
+	if nvidiaDRMPresent() {
+		return "weston --shell=kiosk --renderer=pixman"
+	}
+	return "weston --shell=kiosk"
+}
+
+// nvidiaDRMPresent reports whether a DRM card carries NVIDIA's vendor id.
+func nvidiaDRMPresent() bool {
+	vendors, _ := filepath.Glob(nvidiaVendorGlob)
+	for _, v := range vendors {
+		if b, err := os.ReadFile(v); err == nil && strings.TrimSpace(string(b)) == "0x10de" {
+			return true
+		}
+	}
+	return false
+}
+
+// sessionWrapperBin waits for the greeter to release the GPU before the session
+// compositor probes KMS (see sddmWaylandBody). sddmDefaultWaylandSession is
+// SDDM's own default [Wayland] SessionCommand, used until the wrapper is shipped.
+const sessionWrapperBin = "/usr/share/ryoku/lockscreen/ryoku-wayland-session"
+const sddmDefaultWaylandSession = "/usr/share/sddm/scripts/wayland-session"
 
 // greeterEnvironment is SDDM's comma-separated GreeterEnvironment. The greeter
 // is a Qt client of the weston kiosk with no session behind it, so it inherits
@@ -2329,11 +2496,20 @@ const greeterCompositorBin = "/usr/share/ryoku/lockscreen/ryoku-greeter"
 const greeterEnvironment = "QT_QPA_PLATFORM=wayland,XCURSOR_THEME=Bibata-Modern-Ice,XCURSOR_SIZE=24,QML_XHR_ALLOW_FILE_READ=1"
 
 func sddmWaylandBody() string {
-	compositor := "weston --shell=kiosk"
-	if sys.Exists(greeterCompositorBin) {
-		compositor = greeterCompositorBin
+	compositor := greeterCompositor()
+	// SessionCommand wraps the session start with a wait for the greeter (weston)
+	// to exit before the compositor probes KMS: on a hybrid-GPU laptop weston can
+	// still hold a DRM device when SDDM starts the session on the next VT, so the
+	// probe misses that GPU and lands on a headless dGPU -- a black screen (#174).
+	// Falls back to SDDM's own default session script until the wrapper ships,
+	// which is behaviourally a no-op.
+	session := sddmDefaultWaylandSession
+	if sys.Exists(sessionWrapperBin) {
+		session = sessionWrapperBin
 	}
-	return "[General]\nDisplayServer=wayland\nGreeterEnvironment=" + greeterEnvironment + "\n\n[Wayland]\nCompositorCommand=" + compositor + "\n"
+	return "[General]\nDisplayServer=wayland\nGreeterEnvironment=" + greeterEnvironment +
+		"\n\n[Wayland]\nCompositorCommand=" + compositor +
+		"\nSessionCommand=" + session + "\n"
 }
 
 // reconcileGreeterDisplayServer moves the SDDM greeter to Wayland. SDDM's
@@ -2769,52 +2945,59 @@ func reconcileRyodecors(checkOnly bool) recResult {
 	return fixedRes(i18n.T("seeded %d decor art file(s) into %s"), len(missing), dst)
 }
 
-// ---- reconciler: retired follow-mouse default --------------------------------
+// ---- reconciler: follow-mouse default ---------------------------------------
 
 // followMouseMarker records that the one-time follow-mouse heal has run, so a
-// later deliberate "Normal" pick in Ryoku Settings is never quietly undone.
+// later deliberate "detached" pick in Ryoku Settings is never quietly undone.
 func followMouseMarker() string {
-	return filepath.Join(sys.Xdg("XDG_STATE_HOME", ".local/state"), "ryoku", "migrations", "follow-mouse-default")
+	return filepath.Join(sys.Xdg("XDG_STATE_HOME", ".local/state"), "ryoku", "migrations", "follow-mouse-cursor-default")
 }
 
-// hyprGetFollowMouse pulls input.followMouse out of a `ryoku-hub hypr get` JSON.
+// hyprGetFollowMouse pulls desktop.input.followMouse out of the neutral store.
 func hyprGetFollowMouse(raw string) (int, bool) {
 	var o struct {
-		Input struct {
-			FollowMouse *int `json:"followMouse"`
-		} `json:"input"`
+		Desktop struct {
+			Input struct {
+				FollowMouse *int `json:"followMouse"`
+			} `json:"input"`
+		} `json:"desktop"`
 	}
-	if json.Unmarshal([]byte(raw), &o) != nil || o.Input.FollowMouse == nil {
+	if json.Unmarshal([]byte(raw), &o) != nil || o.Desktop.Input.FollowMouse == nil {
 		return 0, false
 	}
-	return *o.Input.FollowMouse, true
+	return *o.Desktop.Input.FollowMouse, true
 }
 
-// hyprSetFollowMouse rewrites input.followMouse in a hypr-get JSON, preserving
-// every other field, ready to hand straight back to `ryoku-hub hypr save`.
+// hyprSetFollowMouse rewrites desktop.input.followMouse in the neutral store,
+// preserving every other field.
 func hyprSetFollowMouse(raw string, v int) (string, error) {
-	var o map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &o); err != nil {
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(raw), &doc); err != nil {
 		return "", err
 	}
-	var in map[string]json.RawMessage
-	if err := json.Unmarshal(o["input"], &in); err != nil {
-		return "", err
+	desktop, _ := doc["desktop"].(map[string]any)
+	if desktop == nil {
+		desktop = map[string]any{}
+		doc["desktop"] = desktop
 	}
-	in["followMouse"] = json.RawMessage(strconv.Itoa(v))
-	nb, err := json.Marshal(in)
+	input, _ := desktop["input"].(map[string]any)
+	if input == nil {
+		input = map[string]any{}
+		desktop["input"] = input
+	}
+	input["followMouse"] = v
+	out, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return "", err
 	}
-	o["input"] = nb
-	b, err := json.Marshal(o)
-	return string(b), err
+	return string(out), nil
 }
 
-// reconcileFollowMouseDefault: hypr.json files written before the follow-mouse
-// default moved from 1 to 2 keep the old 1 baked in, so keyboard focus chases
-// the cursor. Restore 2 once and drop a marker, so re-picking "Normal" (1) in
-// Settings afterwards sticks.
+// reconcileFollowMouseDefault: focus follows the cursor by default on every
+// compositor. Stores written while the detached experiment shipped keep its 2
+// baked in, so the pointer walks over a window without focusing it; restore 1
+// once and drop a marker, so re-picking "detached" (2) in Settings afterwards
+// sticks.
 func reconcileFollowMouseDefault(checkOnly bool) recResult {
 	marker := followMouseMarker()
 	if sys.Exists(marker) {
@@ -2827,35 +3010,31 @@ func reconcileFollowMouseDefault(checkOnly bool) recResult {
 		_ = os.MkdirAll(filepath.Dir(marker), 0o755)
 		_ = os.WriteFile(marker, []byte("done\n"), 0o644)
 	}
-	hyprJSON := filepath.Join(sys.ConfigHome(), "ryoku", "hypr.json")
-	if !sys.Has("ryoku-hub") || !sys.Exists(hyprJSON) {
-		mark() // nothing saved to migrate; the base module's follow_mouse = 2 stands.
-		return okRes(i18n.T("no saved hypr input; follow-mouse uses the base default"))
+	store := filepath.Join(sys.ConfigHome(), "ryoku", "desktop.json")
+	if !sys.Exists(store) {
+		mark() // nothing saved to migrate; the shipped base default (1) stands.
+		return okRes(i18n.T("no saved desktop input; follow-mouse uses the base default"))
 	}
-	// check against the saved file directly: `ryoku-hub hypr get` rewrites the
-	// hypr config as a side effect, which a --check/--report run must never do.
-	fm, ok := hyprGetFollowMouse(readFileSafe(hyprJSON))
-	if !ok || fm != 1 {
+	raw := readFileSafe(store)
+	fm, ok := hyprGetFollowMouse(raw)
+	if !ok || fm != 2 {
 		mark()
-		return okRes(i18n.T("follow-mouse is not on the retired default"))
+		return okRes(i18n.T("follow-mouse is not on the retired detached default"))
 	}
 	if checkOnly {
-		return wouldRes(i18n.T("follow-mouse is pinned to the retired default 1; keyboard focus follows the cursor")).
+		return wouldRes(i18n.T("follow-mouse is pinned to the retired detached default 2; focus should follow the cursor")).
 			withFix("ryoku doctor")
 	}
-	raw, err := sys.RunOut("ryoku-hub", "hypr", "get")
+	fixed, err := hyprSetFollowMouse(raw, 1)
 	if err != nil {
-		return warnRes(i18n.T("could not read hypr settings to fix follow-mouse: %v"), err)
+		return failRes(i18n.T("could not update desktop settings: %v"), err)
 	}
-	fixed, err := hyprSetFollowMouse(raw, 2)
-	if err != nil {
-		return failRes(i18n.T("could not update hypr settings: %v"), err)
-	}
-	if err := sys.Run("ryoku-hub", "hypr", "save", fixed); err != nil {
+	if err := writeStore(store, []byte(fixed)); err != nil {
 		return failRes(i18n.T("could not save the follow-mouse fix: %v"), err).withFix("ryoku doctor")
 	}
+	_, _ = wm.Open().Apply(store)
 	mark()
-	return fixedRes(i18n.T("restored follow-mouse to 2 (Loose); keyboard focus no longer follows the cursor"))
+	return fixedRes(i18n.T("restored follow-mouse to 1; keyboard focus follows the cursor"))
 }
 
 // ---- reconciler: ryoku shell daemon ------------------------------------------
@@ -2868,8 +3047,9 @@ func reconcileFollowMouseDefault(checkOnly bool) recResult {
 // is for. inside a live session it restarts the daemon; from a TTY or ssh
 // there's no shell to manage, so it stays quiet.
 func reconcileShellDaemon(checkOnly bool) recResult {
-	if os.Getenv("HYPRLAND_INSTANCE_SIGNATURE") == "" {
-		return okRes(i18n.T("not in a live Hyprland session"))
+	live := liveInstance()
+	if live == "" {
+		return okRes(i18n.T("not in a live session"))
 	}
 	if !sys.Has("ryoku-shell") {
 		return warnRes(i18n.T("ryoku-shell is not installed; the desktop shell cannot run")).
@@ -2884,7 +3064,7 @@ func reconcileShellDaemon(checkOnly bool) recResult {
 		// power (any monitor-aware command) resolves no monitor. Compare the
 		// daemon's instance to this live session and restart a mismatch.
 		sig, ok := shellDaemonSignature()
-		if !daemonIsStale(os.Getenv("HYPRLAND_INSTANCE_SIGNATURE"), sig, ok) {
+		if !daemonIsStale(live, sig, ok) {
 			// Same instance, but the binary under it may be gone: an update
 			// that replaced /usr/bin/ryoku-shell without quiescing the shell
 			// (updaters before beta-17 did) leaves the old daemon serving
@@ -2969,9 +3149,7 @@ func startShellDaemon() error {
 	// if login's import never reached the user manager, the unit's
 	// ConditionEnvironment=WAYLAND_DISPLAY skips it and restart "succeeds"
 	// while starting nothing.
-	_ = exec.Command("dbus-update-activation-environment", "--systemd",
-		"WAYLAND_DISPLAY", "XDG_CURRENT_DESKTOP", "HYPRLAND_INSTANCE_SIGNATURE",
-		"XDG_SESSION_TYPE", "RYOKU_POLKIT_AGENT").Run()
+	_ = exec.Command("dbus-update-activation-environment", "--systemd", "--all").Run()
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
 	if exec.Command("systemctl", "--user", "restart", "ryoku-shell").Run() == nil {
 		return nil
@@ -3014,7 +3192,7 @@ func shellSockPath() string {
 	return filepath.Join(dir, "ryoku-shell.sock")
 }
 
-// shellDaemonSignature asks the running daemon which Hyprland instance it was
+// shellDaemonSignature asks the running daemon which compositor instance it was
 // launched under (the `signature` command). ok is false when the query fails or
 // the daemon predates the command, so a "can't tell" is never read as stale.
 func shellDaemonSignature() (sig string, ok bool) {
@@ -3037,11 +3215,22 @@ func shellDaemonSignature() (sig string, ok bool) {
 }
 
 // daemonIsStale reports whether a reachable daemon is bound to a different
-// Hyprland instance than this session (live), from the signature it reported and
-// whether that report was usable (ok). "can't tell" (ok=false) is never stale,
-// so doctor never restarts a daemon it could not identify.
+// compositor instance than this session (live), from the signature it reported
+// and whether that report was usable (ok). "can't tell" (ok=false) is never
+// stale, so doctor never restarts a daemon it could not identify.
 func daemonIsStale(live, sig string, ok bool) bool {
-	return ok && sig != live
+	return ok && live != "" && sig != live
+}
+
+// liveInstance is the running compositor's opaque per-session handle, or "" when
+// nothing is live, compared against the daemon's reported handle to spot a
+// daemon left bound to a compositor that has since restarted.
+func liveInstance() string {
+	caps, err := wm.Open().Caps()
+	if err != nil {
+		return ""
+	}
+	return caps.Instance
 }
 
 // shellDaemonOutdated: is the running daemon's binary gone from disk? pacman
@@ -3082,8 +3271,8 @@ func daemonBinaryReplaced(cmdline, exeLink string) bool {
 
 // restartShellDaemon replaces a stale daemon with one bound to the live session:
 // quit the incumbent (so it reaps its own quickshell children and frees the
-// socket), then start a fresh daemon, which inherits doctor's live
-// HYPRLAND_INSTANCE_SIGNATURE and passes it to every component it supervises.
+// socket), then start a fresh daemon, which inherits doctor's live session
+// environment and passes it to every component it supervises.
 func restartShellDaemon() error {
 	quitShellDaemon()
 	return startShellDaemon()
@@ -3159,20 +3348,22 @@ func hyprDropins() []hyprDropin {
 	}
 }
 
-// reconcileHyprlandConfig keeps the Hyprland config loadable: the generic
-// cure for the "desktop fell into emergency mode, only a reboot helped"
-// report. checks the runtime-generated drop-ins still parse (a torn one
-// would wedge the next reload), and in a live session asks Hyprland whether
-// it's currently rejecting its config. corrupt drop-in -> regenerate from
-// live state, else reset to a safe seed; in a live session, reload after, so
-// the desktop leaves emergency mode right away instead of needing a reboot.
-// hardware-agnostic: only ever validates and repairs config files.
+// reconcileHyprlandConfig keeps the runtime-generated drop-ins loadable: a torn
+// one wedges the next reload into emergency mode. It validates each parses and
+// regenerates a corrupt one, reloading a live session after. Whether the emitted
+// config is honoured is the provider's ApplyReport, not a live buffer doctor probes.
 func reconcileHyprlandConfig(checkOnly bool) recResult {
-	dir := filepath.Join(sys.ConfigHome(), "hypr")
+	// Hyprland's drop-ins are only in play while Hyprland is the live window
+	// manager: a niri session neither reads them nor can reload them, so the
+	// check would report on and repair files nothing in that session uses.
+	if name := wm.Detect().Name; name != "" && name != wm.ProviderHyprland {
+		return okRes(i18n.T("no Hyprland session"))
+	}
+	dir := filepath.Join(sys.ConfigHome(), wm.ConfigDir(wm.ProviderHyprland))
 	if !sys.Exists(filepath.Join(dir, "hyprland.lua")) {
 		return okRes(i18n.T("no Hyprland config present"))
 	}
-	live := sys.HyprLive()
+	live := wm.Detect().Live
 
 	if checkOnly {
 		var broken []string
@@ -3185,14 +3376,6 @@ func reconcileHyprlandConfig(checkOnly bool) recResult {
 		if len(broken) > 0 {
 			return wouldRes(i18n.T("corrupt Hyprland drop-in(s) would wedge the next reload into emergency mode: %s"), strings.Join(broken, ", ")).
 				withFix(i18n.T("run `ryoku doctor` to regenerate them"))
-		}
-		if e := liveConfigErrors(live); e != "" {
-			if hyprDispatchNoise(e) {
-				return wouldRes(i18n.T("Hyprland is holding a stale `hyprctl dispatch` error, not a config error: %s"), firstLine(e)).
-					withFix(i18n.T("run `ryoku doctor` (it reloads Hyprland, which clears it); the config on disk is fine"))
-			}
-			return wouldRes(i18n.T("Hyprland is rejecting its config (emergency mode): %s"), firstLine(e)).
-				withFix(i18n.T("run `ryoku doctor`, then check ~/.config/hypr/user.lua"))
 		}
 		return okRes(i18n.T("Hyprland config loads cleanly"))
 	}
@@ -3210,9 +3393,9 @@ func reconcileHyprlandConfig(checkOnly bool) recResult {
 		}
 	}
 
-	// clean reload yanks a live session out of emergency mode right away.
+	// A clean reload pulls a live session out of emergency mode right away.
 	if live && len(repaired) > 0 {
-		_ = exec.Command("hyprctl", "reload").Run()
+		_ = wm.Open().Act(wm.ActionConfigReload)
 	}
 
 	switch {
@@ -3222,30 +3405,74 @@ func reconcileHyprlandConfig(checkOnly bool) recResult {
 	case len(repaired) > 0:
 		return fixedRes(i18n.T("regenerated corrupt Hyprland drop-in(s): %s; the config loads cleanly again"), strings.Join(repaired, ", "))
 	}
-
-	if e := liveConfigErrors(live); e != "" {
-		// A stale dispatch error is not a broken config: clear the buffer with a
-		// reload rather than sending the user to audit config they never broke.
-		if hyprDispatchNoise(e) {
-			if !live {
-				return okRes(i18n.T("Hyprland config loads cleanly"))
-			}
-			_ = exec.Command("hyprctl", "reload").Run()
-			again := liveConfigErrors(live)
-			switch {
-			case again == "":
-				return fixedRes(i18n.T("cleared a stale `hyprctl dispatch` error Hyprland was holding in its config-error buffer; the config itself never failed"))
-			case !hyprDispatchNoise(again):
-				return warnRes(i18n.T("Hyprland is rejecting its config: %s"), firstLine(again)).
-					withFix(i18n.T("check ~/.config/hypr/user.lua or settings.lua"))
-			}
-			return warnRes(i18n.T("Hyprland kept a `hyprctl dispatch` error after a reload: %s"), firstLine(again)).
-				withFix(i18n.T("re-run the dispatch by hand to see it, or restart the session; the config on disk is fine"))
-		}
-		return warnRes(i18n.T("Hyprland is rejecting its config: %s"), firstLine(e)).
-			withFix(i18n.T("check ~/.config/hypr/user.lua or settings.lua"))
-	}
 	return okRes(i18n.T("Hyprland config loads cleanly"))
+}
+
+// ---- reconciler: niri config integrity ---------------------------------------
+
+// missingInclude reports that niri could not read a file config.kdl includes.
+// niri says "failed to read included config from \"<path>\": No such file or
+// directory"; both halves are niri's own vocabulary, checked here so doctor can
+// tell "not applied yet" from "written badly".
+func missingInclude(out []byte) bool {
+	s := string(out)
+	return strings.Contains(s, "failed to read included config") &&
+		strings.Contains(s, "No such file or directory")
+}
+
+// reconcileNiriConfig validates the config the session will read, the way niri
+// itself reads it. config.kdl includes the generated files by name, and a
+// missing or unparseable include is fatal to the session rather than a rejected
+// reload, so a file an update authored badly costs the user the login. The
+// provider validates nothing before writing, so niri's own parser is the only
+// oracle: doctor runs it over the installed tree.
+//
+// Repair re-authors the provider's config from the neutral store, the same way a
+// store fix reaches the session elsewhere in doctor, then validates again.
+func reconcileNiriConfig(checkOnly bool) recResult {
+	if wm.Detect().Name != wm.ProviderNiri {
+		return okRes(i18n.T("no niri session"))
+	}
+	entry := filepath.Join(sys.ConfigHome(), wm.ConfigDir(wm.ProviderNiri), "config.kdl")
+	if !sys.Exists(entry) {
+		return okRes(i18n.T("no niri config present"))
+	}
+	if _, err := exec.LookPath("niri"); err != nil {
+		return noteRes(i18n.T("niri config not checked (niri is not on PATH)"))
+	}
+	failure := func(out []byte) string {
+		first := strings.TrimSpace(string(out))
+		if i := strings.IndexByte(first, '\n'); i >= 0 {
+			first = first[:i]
+		}
+		return first
+	}
+	out, err := exec.Command("niri", "validate", "-c", entry).CombinedOutput()
+	if err == nil {
+		return okRes(i18n.T("niri config loads cleanly"))
+	}
+	// The provider generates the files config.kdl includes (settings.kdl,
+	// rebinds.kdl) when it applies, so a config that is missing an include has
+	// simply not been applied yet on this box: the next apply writes it. That is
+	// news for a report, not a fault, and nothing to repair by hand.
+	if missingInclude(out) {
+		if checkOnly {
+			return noteRes(i18n.T("niri config is not applied yet (an include is still to be written)"))
+		}
+	}
+	if checkOnly {
+		return warnRes(i18n.T("niri config does not load: %s"), failure(out)).
+			withFix(i18n.T("ryoku doctor"))
+	}
+	store := filepath.Join(sys.ConfigHome(), "ryoku", "desktop.json")
+	if _, err := wm.Open().Apply(store); err != nil {
+		return failRes(i18n.T("niri config does not load and re-applying the settings failed: %v"), err)
+	}
+	if out, err := exec.Command("niri", "validate", "-c", entry).CombinedOutput(); err != nil {
+		return failRes(i18n.T("niri config still does not load: %s"), failure(out)).
+			withFix(i18n.T("fix %s by hand"), entry)
+	}
+	return fixedRes(i18n.T("re-authored the niri config; it loads cleanly again"))
 }
 
 // reconcileThemeLua prunes an orphaned ~/.config/hypr/theme.lua. The Appearance
@@ -3270,7 +3497,7 @@ func reconcileThemeLua(checkOnly bool) recResult {
 }
 
 // reconcileDisplayModes recovers a monitor a degraded link left below its
-// available resolution. after a cold boot or a post-upgrade `hyprctl reload`,
+// available resolution. after a cold boot or a post-upgrade config reload,
 // a DP/HDMI link can briefly advertise only a VESA fallback (e.g. 800x600);
 // Hyprland resolves monitors.lua's `highrr` against that list and never
 // re-picks once the link trains, so the panel stays low-res until a relogin.
@@ -3279,8 +3506,8 @@ func reconcileThemeLua(checkOnly bool) recResult {
 // is the read-only signal. live-only: no session = nothing to re-assert, the
 // next login takes care of it.
 func reconcileDisplayModes(checkOnly bool) recResult {
-	if !sys.HyprLive() {
-		return okRes(i18n.T("no live Hyprland session; displays settle at the next login"))
+	if !wm.Detect().Live {
+		return okRes(i18n.T("no live session; displays settle at the next login"))
 	}
 	if !sys.Has("ryoku-monitor") {
 		return okRes(i18n.T("ryoku-monitor not installed"))
@@ -3353,32 +3580,6 @@ func balancedRunes(s string, open, shut rune) bool {
 		}
 	}
 	return depth == 0
-}
-
-// liveConfigErrors returns Hyprland's current config errors (its
-// emergency-mode reason), or "" when the config is clean or no live session
-// is reachable.
-func liveConfigErrors(live bool) string {
-	if !live {
-		return ""
-	}
-	out := strings.TrimSpace(captureOut("hyprctl", "configerrors"))
-	if out == "" || (strings.HasPrefix(out, "(") && strings.HasSuffix(out, ")")) {
-		return ""
-	}
-	return out
-}
-
-// hyprDispatchNoise reports whether Hyprland's config-error buffer is holding a
-// Lua *dispatch* error instead of a config one. Hyprland files the error from a
-// bad `hyprctl dispatch` in the very buffer configerrors reports, so one stray
-// dispatch (a typo at the prompt, a tool probing which config mode is live)
-// leaves a healthy session looking like it rejected its config until something
-// reloads. The two are told apart by Lua's chunk name: a dispatch error carries
-// the dispatched source ("return hl.dispatch(...):1: ..."), a config error
-// carries the path of the file that failed to load.
-func hyprDispatchNoise(errs string) bool {
-	return strings.Contains(errs, "return hl.dispatch(")
 }
 
 // ---- reconciler: failed systemd units ----------------------------------------
@@ -3726,11 +3927,11 @@ func tailLines(s string, n int) string {
 // (bootloader.sh) and ryoku/shell deploy.sh also seed unowned: the privileged
 // helpers + their polkit rules (so a dev checkout's pkexec has a rule to match),
 // the ryoku-owned systemd units, the shipped boot configs under
-// /usr/share/ryoku/boot, and the Plymouth splash theme. On a packaged box an
-// unowned copy from an
-// earlier dev deploy, an older ISO, or `ryoku recovery` collides with the package
-// on `pacman -Syu` ("exists in filesystem") and aborts the whole atomic
-// transaction, so no update lands. `ryoku update` now passes --overwrite for these
+// /usr/share/ryoku/boot, the Plymouth splash theme, and the logind lid-switch
+// drop-in. On a packaged box an unowned copy from an earlier dev deploy, an
+// older ISO, or `ryoku recovery` collides with the package on `pacman -Syu`
+// ("exists in filesystem") and aborts the whole atomic transaction, so no update
+// lands. `ryoku update` now passes --overwrite for these
 // (updater.ryokuOverwriteGlob), but a box already wedged cannot reach that fixed
 // binary; clearing the copies here lets the next update adopt them.
 var ryokuSystemGlobs = []string{
@@ -3739,6 +3940,7 @@ var ryokuSystemGlobs = []string{
 	"/usr/share/polkit-1/rules.d/*ryoku*.rules",
 	"/usr/share/plymouth/themes/ryoku/*",
 	"/usr/share/ryoku/boot/*",
+	"/etc/systemd/logind.conf.d/10-ryoku-lid.conf",
 }
 
 // pkgOwnsFile reports whether an installed package owns path. A var so tests stub

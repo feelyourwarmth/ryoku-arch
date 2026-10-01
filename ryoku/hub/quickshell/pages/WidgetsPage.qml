@@ -388,11 +388,19 @@ Item {
     // ── head: eyebrow, Fraunces title, blurb (matches every settings page) ──
     Column {
         id: head
-        anchors { left: parent.left; right: parent.right; top: parent.top }
-        anchors.leftMargin: Tokens.s6; anchors.rightMargin: Tokens.s6; anchors.topMargin: Tokens.s6
-        spacing: Tokens.s2
+        anchors.top: parent.top
+        anchors.topMargin: Tokens.s6
+        // the head sits on the body's grid, so the title starts over the first card
+        x: Tokens.s6
+        width: Math.max(320, pg.width - Tokens.s6 * 2 - Tokens.s3)
+        // the register row sits off the title: a rule over a 32px
+        // title needs more than the gap between two lines of body text
+        spacing: Tokens.s3
 
         Row {
+            // the register row holds a fixed box, so the rule and the seal keep
+            // their distance from the title on every page
+            height: Tokens.s5
             spacing: Tokens.s2
             Rectangle {
                 width: 16; height: 1; color: Tokens.ink
@@ -414,19 +422,10 @@ Item {
         }
         Text {
             width: Math.min(parent.width, 720)
-            text: I18n.tr("Every widget that rides your wallpaper: the clock, the all-in-one card, system stats, calendar, now-playing, weather and notes. Pick a card to preview it live and open its settings; nothing lands on the desktop until you save.")
+            text: I18n.tr("The widgets on your wallpaper, previewed live.")
             color: Tokens.inkMuted; font.family: Tokens.ui
             font.pixelSize: Tokens.fBody; wrapMode: Text.WordWrap
         }
-    }
-
-    // marginalia dressing the head's empty right margin (running head). Ink only.
-    Marginalia {
-        anchors { right: parent.right; top: head.top }
-        anchors.rightMargin: Tokens.s6; anchors.topMargin: Tokens.s1
-        kana: "部品"
-        index: "03"; label: I18n.tr("DESKTOP")
-        glyph: "wave"; glyph2: "column"
     }
 
     // ── the widget catalogue: a card per widget; a card opens its settings ────
@@ -464,6 +463,94 @@ Item {
         switch (tab) { case "aio": return aioPrevC; case "stats": return statsPrevC; case "calendar": return calPrevC; case "music": return musicPrevC; case "weather": return weatherPrevC; case "notes": return notesPrevC; default: return clockPrevC; }
     }
 
+    // ── store-installed desktop widgets ──────────────────────────────────────
+    // Plugins whose home is the wallpaper, discovered exactly as the Add-ons
+    // page does (discover.sh --all, then keep only the desktopWidget host).
+    // They live below the built-in grid, grouped by the set their manifest
+    // names, and toggle live through ryoku-plugins-place -- outside this page's
+    // draft/Save flow entirely.
+    property var storeRows: []
+
+    readonly property string shellDir: Quickshell.env("RYOKU_SHELL_DIR")
+    readonly property string discoverScript: (pg.shellDir && pg.shellDir.length > 0)
+        ? pg.shellDir + "/quickshell/plugins/discover.sh"
+        : (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/quickshell/plugins/discover.sh"
+
+    // group into sections in first-seen set order; plugins that name no set fall
+    // to a final "Plugins" section, so any future set slots in with no change.
+    readonly property var storeSections: {
+        var order = [];
+        var byKey = ({});
+        var loose = [];
+        for (var i = 0; i < pg.storeRows.length; i++) {
+            var r = pg.storeRows[i];
+            var s = r.set || "";
+            if (s === "") { loose.push(r); continue; }
+            if (byKey[s] === undefined) { byKey[s] = []; order.push(s); }
+            byKey[s].push(r);
+        }
+        var out = [];
+        for (var j = 0; j < order.length; j++)
+            out.push({ "name": order[j], "rows": byKey[order[j]] });
+        if (loose.length > 0)
+            out.push({ "name": I18n.tr("Plugins"), "rows": loose });
+        return out;
+    }
+
+    function refreshStore() { storeProc.running = false; storeProc.running = true; }
+    function placePlugin(id, enabled) {
+        if (!id)
+            return;
+        storePlaceProc.command = ["ryoku-plugins-place", id, "enabled", enabled ? "true" : "false"];
+        storePlaceProc.running = true;
+    }
+
+    Process {
+        id: storeProc
+        command: ["bash", pg.discoverScript, "--all"]
+        running: true
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var list = [];
+                try { list = JSON.parse(text || "[]"); } catch (e) { list = []; }
+                var rows = [];
+                for (var i = 0; i < list.length; i++) {
+                    var e = list[i];
+                    var man = e.manifest || ({});
+                    var place = e.placement || ({});
+                    var host = place.host
+                        ? place.host
+                        : ((man.defaults && man.defaults.host) ? man.defaults.host : "framePopout");
+                    if (host !== "desktopWidget")
+                        continue;
+                    rows.push({
+                        "id": e.id,
+                        "title": man.name || e.id,
+                        "set": man.set || "",
+                        "enabled": place.enabled === true,
+                        "icon": (man.defaults && man.defaults.icon) ? man.defaults.icon : "",
+                        "dir": e.dir || "",
+                        "settings": (place.settings && typeof place.settings === "object") ? place.settings : ({})
+                    });
+                }
+                pg.storeRows = rows;
+            }
+        }
+    }
+    // a placement toggle re-reads the truth, so the ON/OFF line and the switch
+    // settle on what actually landed on disk.
+    Process { id: storePlaceProc; onExited: pg.refreshStore() }
+
+    // installing a set from the store writes plugins.json; that write lights up
+    // this shelf without reopening the Hub.
+    FileView {
+        id: placementWatch
+        path: (Quickshell.env("XDG_CONFIG_HOME") || (Quickshell.env("HOME") + "/.config")) + "/ryoku/plugins.json"
+        watchChanges: true
+        printErrors: false
+        onFileChanged: pg.refreshStore()
+    }
+
     Item {
         id: content
         anchors { left: parent.left; right: parent.right; top: head.bottom; bottom: bar.top }
@@ -474,7 +561,7 @@ Item {
         Flickable {
             id: gridFlick
             anchors.fill: parent
-            contentHeight: grid.height + Tokens.s5
+            contentHeight: (pg.storeSections.length > 0 ? storeStack.y + storeStack.height : grid.height) + Tokens.s5
             clip: true
             interactive: pg.selected === ""
             opacity: pg.selected === "" ? 1 : 0
@@ -482,6 +569,7 @@ Item {
             enabled: pg.selected === ""
             Behavior on opacity { NumberAnimation { duration: Tokens.swap; easing.type: Tokens.ease } }
             ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+            WheelScroll { }
 
             Flow {
                 id: grid
@@ -513,15 +601,25 @@ Item {
                             id: pbody
                             anchors { left: parent.left; right: parent.right; top: parent.top }
                             anchors.margins: Tokens.s3
-                            height: wcard.height - footer.height - Tokens.s3 * 2
+                            height: wcard.height - footer.height - Tokens.s3 * 3
                             clip: true
                             opacity: wcard.on ? 1 : 0.45
                             Behavior on opacity { NumberAnimation { duration: Tokens.snap } }
                             Item {
-                                width: wcard.modelData.natW; height: wcard.modelData.natH
+                                id: pwrap
+                                width: wcard.modelData.natW
+                                // the preview's own natural height when it reports one,
+                                // so a face with a date line is scaled to fit whole
+                                // rather than clipped at the card's edge.
+                                readonly property real natH: (pv.item && pv.item.implicitHeight > 0)
+                                    ? pv.item.implicitHeight : wcard.modelData.natH
+                                height: natH
                                 anchors.centerIn: parent
-                                scale: Math.min(pbody.width / wcard.modelData.natW, pbody.height / wcard.modelData.natH, 1.25)
-                                Loader { anchors.fill: parent; sourceComponent: pg.previewFor(wcard.modelData.tab) }
+                                // never upscale past natural size: a preview blown
+                                // up to fill clips flush against the footer and its
+                                // glyphs read as overlapping the label row.
+                                scale: Math.min(pbody.width / pwrap.width, pbody.height / pwrap.natH, 1.0)
+                                Loader { id: pv; anchors.fill: parent; sourceComponent: pg.previewFor(wcard.modelData.tab) }
                             }
                         }
 
@@ -544,6 +642,70 @@ Item {
                                 anchors { right: parent.right; verticalCenter: parent.verticalCenter }
                                 on: wcard.on
                                 onToggled: (v) => pg.edit(wcard.modelData.enable, v)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── store-installed desktop widgets, grouped by set ───────────────
+            // A second shelf under the built-in grid: a divider, then a section
+            // per set. Nothing draws when none are installed, so a stock desktop
+            // reads exactly as before. These toggle live through the placement
+            // backend and stay clear of the Save bar's dirty state.
+            Column {
+                id: storeStack
+                anchors.top: grid.bottom
+                anchors.topMargin: Tokens.s5
+                width: gridFlick.width
+                spacing: Tokens.s5
+                visible: pg.storeSections.length > 0
+
+                Rectangle { width: parent.width; height: 1; color: Tokens.line }
+
+                Repeater {
+                    model: pg.storeSections
+                    delegate: Column {
+                        id: setSection
+                        required property var modelData
+                        width: storeStack.width
+                        spacing: Tokens.s4
+
+                        Text {
+                            text: setSection.modelData.name
+                            color: Tokens.inkMuted; font.family: Tokens.ui
+                            font.pixelSize: Tokens.fMicro; font.weight: Font.Medium
+                            font.letterSpacing: Tokens.trackMark
+                            font.capitalization: Font.AllUppercase
+                        }
+
+                        Flow {
+                            width: setSection.width
+                            spacing: Tokens.s4
+                            Repeater {
+                                model: setSection.modelData.rows
+                                // resolved by URL, not a bare sibling type: the
+                                // Hub's pages/ dir has no qmldir, so a type
+                                // declared beside this page does not register
+                                // after an upgrade (same form ProfilePage uses
+                                // for HeroEditor/ProfileToolbar). (#251)
+                                delegate: Loader {
+                                    id: widgetCardLoader
+                                    required property var modelData
+                                    width: Math.max(280, Math.min(360, (setSection.width - Tokens.s4 * 2) / 3))
+                                    height: 236
+                                    source: Qt.resolvedUrl("StoreWidgetCard.qml")
+                                    onLoaded: {
+                                        if (!item)
+                                            return
+                                        item.title = modelData.title
+                                        item.on = modelData.enabled === true
+                                        item.icon = modelData.icon
+                                        item.dir = modelData.dir
+                                        item.settings = modelData.settings
+                                        item.toggled.connect(function (v) { pg.placePlugin(modelData.id, v) })
+                                    }
+                                }
                             }
                         }
                     }
@@ -598,6 +760,8 @@ Item {
                     item.defaults = Qt.binding(() => pg.sheetDefaults);
                     item.tab = Qt.binding(() => pg.selected);
                     item.query = Qt.binding(() => pg.query);
+                    // the rail's Advanced toggle reveals the per-widget desktop lock
+                    item.advanced = Qt.binding(() => !!(pg.hub && pg.hub.advanced));
                     item.edited.connect(pg.onSheetEdited);
                     item.pickRequested.connect(pg.onSheetPick);
                     item.appPickRequested.connect(pg.onSheetAppPick);
@@ -631,14 +795,6 @@ Item {
         Rectangle {
             anchors { left: parent.left; right: parent.right; top: parent.top }
             height: 1; color: Tokens.line
-        }
-
-        // marginalia in the bar's dead centre, between the status and the verbs.
-        Marginalia {
-            anchors.horizontalCenter: parent.horizontalCenter
-            anchors.verticalCenter: parent.verticalCenter
-            kana: "部品"
-            glyph: "wave"; glyph2: "column"
         }
 
         Row {

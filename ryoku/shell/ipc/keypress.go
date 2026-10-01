@@ -602,35 +602,46 @@ func newKeypressManager(topic *stateTopic, sysRoot, devRoot, settingsPath string
 	}
 }
 
+// configure turns the visualiser overlay on or off. The device reader runs
+// only while the overlay is enabled, so nothing reads the keyboard when the
+// visualiser is idle.
 func (m *keypressManager) configure(enabled bool, mode string) {
 	mode = normalizeKeypressMode(mode)
 	m.mu.Lock()
 	m.mode = mode
-	if enabled == m.enabled {
-		m.mu.Unlock()
-		if !enabled {
-			m.publishDisabled()
+	m.enabled = enabled
+	quiet := !enabled
+	generation, started := m.restartLocked()
+	m.mu.Unlock()
+	if started {
+		m.publish(generation, keypressFrame{Status: "starting", Keys: []string{}})
+	} else if quiet {
+		m.publishDisabled()
+	}
+}
+
+// restartLocked brings the reader in line with the visualiser state: it starts
+// when the overlay turns on while stopped, and stops when it turns off. A mode
+// change while running never bounces the reader. It returns the new generation
+// when the reader started, so the caller can publish the starting frame once
+// the lock is released. Call with mu held.
+func (m *keypressManager) restartLocked() (uint64, bool) {
+	want := m.enabled
+	if want == (m.cancel != nil) {
+		return 0, false
+	}
+	if !want {
+		if m.cancel != nil {
+			m.cancel()
+			m.cancel = nil
 		}
-		return
+		return 0, false
 	}
 	m.generation++
-	generation := m.generation
-	if m.cancel != nil {
-		m.cancel()
-		m.cancel = nil
-	}
-	m.enabled = enabled
-	if !enabled {
-		m.mu.Unlock()
-		m.publishDisabled()
-		return
-	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
-	m.mu.Unlock()
-
-	m.publish(generation, keypressFrame{Status: "starting", Keys: []string{}})
-	go m.run(ctx, generation)
+	go m.run(ctx, m.generation)
+	return m.generation, true
 }
 
 func (m *keypressManager) currentMode() string {

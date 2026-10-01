@@ -1,0 +1,242 @@
+[
+  {
+    "tab": "Layout",
+    "group": "WINDOW WIDTH",
+    "key": "wm.niri.defaultColumnWidth",
+    "label": "New window width",
+    "desc": "Screen fraction a new window fills",
+    "ctl": "slid",
+    "src": "desktop.json",
+    "lo": 0.25,
+    "hi": 1,
+    "unit": "%",
+    "pct": true,
+    "page": "windowmanager"
+  },
+  {
+    "tab": "Layout",
+    "group": "WINDOW WIDTH",
+    "key": "wm.niri.presetColumnWidths",
+    "label": "Widths Super+R steps through",
+    "desc": "Widths Super+R cycles a window through instead of dragging",
+    "ctl": "chips",
+    "src": "desktop.json",
+    "page": "windowmanager",
+    "opts": [
+      "0.33333, 0.66667",
+      "0.33333, 0.5, 0.66667",
+      "0.25, 0.5, 0.75"
+    ],
+    "optLabels": {
+      "0.33333, 0.66667": "Thirds",
+      "0.33333, 0.5, 0.66667": "Thirds and half",
+      "0.25, 0.5, 0.75": "Quarters"
+    }
+  },
+  {
+    "tab": "Layout",
+    "group": "COLUMN FOCUS",
+    "key": "wm.niri.centerFocusedColumn",
+    "label": "Keep the focused window centred",
+    "desc": "Slide the window you focus into the middle of the screen",
+    "ctl": "chips",
+    "src": "desktop.json",
+    "page": "windowmanager",
+    "opts": [
+      "never",
+      "always",
+      "on-overflow"
+    ],
+    "optLabels": {
+      "never": "Never",
+      "always": "Always",
+      "on-overflow": "When it won't fit"
+    }
+  },
+  {
+    "tab": "Layout",
+    "group": "COLUMN FOCUS",
+    "key": "wm.niri.alwaysCenterSingleColumn",
+    "label": "Centre a lone window",
+    "desc": "Open a lone window centred; it scrolls once another joins",
+    "ctl": "sw",
+    "src": "desktop.json",
+    "page": "windowmanager"
+  },
+  {
+    "tab": "Layout",
+    "group": "TABBED COLUMNS",
+    "key": "wm.niri.tabIndicatorWidth",
+    "label": "Tab strip thickness",
+    "desc": "Width of the tab strip shown for a stacked column",
+    "ctl": "step",
+    "src": "desktop.json",
+    "lo": 0,
+    "hi": 16,
+    "unit": "px",
+    "page": "windowmanager"
+  },
+  {
+    "tab": "Layout",
+    "group": "TABBED COLUMNS",
+    "key": "wm.niri.tabIndicatorHideSingle",
+    "label": "Hide the tab strip for a lone window",
+    "desc": "Show the tab strip only when a column holds two or more",
+    "ctl": "sw",
+    "src": "desktop.json",
+    "page": "windowmanager"
+  },
+  {
+    "tab": "Layout",
+    "group": "DRAG AND DROP",
+    "key": "wm.niri.insertHint",
+    "label": "Show where a dragged window will land",
+    "desc": "Highlight the slot a dragged window will drop into",
+    "ctl": "sw",
+    "src": "desktop.json",
+    "page": "windowmanager"
+  },
+  {
+    "tab": "Layout",
+    "group": "URGENT WINDOWS",
+    "key": "wm.niri.urgentColor",
+    "label": "Urgent window colour",
+    "desc": "Outline colour for a background window wanting attention",
+    "ctl": "color",
+    "src": "desktop.json",
+    "page": "windowmanager"
+  },
+  {
+    "tab": "Layout",
+    "group": "ROOM FOR BARS AND DOCKS",
+    "key": "wm.niri.struts.left",
+    "label": "Left edge",
+    "desc": "Room kept for a bar or dock",
+    "ctl": "step",
+    "src": "desktop.json",
+    "lo": 0,
+    "hi": 256,
+    "unit": "px",
+    "page": "windowmanager"
+  },
+  {
+    "tab": "Layout",
+    "group": "ROOM FOR BARS AND DOCKS",
+    "key": "wm.niri.struts.right",
+    "label": "Right edge",
+    "desc": "Room kept for a bar or dock",
+    "ctl": "step",
+    "src": "desktop.json",
+    "lo": 0,
+    "hi": 256,
+    "unit": "px",
+    "page": "windowmanager"
+  },
+  {
+    "tab": "Layout",
+    "group": "ROOM FOR BARS AND DOCKS",
+    "key": "wm.niri.struts.top",
+    "label": "Top edge",
+    "desc": "Room kept for a bar or dock",
+    "ctl": "step",
+    "src": "desktop.json",
+    "lo": 0,
+    "hi": 256,
+    "unit": "px",
+    "page": "windowmanager"
+  },
+  {
+    "tab": "Layout",
+    "group": "ROOM FOR BARS AND DOCKS",
+    "key": "wm.niri.struts.bottom",
+    "label": "Bottom edge",
+    "desc": "Room kept for a bar or dock",
+    "ctl": "step",
+    "src": "desktop.json",
+    "lo": 0,
+    "hi": 256,
+    "unit": "px",
+    "page": "windowmanager"
+  },
+  {
+    "tab": "Layout",
+    "group": "FRAMES",
+    "key": "wm.niri.preferNoCsd",
+    "label": "Server-side window frames",
+    "desc": "Ask apps to drop their title bars so niri draws frames",
+    "ctl": "sw",
+    "src": "desktop.json",
+    "page": "windowmanager"
+  },
+  {
+    "tab": "Behaviour",
+    "group": "OVERVIEW",
+    "key": "wm.niri.overviewZoom",
+    "label": "Overview zoom",
+    "desc": "How far the overview pulls back; lower fits more",
+    "ctl": "slid",
+    "src": "desktop.json",
+    "lo": 0.1,
+    "hi": 0.75,
+    "unit": "%",
+    "pct": true,
+    "page": "windowmanager"
+  },
+  {
+    "tab": "Behaviour",
+    "group": "OVERVIEW",
+    "key": "wm.niri.hotCorners",
+    "label": "Hot corners",
+    "desc": "Push the pointer into a screen corner to open the overview",
+    "ctl": "sw",
+    "src": "desktop.json",
+    "page": "windowmanager"
+  },
+  {
+    "tab": "Behaviour",
+    "group": "MOTION",
+    "key": "wm.niri.animationSlowdown",
+    "label": "Animation slowdown",
+    "desc": "Scales every animation; above 1 slower, below snappier",
+    "ctl": "slid",
+    "src": "desktop.json",
+    "lo": 0.25,
+    "hi": 3,
+    "unit": "\u00d7",
+    "adv": true,
+    "page": "windowmanager"
+  },
+  {
+    "tab": "Behaviour",
+    "group": "STARTUP",
+    "key": "wm.niri.hotkeyOverlaySkip",
+    "label": "Skip hotkey overlay",
+    "desc": "Don't show the keybind cheat sheet when the session starts",
+    "ctl": "sw",
+    "src": "desktop.json",
+    "page": "windowmanager"
+  },
+  {
+    "tab": "Behaviour",
+    "group": "SCREENSHOTS",
+    "key": "wm.niri.screenshotPath",
+    "label": "Save screenshots to",
+    "desc": "Where niri saves screenshots; %Y %m %d become the date",
+    "ctl": "text",
+    "src": "desktop.json",
+    "eg": "~/Pictures/Screenshots/Screenshot %Y-%m-%d.png",
+    "page": "windowmanager",
+    "adv": true
+  },
+  {
+    "tab": "Behaviour",
+    "group": "PRIVACY",
+    "key": "wm.niri.blockOutApps",
+    "label": "Hide apps from screen sharing",
+    "desc": "App IDs (comma separated) niri blanks from shares",
+    "ctl": "text",
+    "src": "desktop.json",
+    "eg": "org.keepassxc.KeePassXC, org.gnome.World.Secrets",
+    "page": "windowmanager"
+  }
+]

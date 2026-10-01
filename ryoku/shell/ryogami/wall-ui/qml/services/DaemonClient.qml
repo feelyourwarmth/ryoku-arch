@@ -221,7 +221,7 @@ QtObject {
     // (~/.config/ryoku/matugen.json), which ryoku-shell watches and retints on
     // change. The ryogami daemon does not run matugen, so the old wall.retheme
     // RPC was a no-op and light/dark never left the picker. Hand the knobs to
-    // the one writer the Hub also uses ("ryoku-hub hypr matugen set", a merge),
+    // the one writer the Hub also uses ("ryoku-hub desktop matugen set", a merge),
     // so mode/scheme/index retint the whole desktop.
     property var _rethemeProc: Process {}
     function retheme(scheme, mode, colorIndex, callback) {
@@ -234,7 +234,7 @@ QtObject {
         if (scheme) knobs.schemeType = scheme
         if (typeof colorIndex === "number") knobs.sourceColorIndex = colorIndex | 0
         _rethemeProc.running = false
-        _rethemeProc.command = ["ryoku-hub", "hypr", "matugen", "set", JSON.stringify(knobs)]
+        _rethemeProc.command = ["ryoku-hub", "desktop", "matugen", "set", JSON.stringify(knobs)]
         _rethemeProc.running = true
         if (callback) callback({ ok: true }, null)
     }
@@ -292,6 +292,22 @@ QtObject {
             }
             if (callback) callback(result, err)
         })
+    }
+
+    // Day/night rotation (#247). The daemon reads the pools/interval from
+    // config.json itself, so start takes no arguments beyond the verb; force
+    // pins a phase for manual testing.
+    function dayNightStart(callback) {
+        call("wall.daynight_start", {}, callback)
+    }
+    function dayNightStop(callback) {
+        call("wall.daynight_stop", {}, callback)
+    }
+    function dayNightStatus(callback) {
+        call("wall.daynight_status", {}, callback)
+    }
+    function dayNightForce(phase, callback) {
+        call("wall.daynight_force", {phase: phase || ""}, callback)
     }
 
     function stateGet(key, callback) {

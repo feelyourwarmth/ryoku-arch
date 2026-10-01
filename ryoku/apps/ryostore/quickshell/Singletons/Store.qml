@@ -28,6 +28,7 @@ Singleton {
     property string revision: ""
     property bool _forced: false
     property string _checkOutput: ""
+    property string _op: "install"            // which flow installProc is running
 
     function itemKey(item) {
         return item ? String(item.category || "") + ":" + String(item.id || "") : "";
@@ -71,12 +72,14 @@ Singleton {
     }
 
     function install(item, dither, components) {
-        // A paused item stays listed but never downloads: install and update are
-        // refused here so no UI path (button, keyboard, or accessibility) can
-        // start a fetch. Remove is a separate flow and stays allowed.
-        if (!item || busyKey !== "" || item.downloadPaused === true)
+        // A paused item, or one written for another window manager, stays listed
+        // but never downloads: install and update are refused here so no UI path
+        // (button, keyboard, or accessibility) can start a fetch. Remove is a
+        // separate flow and stays allowed.
+        if (!item || busyKey !== "" || item.downloadPaused === true || item.unavailable === true)
             return;
         busyKey = itemKey(item);
+        root._op = "install";
         installStage = "FETCHING";
         installError = "";
         installErrorKey = "";
@@ -90,6 +93,23 @@ Singleton {
         if (Array.isArray(components) && components.length > 0)
             cmd.push("--only", components.join(","));
         installProc.command = cmd;
+        installProc.running = true;
+    }
+
+    // remove uninstalls an installed product, whatever its category (every
+    // provider implements remove). Single-flight like install and allowed even
+    // for a download-paused item, whose installed copy can still be taken off.
+    function remove(item) {
+        if (!item || busyKey !== "" || item.installed !== true && item.active !== true
+                && item.enabled !== true && Number(item.installedCount || 0) <= 0)
+            return;
+        busyKey = itemKey(item);
+        root._op = "remove";
+        installStage = "REMOVING";
+        installError = "";
+        installErrorKey = "";
+        _installError = "";
+        installProc.command = ["ryostore", "remove", String(item.category), String(item.id)];
         installProc.running = true;
     }
 
@@ -113,7 +133,7 @@ Singleton {
         var q = [];
         var src = Array.isArray(list) ? list : [];
         for (var i = 0; i < src.length; i++)
-            if (src[i] && src[i].installed !== true && src[i].downloadPaused !== true)
+            if (src[i] && src[i].installed !== true && src[i].downloadPaused !== true && src[i].unavailable !== true)
                 q.push(src[i]);
         _queue = q;
         _pumpQueue();
@@ -186,11 +206,12 @@ Singleton {
     Process {
         id: installProc
         stderr: StdioCollector { onStreamFinished: root._installError = text }
-        onRunningChanged: if (running) root.installStage = "INSTALLING"
+        onRunningChanged: if (running) root.installStage = root._op === "remove" ? "REMOVING" : "INSTALLING"
         onExited: code => {
             if (code !== 0) {
                 root.installStage = "FAILED";
-                root.installError = root._installError.trim() || I18n.tr("Installation failed");
+                root.installError = root._installError.trim()
+                        || (root._op === "remove" ? I18n.tr("Removal failed") : I18n.tr("Installation failed"));
                 root.installErrorKey = root.busyKey;
                 root.busyKey = "";
                 root._queue = [];

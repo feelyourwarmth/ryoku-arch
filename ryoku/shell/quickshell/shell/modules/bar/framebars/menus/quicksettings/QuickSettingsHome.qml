@@ -2,7 +2,6 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import Quickshell
-import Quickshell.Hyprland
 import "../../.." as Pill
 import shell.services
 import "../../../../../components"
@@ -84,7 +83,7 @@ Item {
                         icon: "logout"
                         tip: I18n.tr("Log out")
                         tipBelow: true
-                        onClicked: Hyprland.dispatch("hl.dsp.exit()")
+                        onClicked: SessionActions.run("logout")
                     }
                     Menus.QsIconButton {
                         icon: "lock"
@@ -236,7 +235,11 @@ Item {
                     on: !Toggles.wifiOn
                     onToggled: Toggles.toggleWifi()
                 }
+                // Only where the compositor can warm the screen. Both shipping
+                // compositors can; one that reports no night-light backend hides
+                // the tile instead of showing a dead toggle.
                 Menus.QsTile {
+                    visible: Wm.caps.nightLight === true
                     width: tileGrid.tileWidth
                     icon: "bedtime"
                     label: I18n.tr("Night light")
@@ -265,7 +268,14 @@ Item {
                 // would trap the user in Game Mode. AC is the real line-power
                 // state (a full cell idling on AC still counts), so no battery
                 // is always eligible.
+                // Only where the compositor can strip itself live (Hyprland). On
+                // a compositor without live config eval the tuning script is not
+                // even installed, so a fresh tile would do nothing; hide it, not
+                // grey it, and the Grid reflows with no gap. Kept visible while
+                // game mode is already on, so a switch away from Hyprland mid-
+                // boost (the flag persists) can still be dismissed.
                 Menus.QsTile {
+                    visible: Wm.caps.liveConfigEval === true || Toggles.gameMode
                     width: tileGrid.tileWidth
                     icon: "sports_esports"
                     label: I18n.tr("Gaming")

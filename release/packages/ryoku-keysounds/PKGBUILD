@@ -12,7 +12,7 @@
 # can tell a build left behind by a Hyprland bump from a working one without
 # loading it. The plugin source also ships under /usr/share/ryoku/hypr-plugins,
 # so a box without a checkout can rebuild it for a newer Hyprland
-# (`ryoku-hub hypr plugins rebuild keysounds`).
+# (`ryoku-hub desktop plugins rebuild keysounds`).
 #
 # The sample profiles are real switch recordings cut from the MIT-licensed
 # Mechvibes packs (github.com/hainguyents13/mechvibes, src/audio), fetched here

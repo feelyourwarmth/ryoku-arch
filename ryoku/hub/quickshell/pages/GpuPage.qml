@@ -34,6 +34,10 @@ Item {
     property string actionError: ""
     property string capsError: ""
     property string modeWarn: ""
+    // hardware display-routing switch (the MUX): which GPU the built-in panel
+    // is physically wired to. Empty when the machine has no knob.
+    property var mux: ({})
+    property string muxError: ""
 
     // tuning + presets
     property var tune: []
@@ -80,6 +84,16 @@ Item {
     readonly property var advTune: (pg.tune || []).filter(t => t.risk === "advanced")
     readonly property var cpuTune: (pg.cpu || []).filter(t => t.gpu === "cpu")
     readonly property var batteryTune: (pg.cpu || []).filter(t => t.gpu === "battery")
+    // idle policy, also fronted by `ryoku-hub cpu`: two toggles plus per-stage
+    // minute steppers split into battery and AC. Neutral across compositors.
+    readonly property var idleTune: (pg.cpu || []).filter(t => t.gpu === "idle")
+    readonly property var idleGeneral: pg.idleTune.filter(t => t.id === "enabled" || t.id === "onDesktops")
+    readonly property var idleBattery: pg.idleTune.filter(t => t.id.indexOf("battery.") === 0)
+    readonly property var idleAc: pg.idleTune.filter(t => t.id.indexOf("ac.") === 0)
+    readonly property bool idleOn: {
+        var e = (pg.idleTune || []).find(t => t.id === "enabled");
+        return e ? e.value === "on" : false;
+    }
     readonly property string thermalNow: {
         var t = (pg.tune || []).find(x => x.id === "thermal");
         return t ? t.value : "";
@@ -108,6 +122,8 @@ Item {
 
     // short role tag for a gpu slot, so a tuning row reads "dGPU · Power limit".
     function tag(gpu) {
+        if (gpu === "idle")
+            return "";
         if (gpu === "cpu")
             return "CPU";
         if (gpu === "battery")
@@ -128,6 +144,7 @@ Item {
         tuneProc.running = true;
         presetProc.running = true;
         cpuActiveProc.running = true;
+        muxProc.running = true;
     }
     function reloadTune() {
         tuneProc.running = true;
@@ -155,6 +172,16 @@ Item {
         pg.modeWarn = "";
         modeSetProc.command = ["ryoku-hub", "gpu", "mode", "set", m];
         modeSetProc.running = true;
+    }
+    function setMux(m) {
+        pg.muxError = "";
+        muxSetProc.command = ["ryoku-hub", "gpu", "mux", "set", m];
+        muxSetProc.running = true;
+    }
+    function cpuSwitch(name) {
+        pg.cpuError = "";
+        cpuSwitchProc.command = ["ryoku-hub", "cpu", "switch", name];
+        cpuSwitchProc.running = true;
     }
     function tuneSet(gpu, id, value) {
         pg.tuneError = "";
@@ -258,6 +285,29 @@ Item {
         }
     }
     Process {
+        id: muxProc
+        command: ["ryoku-hub", "gpu", "mux", "get"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try { pg.mux = JSON.parse(this.text) || {}; } catch (e) { pg.mux = {}; }
+            }
+        }
+    }
+    Process {
+        id: muxSetProc
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try { pg.mux = JSON.parse(this.text) || pg.mux; } catch (e) {}
+            }
+        }
+        stderr: StdioCollector {
+            onStreamFinished: {
+                var e = this.text.trim();
+                if (e.length > 0) pg.muxError = e;
+            }
+        }
+    }
+    Process {
         id: tuneSetProc
         stdout: StdioCollector { onStreamFinished: pg.reloadTune() }
         stderr: StdioCollector {
@@ -306,6 +356,16 @@ Item {
     Process {
         id: cpuSetProc
         stdout: StdioCollector { onStreamFinished: pg.reloadCpu() }
+        stderr: StdioCollector {
+            onStreamFinished: {
+                var e = this.text.trim();
+                if (e.length > 0) pg.cpuError = e;
+            }
+        }
+    }
+    Process {
+        id: cpuSwitchProc
+        stdout: StdioCollector { onStreamFinished: cpuActiveProc.running = true }
         stderr: StdioCollector {
             onStreamFinished: {
                 var e = this.text.trim();
@@ -402,11 +462,12 @@ done
         readonly property bool wideOpts: (tc.tunable.options || []).some(o => String(o).length > 8)
         block: tc.knd === "segment" && (tc.optCount >= 3 || tc.wideOpts)
         controlWidth: tc.knd === "toggle" ? 54
+            : tc.knd === "stepper" ? 58
             : (tc.knd === "slider" ? Math.min(240, Math.max(160, Math.round(tc.width * 0.34)))
             : Math.max(120, 62 * Math.max(2, tc.optCount)))
-        label: pg.tag(tc.tunable.gpu) + " · " + I18n.tr(tc.tunable.label || "")
+        label: (pg.tag(tc.tunable.gpu) !== "" ? pg.tag(tc.tunable.gpu) + " · " : "") + I18n.tr(tc.tunable.label || "")
         unit: tc.tunable.unit || ""
-        value: tc.knd === "slider" ? String(Math.round(tc.tunable.current || 0)) : ""
+        value: (tc.knd === "slider" || tc.knd === "stepper") ? String(Math.round(tc.tunable.current || 0)) : ""
         desc: (tc.tunable.desc && tc.tunable.desc !== "") ? I18n.tr(tc.tunable.desc)
             : (tc.tunable.risk === "advanced" ? I18n.tr("Advanced · per session, can misbehave") : I18n.tr("Applies now, resets on reboot"))
         source: tc.tunable.src || ""
@@ -414,7 +475,7 @@ done
 
         Loader {
             anchors.fill: parent
-            sourceComponent: tc.knd === "toggle" ? swC : (tc.knd === "slider" ? slidC : segC)
+            sourceComponent: tc.knd === "toggle" ? swC : tc.knd === "stepper" ? stepC : (tc.knd === "slider" ? slidC : segC)
         }
         Component {
             id: swC
@@ -444,18 +505,34 @@ done
                 onChose: (k) => tc.apply(k)
             }
         }
+        Component {
+            id: stepC
+            Step {
+                anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                from: tc.tunable.min || 0
+                to: tc.tunable.max || 60
+                stepBy: tc.tunable.stepBy || 1
+                value: tc.tunable.current || 0
+                onModified: (v) => tc.apply(String(Math.round(v)))
+            }
+        }
     }
 
     // ── head ───────────────────────────────────────────────────────────────────
     Column {
         id: head
-        anchors {
-            left: parent.left; right: parent.right; top: parent.top
-            leftMargin: Tokens.s6; rightMargin: Tokens.s6; topMargin: Tokens.s6
-        }
-        spacing: Tokens.s2
+        anchors { left: parent.left; right: parent.right; top: parent.top }
+        anchors.leftMargin: Tokens.s6
+        anchors.rightMargin: Tokens.s6
+        anchors.topMargin: Tokens.s6
+        // the register row sits off the title: a rule over a 32px
+        // title needs more than the gap between two lines of body text
+        spacing: Tokens.s3
 
         Row {
+            // the register row holds a fixed box, so the rule and the seal keep
+            // their distance from the title on every page
+            height: Tokens.s5
             spacing: Tokens.s2
             Rectangle { width: 16; height: 1; color: Tokens.ink; anchors.verticalCenter: parent.verticalCenter }
             Text {
@@ -474,7 +551,7 @@ done
         }
         Text {
             width: Math.min(parent.width, 720)
-            text: I18n.tr("Your silicon. Define what each power profile does to the CPU, tune the graphics hardware, cap the battery charge ceiling, and choose which GPU the desktop renders on. Passthrough (advanced) frees the discrete GPU so a virtual machine can own it.")
+            text: I18n.tr("Power profiles, graphics tuning, and which GPU renders the desktop.")
             color: Tokens.inkMuted; font.family: Tokens.ui
             font.pixelSize: Tokens.fBody; wrapMode: Text.WordWrap
         }
@@ -484,14 +561,6 @@ done
             color: Tokens.inkDim; font.family: Tokens.ui
             font.pixelSize: Tokens.fSmall; font.weight: Font.Medium
         }
-    }
-
-    Marginalia {
-        anchors { right: parent.right; top: head.top }
-        anchors.rightMargin: Tokens.s6; anchors.topMargin: Tokens.s1
-        kana: "演算"
-        index: "02"; label: I18n.tr("DEVICES")
-        glyph: "asanoha"; glyph2: "meander"
     }
 
     // ── content: one full-width scrolling column above the render hero ─────────
@@ -509,21 +578,24 @@ done
                 bottomMargin: Tokens.s5
             }
             contentWidth: width
-            contentHeight: gfxCol.height + Tokens.s5
+            contentHeight: Math.max(gfxCol.height, height)
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+            WheelScroll { }
 
-            Column {
+            CardColumns {
                 id: gfxCol
-                width: Math.min(gfx.width - Tokens.s3, 720)
-                spacing: Tokens.s6
+                // a body of cards fills the measure and splits into balanced columns
+                width: gfx.width - Tokens.s3
+                spacing: Tokens.s5
+                fillTo: gfx.height
 
                 // gpu caps failed: surface it up top; the sections below still
                 // render from whatever partial payload arrived.
                 Column {
                     visible: pg.capsError !== ""
-                    width: gfxCol.width; spacing: Tokens.s3
+                    width: gfxCol.colWidth; spacing: Tokens.s3
                     Text {
                         width: parent.width; wrapMode: Text.WordWrap
                         text: I18n.tr("Couldn't read your graphics hardware.")
@@ -540,7 +612,7 @@ done
 
                 // ── RYOKU RENDERS ON ──
                 SettingCard {
-                    width: gfxCol.width
+                    width: gfxCol.colWidth
                     title: I18n.tr("RYOKU RENDERS ON")
                     // Hybrid/Performance/Passthrough only mean something with a
                     // second GPU to switch between; a single-GPU box always renders
@@ -551,7 +623,7 @@ done
                         anchors.left: parent.left; anchors.right: parent.right
                         block: true
                         label: I18n.tr("Graphics mode")
-                        desc: I18n.tr("A change takes effect on your next login.")
+                        desc: I18n.tr("Software choice: which GPU renders the desktop. Takes effect on your next login.")
                         Seg {
                             anchors.left: parent.left; anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
@@ -570,11 +642,47 @@ done
                         text: pg.mode === "hybrid"
                             ? I18n.tr("Hybrid keeps the built-in GPU primary for battery; apps can still use %1 on demand.").arg(pg.dgpuName)
                             : (pg.mode === "performance"
-                                ? I18n.tr("Performance pins %1 as primary: fastest, more power draw.").arg(pg.dgpuName)
+                                ? (pg.caps.chassis === "laptop" && pg.mux.capable
+                                    ? I18n.tr("Performance pins %1 as primary, so video decode and GPU work leave the CPU's heat budget. This laptop has a display-routing switch: set it to Discrete below and reboot to move the screen to %1, for the full effect.").arg(pg.dgpuName)
+                                    : I18n.tr("Performance pins %1 as primary: fastest, more power draw.").arg(pg.dgpuName))
                                 : I18n.tr("Passthrough runs the desktop on the built-in GPU so %1 is free for a VM.").arg(pg.dgpuName))
                         color: Tokens.inkMuted; font.family: Tokens.ui; font.pixelSize: Tokens.fSmall
                     }
 
+                    // The hardware display-routing switch, where the firmware has
+                    // one: which GPU the built-in panel is physically wired to.
+                    SettingRow {
+                        visible: !!(pg.mux.capable)
+                        anchors.left: parent.left; anchors.right: parent.right
+                        block: true
+                        label: I18n.tr("Display wired to")
+                        desc: I18n.tr("Hardware (GPU Mode / MUX / Optimus): which GPU drives the screen. Reboot to apply.")
+                        Seg {
+                            anchors.left: parent.left; anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            options: ["Hybrid", "Discrete"]
+                            current: pg.modeLabel(pg.mux.mode || "")
+                            onChose: (label) => pg.setMux(label.toLowerCase())
+                        }
+                    }
+                    Text {
+                        visible: !!(pg.mux.capable && pg.mux.reboot_pending)
+                        width: parent.width
+                        leftPadding: Tokens.s4; rightPadding: Tokens.s4
+                        topPadding: Tokens.s2; bottomPadding: Tokens.s3
+                        wrapMode: Text.WordWrap
+                        text: I18n.tr("Reboot to move the display.");
+                        color: Tokens.ink; font.family: Tokens.ui; font.pixelSize: Tokens.fSmall
+                    }
+                    Text {
+                        visible: pg.muxError !== ""
+                        width: parent.width
+                        leftPadding: Tokens.s4; rightPadding: Tokens.s4
+                        topPadding: Tokens.s2; bottomPadding: Tokens.s3
+                        wrapMode: Text.WordWrap
+                        text: pg.muxError
+                        color: Tokens.inkMuted; font.family: Tokens.mono; font.pixelSize: Tokens.fMicro
+                    }
                     // mode-set warning: a bordered plate, only when the backend complains.
                     Item {
                         visible: pg.modeWarn !== ""
@@ -603,9 +711,27 @@ done
 
                 // ── CPU POWER PROFILES ──
                 SettingCard {
-                    width: gfxCol.width
+                    width: gfxCol.colWidth
                     visible: pg.cpuTune.length > 0
                     title: I18n.tr("CPU POWER PROFILES")
+
+                    // switch which profile is LIVE, through the shell daemon (the
+                    // one owner of the pick: it banks it across reboots and keeps
+                    // game mode's stash intact).
+                    SettingRow {
+                        visible: pg.cpuProfiles.length > 0
+                        anchors.left: parent.left; anchors.right: parent.right
+                        block: true
+                        label: I18n.tr("Live profile")
+                        desc: I18n.tr("Changes the active profile now.")
+                        Seg {
+                            anchors.left: parent.left; anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            options: pg.cpuProfiles
+                            current: pg.cpuActive
+                            onChose: (k) => pg.cpuSwitch(k)
+                        }
+                    }
 
                     // pick which definition to edit; this never switches the live
                     // profile, so the note below names the one that is active.
@@ -668,7 +794,7 @@ done
 
                 // ── TUNING · THIS SESSION ──
                 SettingCard {
-                    width: gfxCol.width
+                    width: gfxCol.colWidth
                     title: I18n.tr("TUNING · THIS SESSION")
 
                     // the per-session promise, said plainly and kept in view.
@@ -857,7 +983,7 @@ done
 
                 // ── BATTERY ──
                 SettingCard {
-                    width: gfxCol.width
+                    width: gfxCol.colWidth
                     visible: pg.batteryTune.length > 0
                     title: I18n.tr("BATTERY")
 
@@ -872,9 +998,60 @@ done
                     }
                 }
 
+                // ── IDLE ──
+                SettingCard {
+                    width: gfxCol.colWidth
+                    visible: pg.idleGeneral.length > 0
+                    title: I18n.tr("IDLE")
+
+                    Repeater {
+                        model: pg.idleGeneral
+                        delegate: TuneCell {
+                            required property var modelData
+                            tunable: modelData
+                            scope: "idle"
+                            divider: true
+                        }
+                    }
+                }
+
+                // ── ON BATTERY ── (folds away when idle is off)
+                SettingCard {
+                    width: gfxCol.colWidth
+                    visible: pg.idleOn && pg.idleBattery.length > 0
+                    title: I18n.tr("ON BATTERY")
+
+                    Repeater {
+                        model: pg.idleBattery
+                        delegate: TuneCell {
+                            required property var modelData
+                            tunable: modelData
+                            scope: "idle"
+                            divider: true
+                        }
+                    }
+                }
+
+                // ── PLUGGED IN ──
+                SettingCard {
+                    width: gfxCol.colWidth
+                    visible: pg.idleOn && pg.idleAc.length > 0
+                    title: I18n.tr("PLUGGED IN")
+
+                    Repeater {
+                        model: pg.idleAc
+                        delegate: TuneCell {
+                            required property var modelData
+                            tunable: modelData
+                            scope: "idle"
+                            divider: true
+                        }
+                    }
+                }
+
                 // ── GPU PASSTHROUGH · ADVANCED ──
                 SettingCard {
-                    width: gfxCol.width
+                    width: gfxCol.colWidth
                     title: I18n.tr("GPU PASSTHROUGH · ADVANCED")
 
                     Text {
@@ -935,6 +1112,7 @@ done
                                 contentWidth: width; contentHeight: planView.height
                                 clip: true; boundsBehavior: Flickable.StopAtBounds
                                 ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+                                WheelScroll { }
                                 Text {
                                     id: planView
                                     width: planFlick.width

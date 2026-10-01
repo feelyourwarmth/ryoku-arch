@@ -16,7 +16,7 @@ import (
 // Ryogami, the in-repo daemon the shell now drives over ryogami.sock. `ryoku
 // update` pulls the ryogami package (a ryoku-desktop depend) and drops the awww
 // depend, but pacman alone leaves an existing box in a broken middle: the ryogami
-// user unit is delivered but not enabled, so hyprland-session.target never owns
+// user unit is delivered but not enabled, so ryoku-session.target never owns
 // it, and a stale awww-daemon from the old session keeps a surface mapped on the
 // background layer that stacks over Ryogami's and swallows every static set. This
 // daemon-reloads so systemd sees the delivered unit, enables it, clears it when

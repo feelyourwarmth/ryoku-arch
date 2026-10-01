@@ -48,6 +48,8 @@ Required:
 | `RYOKU_DISK`          | Target block device, e.g. `/dev/nvme0n1` or `/dev/sda`.    |
 | `RYOKU_PASSWORD_HASH` | `openssl passwd -6` hash of the user password (no plaintext). |
 | `RYOKU_DISK_STRATEGY` | `whole` (wipe the disk) or `alongside` (dual-boot; keeps existing partitions and chooses shared or dedicated ESP boot automatically). No default: an empty value aborts rather than risk a silent wipe. |
+| `RYOKU_COMPOSITOR`        | Window manager to install, e.g. `hyprland`. Selects the `ryoku-desktop-<name>` variant package. |
+| `RYOKU_COMPOSITOR_CONFIG_DIR` | The `~/.config` subdir that compositor owns (the TUI derives it from `wm.ConfigDir`, e.g. `hypr`); seeds the keymap and GPU pin. Empty means an unknown compositor and the install aborts. |
 
 With defaults:
 
@@ -86,6 +88,7 @@ Other (all optional, env-only):
 | `RYOKU_REBOOT`            | Non-empty reboots after a successful install.                        |
 | `RYOKU_SKIP_AUR`          | Skip the optional AUR set (unattended / CI install).                 |
 | `RYOKU_ALLOW_SECUREBOOT`  | `1` to install despite firmware Secure Boot being on (Limine is unsigned). |
+| `RYOKU_ALLOW_DIRTY_NTFS`  | `1` to install alongside a hibernated / Fast-Startup Windows volume anyway (the gate otherwise refuses: Windows Startup Repair can rewrite the table on its next boot). |
 | `RYOKU_DRYRUN`            | Print destructive commands instead of running them (see Dry run).    |
 
 ## Disk strategies

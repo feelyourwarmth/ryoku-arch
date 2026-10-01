@@ -23,9 +23,9 @@ Item {
 
     // the live records from the draft: an unbounded list of app-override
     // objects, each carrying the 10-field schema seeded by addApp().
-    readonly property var overrides: pg.hub ? (pg.hub.hyprVal("appOverrides") || []) : []
+    readonly property var overrides: pg.hub ? (pg.hub.hyprVal("desktop.appOverrides") || []) : []
     // gated so the empty state does not flash before `hypr get` returns.
-    readonly property bool ready: pg.hub ? pg.hub.hyprLoaded === true : false
+    readonly property bool ready: pg.hub ? pg.hub.wmLoaded === true : false
 
     // hyprEdit swaps the whole array by identity, so the Repeater rebinds and
     // rebuilds the card owning a focused field. Fields therefore commit on
@@ -35,10 +35,10 @@ Item {
     function patch(i, key, val) {
         if (!pg.hub)
             return;
-        var a = (pg.hub.hyprVal("appOverrides") || []).slice();
+        var a = (pg.hub.hyprVal("desktop.appOverrides") || []).slice();
         a[i] = Object.assign({}, a[i]);
         a[i][key] = val;
-        pg.hub.hyprEdit("appOverrides", a);
+        pg.hub.hyprEdit("desktop.appOverrides", a);
     }
     // the literal seed IS the per-record default contract: -1 sentinels for the
     // three numeric fields (0 is a legal custom value, distinct from -1), and
@@ -46,59 +46,56 @@ Item {
     function addApp(cls) {
         if (!pg.hub)
             return;
-        var a = (pg.hub.hyprVal("appOverrides") || []).slice();
+        var a = (pg.hub.hyprVal("desktop.appOverrides") || []).slice();
         a.push({
             "class": cls || "", "title": "",
             "opacity": -1, "rounding": -1, "borderSize": -1,
             "blur": "inherit", "shadow": "inherit", "dim": "inherit",
             "anim": "inherit", "opaque": "inherit"
         });
-        pg.hub.hyprEdit("appOverrides", a);
+        pg.hub.hyprEdit("desktop.appOverrides", a);
     }
     function removeApp(i) {
         if (!pg.hub)
             return;
-        var a = (pg.hub.hyprVal("appOverrides") || []).slice();
+        var a = (pg.hub.hyprVal("desktop.appOverrides") || []).slice();
         a.splice(i, 1);
-        pg.hub.hyprEdit("appOverrides", a);
+        pg.hub.hyprEdit("desktop.appOverrides", a);
     }
     function clearAll() {
         if (pg.hub)
-            pg.hub.hyprEdit("appOverrides", []);
+            pg.hub.hyprEdit("desktop.appOverrides", []);
     }
 
-    // open windows, for the class picker: hyprctl lists every client and we keep
-    // the unique classes, so you can pick an app straight from the list instead
-    // of hunting for its class name in a terminal. Fetched once, failure-silent;
-    // the picker just stays hidden when the list is empty.
-    property var openClasses: []
-    function refreshOpenClasses() { clientsProc.running = false; clientsProc.running = true; }
-    Process {
-        id: clientsProc
-        command: ["hyprctl", "clients", "-j"]
-        stdout: StdioCollector {
-            onStreamFinished: {
-                try {
-                    var arr = JSON.parse(this.text), seen = {}, out = [];
-                    for (var i = 0; i < arr.length; i++) {
-                        var c = arr[i]["class"] || "";
-                        if (c.length && !seen[c]) { seen[c] = true; out.push(c); }
-                    }
-                    out.sort();
-                    pg.openClasses = out;
-                } catch (e) {}
-            }
+    // open windows, for the class picker: the app ids the compositor reports,
+    // deduped, so you can pick an app instead of typing its class.
+    readonly property var openClasses: {
+        var ws = (pg.hub ? pg.hub.wmWindows : []) || [];
+        var seen = {}, out = [];
+        for (var i = 0; i < ws.length; i++) {
+            var c = ws[i].appId || "";
+            if (c.length && !seen[c]) { seen[c] = true; out.push(c); }
         }
+        out.sort();
+        return out;
     }
-    Component.onCompleted: pg.refreshOpenClasses()
 
     // ── head: eyebrow, Fraunces title, blurb (matches every settings page) ──
     Column {
         id: head
-        anchors { left: parent.left; right: parent.right; top: parent.top }
-        spacing: Tokens.s2
+        anchors.top: parent.top
+        // the head sits on the body's grid, so the title starts over the first
+        // card column instead of floating in the middle of a page-wide window
+        x: Tokens.s6
+        width: Math.max(320, pg.width - Tokens.s6 * 2 - Tokens.s3)
+        // the register row sits off the title: a rule over a 32px
+        // title needs more than the gap between two lines of body text
+        spacing: Tokens.s3
 
         Row {
+            // the register row holds a fixed box, so the rule and the seal keep
+            // their distance from the title on every page
+            height: Tokens.s5
             spacing: Tokens.s2
             Rectangle {
                 width: 16; height: 1; color: Tokens.ink
@@ -120,7 +117,7 @@ Item {
         }
         Text {
             width: Math.min(parent.width, 720)
-            text: I18n.tr("Give one app its own look, layered on top of the global Appearance. Add it (or pick from an open window), match it by its window class and an optional title, then override only what you want: everything left on Inherit keeps following the global. Changes apply as a Hyprland window rule when you save. Example: make a browser fully opaque, or a terminal square-cornered.")
+            text: I18n.tr("One app's own look. Anything left on Inherit follows the global.")
             color: Tokens.inkMuted; font.family: Tokens.ui
             font.pixelSize: Tokens.fBody; wrapMode: Text.WordWrap
         }
@@ -204,10 +201,13 @@ Item {
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+        WheelScroll { }
 
-        Column {
-            id: col
-            width: flick.width - Tokens.s3   // reserve a lane for the scroll rail
+        CardColumns {
+
+        id: col
+            // a body of cards fills the measure and splits into balanced columns
+            width: flick.width - Tokens.s3
             spacing: Tokens.s3
 
             Repeater {
@@ -226,7 +226,7 @@ Item {
                     readonly property real roundingVal: card.modelData.rounding === undefined ? -1 : card.modelData.rounding
                     readonly property real borderVal: card.modelData.borderSize === undefined ? -1 : card.modelData.borderSize
 
-                    width: col.width
+                    width: col.colWidth
                     height: body.implicitHeight + Tokens.s4 * 2
                     radius: Tokens.radius
                     color: "transparent"

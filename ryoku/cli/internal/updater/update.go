@@ -5,12 +5,15 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/godbus/dbus/v5"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"ryoku-cli/internal/sys"
 	i18n "ryoku-i18n"
+	wm "ryoku-wm"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -164,38 +167,68 @@ func Update(args []string) error {
 	}
 	clearStalePacmanLock()
 	// Refresh first, then read the set: a rollback onto a frozen release must
-	// only ask for packages that release actually served.
+	// only ask for packages that release actually served. An ordinary update
+	// drops names the box already carries at a newer version than [ryoku]
+	// serves (a distro repo ahead of our vendored copy, a split package whose
+	// pinned dep a forced downgrade would break); a channel move keeps them,
+	// since moving the set down is the point there.
 	if err := sys.Sudo(refreshDBArgs(channelSwitch)[1:]...); err != nil {
 		progress.logf(i18n.T("Could not refresh the package databases: %v"), err)
 	}
-	set, err := installedRyokuSet()
+	set, held, err := installedRyokuSet(channelSwitch)
 	if err != nil {
 		e := fmt.Errorf(i18n.T("cannot read the [ryoku] repository, so there is nothing safe to update: %w"), err)
 		progress.fail(e)
 		return e
 	}
-	if len(set) == 0 {
-		e := fmt.Errorf(i18n.T("no packages from the [ryoku] repository are installed; `ryoku doctor` checks the repo setup"))
+	if channelSwitch {
+		// A rollback onto a release that predates the compositor split carries
+		// no ryoku-desktop-hyprland/niri; their exact pins would fail the whole
+		// downgrade transaction (#271). Drop them before building the target.
+		if dropped := dropSplitMetasNotServed(repoServedSet()); len(dropped) > 0 {
+			progress.logf(i18n.T("Removed %s: the target release predates the compositor split"), strings.Join(dropped, ", "))
+		}
+	}
+	if err != nil {
+		e := fmt.Errorf(i18n.T("cannot read the [ryoku] repository, so there is nothing safe to update: %w"), err)
 		progress.fail(e)
 		return e
 	}
-	progress.logf(i18n.T("Updating %d Ryoku package(s); the base system stays as it is"), len(set))
-	if conflicts, err := runRyokuUpgrade(set); err != nil {
-		// One in-place recovery, then a single retry: clear the unowned files a
-		// new package now claims (an installer/deploy stray), or, with nothing to
-		// clear, drop a stale [ryoku] db whose signature no longer matches and
-		// refresh it clean.
-		healPackageUpgrade(conflicts)
-		if _, err = runRyokuUpgrade(set); err != nil {
-			// only advertise `ryoku rollback` when the pre snapshot it needs exists;
-			// snapperPre is best-effort and returns "" when it was skipped.
-			hint := i18n.T("no pre-update snapshot exists (snapper was unavailable), so `ryoku rollback` cannot revert this; recover with pacman directly")
-			if pre != "" {
-				hint = i18n.T("see `ryoku rollback` (pre-update snapshot ") + pre + ")"
+	switch {
+	case len(set) == 0 && held == 0:
+		e := fmt.Errorf(i18n.T("no packages from the [ryoku] repository are installed; `ryoku doctor` checks the repo setup"))
+		progress.fail(e)
+		return e
+	case len(set) == 0:
+		// Every served package is already newer here than [ryoku] publishes
+		// (a distro repo ahead of our vendored copies). Forcing them down
+		// would flip-flop versions and churn .pacnew files every run, so the
+		// Ryoku lane has nothing to do; the rest of the update still runs.
+		progress.logf(i18n.T("%d Ryoku package(s) are already newer than the [ryoku] repository serves; leaving them as they are"), held)
+	default:
+		if held > 0 {
+			progress.logf(i18n.T("Updating %d Ryoku package(s); %d already newer than the repository serves stay as they are"), len(set), held)
+		} else {
+			progress.logf(i18n.T("Updating %d Ryoku package(s); the base system stays as it is"), len(set))
+		}
+		if conflicts, err := runRyokuUpgrade(set); err != nil {
+			healPackageUpgrade(conflicts, err)
+			// One in-place recovery, then a single retry: clear the unowned files a
+			// new package now claims (an installer/deploy stray), or, with nothing to
+			// clear, drop a stale [ryoku] db whose signature no longer matches and
+			// refresh it clean.
+			healPackageUpgrade(conflicts, err)
+			if _, err = runRyokuUpgrade(set); err != nil {
+				// only advertise `ryoku rollback` when the pre snapshot it needs exists;
+				// snapperPre is best-effort and returns "" when it was skipped.
+				hint := i18n.T("no pre-update snapshot exists (snapper was unavailable), so `ryoku rollback` cannot revert this; recover with pacman directly")
+				if pre != "" {
+					hint = i18n.T("see `ryoku rollback` (pre-update snapshot ") + pre + ")"
+				}
+				e := fmt.Errorf(i18n.T("the Ryoku package upgrade failed; %s: %w"), hint, err)
+				progress.fail(e)
+				return e
 			}
-			e := fmt.Errorf(i18n.T("the Ryoku package upgrade failed; %s: %w"), hint, err)
-			progress.fail(e)
-			return e
 		}
 	}
 
@@ -380,16 +413,72 @@ func reportSystemLane(pending []updateItem) {
 // that block the transaction and that no package owns ("exists in filesystem"
 // for an installer/deploy stray a new package now claims) are removed so the
 // package adopts them; a file another package owns is a real conflict and is
-// left untouched for the retry to surface. With nothing to clear, it assumes a
-// stale [ryoku] db whose signature no longer matches and forces a clean refresh.
-func healPackageUpgrade(conflicts []string) {
+// left untouched for the retry to surface. With nothing to clear, a stale
+// [ryoku] db whose signature no longer matches is dropped for a clean refresh,
+// but ONLY when the failure actually names the database: dropping it after a
+// dependency or conflict failure destroys the evidence and turns the next run
+// into a "target not found" storm (#271).
+func healPackageUpgrade(conflicts []string, err error) {
 	if strays := unownedFiles(conflicts); len(strays) > 0 {
 		progress.logf(i18n.T("Clearing %d unowned file(s) blocking the upgrade, then retrying"), len(strays))
 		_ = sys.Sudo(append([]string{"rm", "-f"}, strays...)...)
 		return
 	}
+	if !dbRejection(err) {
+		progress.logf(i18n.T("The Ryoku transaction failed for a reason that is not the package database; keeping the [ryoku] db so the error stays readable"))
+		return
+	}
 	progress.logf(i18n.T("Package database rejected; dropping the stale [ryoku] db and retrying"))
 	_ = sys.DropRyokuSyncDB()
+}
+
+// dbRejection reports whether a pacman failure is a database/signature
+// rejection rather than a dependency, conflict or download error.
+func dbRejection(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{"invalid or corrupted", "signature", "database", "could not read db"} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// splitMetapackages are the compositor-split metas the 0.73.x packaging
+// introduced. A release that predates the split does not serve them, and their
+// exact-version pins on six packages make any downgrade transaction
+// unsatisfiable, so moving across the split has to drop them first; the
+// downgrade of ryoku-desktop itself re-ties the graph afterwards (#271).
+var splitMetapackages = []string{"ryoku-desktop-hyprland", "ryoku-desktop-niri"}
+
+// Seams over the live box, replaced in tests.
+var (
+	splitMetaInstalled = func(name string) bool { return sys.PkgInstalled(name) }
+	splitMetaRemove    = func(name string) error {
+		return sys.Sudo("pacman", "-Rdd", "--noconfirm", name)
+	}
+)
+
+// dropSplitMetasNotServed removes installed split metapackages the currently
+// pointed [ryoku] repo does not serve. -Rdd: the meta's own dependencies are
+// exactly what the transaction is about to move, and pacman's walk cannot see
+// past the meta's exact pins. Returns what it removed, for the log.
+func dropSplitMetasNotServed(served map[string]bool) []string {
+	var dropped []string
+	for _, meta := range splitMetapackages {
+		if !splitMetaInstalled(meta) || served[meta] {
+			continue
+		}
+		if err := splitMetaRemove(meta); err != nil {
+			progress.logf(i18n.T("could not remove %s, which the target release does not serve; the downgrade may fail on its exact pins (%v)"), meta, err)
+			continue
+		}
+		dropped = append(dropped, meta)
+	}
+	return dropped
 }
 
 // unownedFiles keeps only the paths no installed package owns: pacman -Qo fails
@@ -414,34 +503,35 @@ func unownedFiles(paths []string) []string {
 // the privileged helpers (ryoku-dns, ryoku-network-kill, ryoku-boot-apply,
 // ryoku-wifi-powersave), their polkit rules, the Plymouth splash theme, the
 // ryoku-owned systemd units, the mkinitcpio install hooks the HOOKS drop-in
-// names, and the shipped boot configs under
-// /usr/share/ryoku/boot. Every ryoku-desktop (re)install --overwrites these, or
-// the first upgrade that starts owning a seeded path aborts the whole
-// transaction ("exists in filesystem") and blocks every update until the files
-// are removed by hand. Keep in sync with the doctor's ryokuSystemGlobs, which
-// clears the same paths on an already-wedged box.
+// names, the shipped boot configs under /usr/share/ryoku/boot, and the logind
+// lid-switch drop-in. Every ryoku-desktop (re)install --overwrites these, or the
+// first upgrade that starts owning a seeded path aborts the whole transaction
+// ("exists in filesystem") and blocks every update until the files are removed
+// by hand. Keep in sync with the doctor's ryokuSystemGlobs, which clears the
+// same paths on an already-wedged box.
 const ryokuOverwriteGlob = "/usr/bin/ryoku-*," +
 	"/usr/lib/systemd/system/ryoku-*," +
 	"/usr/lib/initcpio/install/ryoku-*," +
 	"/usr/share/polkit-1/rules.d/*ryoku*.rules," +
 	"/usr/share/plymouth/themes/ryoku/*," +
-	"/usr/share/ryoku/boot/*"
+	"/usr/share/ryoku/boot/*," +
+	"/etc/systemd/logind.conf.d/10-ryoku-lid.conf"
 
 // systemUpgradeArgs is the user's lane, run only by `ryoku update --system`:
 // the full sysupgrade, kernel included, exactly what `sudo pacman -Syu` does
 // by hand. It keeps the --overwrite glob so a seeded path a Ryoku package now
 // owns cannot abort the transaction here either.
 func systemUpgradeArgs() []string {
-	return []string{"sudo", "env", "SNAP_PAC_SKIP=y", "pacman", "-Syu", "--noconfirm",
-		"--overwrite", ryokuOverwriteGlob}
+	return []string{"sudo", "env", "SNAP_PAC_SKIP=y", "RYOKU_MANAGED_UPDATE=1",
+		"pacman", "-Syu", "--noconfirm", "--overwrite", ryokuOverwriteGlob}
 }
 
 // channelSwitchArgs installs the [ryoku] channel's ryoku-desktop explicitly,
 // which pacman honours in either direction (a downgrade warns and proceeds),
 // pulling the umbrella's exact-version depends with it.
 func channelSwitchArgs() []string {
-	return []string{"sudo", "env", "SNAP_PAC_SKIP=y", "pacman", "-S", "--noconfirm",
-		"--overwrite", ryokuOverwriteGlob, "ryoku-desktop"}
+	return []string{"sudo", "env", "SNAP_PAC_SKIP=y", "RYOKU_MANAGED_UPDATE=1",
+		"pacman", "-S", "--noconfirm", "--overwrite", ryokuOverwriteGlob, "ryoku-desktop"}
 }
 
 // runAURUpgrade runs `yay -Sua` under the same sleep inhibitor.
@@ -539,27 +629,153 @@ func updateStage2(pre string, withSystem bool) error {
 
 	progress.at("apply")
 	progress.logf(i18n.T("Applying the new configuration"))
+	if err := ensurePackagePowerCutover(); err != nil {
+		progress.fail(err)
+		return err
+	}
+	graphicalPresent, shellExpected, err := graphicalSessionState()
+	if err != nil {
+		progress.fail(err)
+		return err
+	}
+	wallpaperWasActive := shellExpected &&
+		exec.Command("systemctl", "--user", "is-active", "--quiet", "ryogami.service").Run() == nil
+	powerCutoverLock, err := acquirePowerCutoverLock()
+	if err != nil {
+		progress.fail(err)
+		return err
+	}
+	defer func() {
+		if powerCutoverLock != nil {
+			_ = powerCutoverLock.Close()
+		}
+	}()
+	cutoverGuard, err := acquireUpdateSleepGuard()
+	if err != nil {
+		progress.fail(err)
+		return err
+	}
+	defer cutoverGuard.Disconnect()
+	// Activate logind's sessionless fallback while every old owner and the
+	// durable block are still live. Only after that succeeds may the old
+	// direct-suspend hooks and clamshell process be quiesced.
+	if err := reloadLogindLidPolicy(); err != nil {
+		progress.fail(err)
+		return err
+	}
+	if err := preparePowerPolicyUpdate(); err != nil {
+		progress.fail(err)
+		return err
+	}
+	if graphicalPresent {
+		// Stop admission before quiescing the old daemon. New launchers queue at
+		// this boundary; already-loaded wrappers can still use the old daemon to
+		// complete their ordered unlock.
+		if err := runPowerHelper("ryoku-power-cutover", "generation-guard-start"); err != nil {
+			progress.fail(err)
+			return err
+		}
+	}
 	// stop the shell first: a live quickshell would hot-reload the half-copied
 	// tree mid-swap, re-instantiating the new QML against whatever plugin .so
 	// the old process still has mapped. pause Hyprland's Lua auto-reload for
 	// the same reason (= emergency overlay popping up with no keybinds).
-	stopShell()
-	hyprPauseAutoreload()
-	if err := Materialize(); err != nil {
-		hyprReload()
-		startShell()
-		restartWallpaper()
+	if err := stopShell(); err != nil {
 		progress.fail(err)
 		return err
 	}
+	if graphicalPresent {
+		// The first rollout can encounter a pre-guard wrapper. With its launcher
+		// now quiesced, drain that final legacy client before replacing files.
+		if err := runPowerHelper("ryoku-power-cutover", "wait-lock-clients"); err != nil {
+			progress.fail(err)
+			return err
+		}
+	}
+	pauseConfigAutoreload()
+	if err := Materialize(); err != nil {
+		if shellExpected {
+			_ = reloadConfig()
+			_ = startShell()
+			if ready, readyErr := waitForShellReady(true); readyErr == nil && ready {
+				if activateErr := activatePowerPolicy(); activateErr != nil {
+					fmt.Fprintf(os.Stderr, i18n.Tf("warning: could not restore the lid policy: %v\n", activateErr))
+				}
+			} else if readyErr != nil {
+				fmt.Fprintf(os.Stderr, i18n.Tf("warning: could not restore the shell sleep guard: %v\n", readyErr))
+			}
+			restartWallpaper(false)
+		}
+		progress.fail(err)
+		return err
+	}
+	if err := regenerateConfig(); err != nil {
+		progress.logf(i18n.Tf("could not re-author the compositor settings: %v", err))
+	}
+	if graphicalPresent {
+		if err := runPowerHelper("ryoku-power-cutover", "session-bind"); err != nil {
+			if shellExpected {
+				_ = reloadConfig()
+				_ = startShell()
+				restartWallpaper(wallpaperWasActive)
+			}
+			progress.fail(err)
+			return err
+		}
+	}
 
-	progress.at("reload")
-	progress.logf(i18n.T("Reloading the desktop"))
-	// one clean reload picks up the new config and restores auto-reload, then
-	// start the shell daemon so the new binary + QML both take effect.
-	hyprReload()
-	startShell()
-	restartWallpaper()
+	if shellExpected {
+		progress.at("reload")
+		progress.logf(i18n.T("Reloading the desktop"))
+		// One clean reload picks up the new config and restores auto-reload. The
+		// lid owner comes back as soon as the new shell answers sleep-ready;
+		// long-running reindex, doctor, and snapshot work starts only afterward.
+		if err := reloadConfig(); err != nil {
+			restartWallpaper(wallpaperWasActive)
+			progress.fail(err)
+			return fmt.Errorf("reload compositor power bindings: %w", err)
+		}
+		if err := startShell(); err != nil {
+			restartWallpaper(wallpaperWasActive)
+			progress.fail(err)
+			return err
+		}
+		ready, err := waitForShellReady(true)
+		if err != nil {
+			restartWallpaper(wallpaperWasActive)
+			progress.fail(err)
+			return err
+		}
+		if ready {
+			if err := activatePowerPolicy(); err != nil {
+				restartWallpaper(wallpaperWasActive)
+				progress.fail(err)
+				return err
+			}
+		}
+		restartWallpaper(wallpaperWasActive)
+	}
+	// Either the foreground shell owns the normal sleep block, or every
+	// inactive graphical session is qylock-secured and observed while logind
+	// owns the sessionless lid fallback. Release only after proving that state.
+	if shellExpected {
+		if err := runPowerHelper("ryoku-power-cutover", "session-check"); err != nil {
+			progress.fail(err)
+			return err
+		}
+	}
+	if graphicalPresent {
+		if err := runPowerHelper("ryoku-power-cutover", "generation-guard-stop"); err != nil {
+			progress.fail(err)
+			return err
+		}
+	}
+	if err := cutoverGuard.Release(); err != nil {
+		progress.fail(err)
+		return err
+	}
+	_ = powerCutoverLock.Close()
+	powerCutoverLock = nil
 	rashinReindex()
 	prowlRefresh()
 	upgradeRyotunes()
@@ -572,6 +788,245 @@ func updateStage2(pre string, withSystem bool) error {
 	snapperPost(pre, "ryoku-update")
 	progress.logf(i18n.T("Update complete"))
 	return finishRun()
+}
+
+func acquirePowerCutoverLock() (*os.File, error) {
+	dir := os.Getenv("XDG_RUNTIME_DIR")
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	lock, err := os.OpenFile(filepath.Join(dir, "ryoku-power-cutover.lock"),
+		os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open power cutover lock: %w", err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		_ = lock.Close()
+		return nil, fmt.Errorf("acquire power cutover lock: %w", err)
+	}
+	return lock, nil
+}
+
+const updateSleepGuardUnit = "ryoku-power-cutover-guard.service"
+const packagePowerCutoverMarker = "/var/lib/ryoku/power-cutover-hook-active"
+
+func needsPackagePowerCutover(markerPresent, rootGuardActive bool) bool {
+	return !markerPresent || rootGuardActive
+}
+
+func ensurePackagePowerCutover() error {
+	markerPresent := false
+	if _, err := os.Stat(packagePowerCutoverMarker); err == nil {
+		markerPresent = true
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect package power cutover state: %w", err)
+	}
+	rootGuardActive := exec.Command(
+		"sudo", "-n", "systemctl", "is-active", "--quiet", updateSleepGuardUnit,
+	).Run() == nil
+	if !needsPackagePowerCutover(markerPresent, rootGuardActive) {
+		return nil
+	}
+	const helper = "/usr/bin/ryoku-power-cutover"
+	if _, err := os.Stat(helper); err != nil {
+		if os.IsNotExist(err) && !rootGuardActive {
+			return nil
+		}
+		return fmt.Errorf("inspect package power cutover helper: %w", err)
+	}
+	if err := sys.Sudo(helper, "package"); err != nil {
+		return fmt.Errorf("adopt packaged power policy in live sessions: %w", err)
+	}
+	return nil
+}
+
+type login1Inhibitor struct {
+	What string
+	Who  string
+	Why  string
+	Mode string
+	UID  uint32
+	PID  uint32
+}
+
+type updateSleepGuard struct {
+	conn *dbus.Conn
+}
+
+func hasUpdateSleepGuard(inhibitors []login1Inhibitor, uid uint32) bool {
+	for _, inhibitor := range inhibitors {
+		if inhibitor.UID != uid || inhibitor.Who != "ryoku-session-cutover" ||
+			inhibitor.Mode != "block" {
+			continue
+		}
+		for _, what := range strings.Split(inhibitor.What, ":") {
+			if what == "sleep" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func acquireUpdateSleepGuard() (*updateSleepGuard, error) {
+	for _, command := range []string{"systemctl", "systemd-run"} {
+		if _, err := exec.LookPath(command); err != nil {
+			return nil, fmt.Errorf("%s is required for the update sleep guard", command)
+		}
+	}
+	conn, err := dbus.ConnectSystemBus()
+	if err != nil {
+		return nil, fmt.Errorf("connect login1 for update sleep guard: %w", err)
+	}
+	guard := &updateSleepGuard{conn: conn}
+	active := exec.Command("systemctl", "--user", "is-active", "--quiet", updateSleepGuardUnit).Run() == nil
+	if !active {
+		_ = exec.Command("systemctl", "--user", "reset-failed", updateSleepGuardUnit).Run()
+		output, runErr := exec.Command(
+			"systemd-run", "--user", "--quiet", "--collect", "--unit="+updateSleepGuardUnit,
+			"--property=Type=exec", "--property=TimeoutStopSec=5s",
+			"/usr/bin/systemd-inhibit", "--what=sleep", "--mode=block",
+			"--who=ryoku-session-cutover",
+			"--why=keep the desktop awake while suspend owners are replaced",
+			"/usr/bin/sleep", "infinity",
+		).CombinedOutput()
+		if runErr != nil &&
+			exec.Command("systemctl", "--user", "is-active", "--quiet", updateSleepGuardUnit).Run() != nil {
+			guard.Disconnect()
+			return nil, fmt.Errorf("start durable update sleep guard: %w: %s", runErr, strings.TrimSpace(string(output)))
+		}
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		var inhibitors []login1Inhibitor
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		err = conn.Object(
+			"org.freedesktop.login1",
+			dbus.ObjectPath("/org/freedesktop/login1"),
+		).CallWithContext(
+			ctx,
+			"org.freedesktop.login1.Manager.ListInhibitors",
+			0,
+		).Store(&inhibitors)
+		cancel()
+		if err == nil && hasUpdateSleepGuard(inhibitors, uint32(os.Getuid())) {
+			return guard, nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	_ = exec.Command("systemctl", "--user", "stop", updateSleepGuardUnit).Run()
+	guard.Disconnect()
+	if err != nil {
+		return nil, fmt.Errorf("verify durable update sleep guard: %w", err)
+	}
+	return nil, fmt.Errorf("durable update sleep guard did not acquire a login1 block")
+}
+
+func (g *updateSleepGuard) Release() error {
+	if g == nil {
+		return nil
+	}
+	if exec.Command("systemctl", "--user", "is-active", "--quiet", updateSleepGuardUnit).Run() == nil {
+		if output, err := exec.Command("systemctl", "--user", "stop", updateSleepGuardUnit).CombinedOutput(); err != nil {
+			return fmt.Errorf("release durable update sleep guard: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+	}
+	return nil
+}
+
+func (g *updateSleepGuard) Disconnect() {
+	if g != nil && g.conn != nil {
+		_ = g.conn.Close()
+		g.conn = nil
+	}
+}
+
+// preparePowerPolicyUpdate removes pre-upgrade suspend owners before the shell
+// is quiesced. hypridle.conf is generated state outside materialize, while a
+// running shell-script daemon keeps executing the old file after replacement.
+func preparePowerPolicyUpdate() error {
+	_ = exec.Command("systemctl", "--user", "stop",
+		"ryoku-clamshell.service", "ryoku-idle.service").Run()
+	if err := runPowerHelper("ryoku-clamshell", "stop"); err != nil {
+		return fmt.Errorf("stop previous lid policy: %w", err)
+	}
+	if err := runPowerHelper("ryoku-idle", "stop"); err != nil {
+		return fmt.Errorf("stop previous idle policy: %w", err)
+	}
+	return nil
+}
+
+func hasStatusLine(status, want string) bool {
+	for _, line := range strings.Split(status, "\n") {
+		if line == want {
+			return true
+		}
+	}
+	return false
+}
+
+// activatePowerPolicy starts both policy owners as session services only after
+// the new shell can serve its secure suspend transaction.
+func activatePowerPolicy() error {
+	if output, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
+		return fmt.Errorf("reload user services: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	_ = exec.Command("systemctl", "--user", "reset-failed",
+		"ryoku-idle.service", "ryoku-clamshell.service").Run()
+	if output, err := exec.Command("systemctl", "--user", "restart", "ryoku-idle.service").CombinedOutput(); err != nil {
+		return fmt.Errorf("start idle policy service: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	idleReady := false
+	for range 40 {
+		output, _ := exec.Command(pkgBin("ryoku-idle"), "status").Output()
+		status := string(output)
+		if hasStatusLine(status, "idle=inactive") ||
+			(hasStatusLine(status, "idle=active") &&
+				hasStatusLine(status, "running=yes") &&
+				exec.Command("systemctl", "--user", "is-active", "--quiet", "ryoku-idle.service").Run() == nil) {
+			idleReady = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !idleReady {
+		return fmt.Errorf("idle policy service did not acquire its hypridle owner")
+	}
+
+	if output, err := exec.Command("systemctl", "--user", "restart", "ryoku-clamshell.service").CombinedOutput(); err != nil {
+		return fmt.Errorf("start lid policy service: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if exec.Command(pkgBin("ryoku-clamshell"), "is-laptop").Run() != nil {
+		return nil
+	}
+	for range 40 {
+		output, _ := exec.Command(pkgBin("ryoku-clamshell"), "status").Output()
+		status := string(output)
+		if hasStatusLine(status, "owner-monitor=ready") &&
+			hasStatusLine(status, "inhibitor=held") &&
+			exec.Command("systemctl", "--user", "is-active", "--quiet", "ryoku-clamshell.service").Run() == nil {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("lid policy service did not acquire its login1 inhibitor")
+}
+
+func runPowerHelper(name, arg string) error {
+	if !sys.Has(name) {
+		return fmt.Errorf("%s is not installed", name)
+	}
+	if err := exec.Command(pkgBin(name), arg).Run(); err != nil {
+		return fmt.Errorf("%s %s: %w", name, arg, err)
+	}
+	return nil
+}
+
+func reloadLogindLidPolicy() error {
+	if err := exec.Command("sudo", "systemctl", "reload", "systemd-logind").Run(); err != nil {
+		return fmt.Errorf("reload logind lid policy: %w", err)
+	}
+	return nil
 }
 
 // rashinReindex refreshes the agent-OS vault after an update so agents see
@@ -592,22 +1047,25 @@ func rashinReindex() {
 	}
 }
 
-// prowlRefresh keeps a dev box's prowl-agent current after an update. A packaged
-// box already got it through `pacman -Syu`, so this runs `prowl-agent update`
-// only when the binary is on PATH but not owned by a pacman package (a dev or
-// manual install). Best effort, and it logs one line either way.
+// prowlRefresh keeps a dev box's prowl current after an update. A packaged box
+// already got it through `pacman -Syu`, so this runs `<bin> update` only when
+// the binary is on PATH but not owned by a pacman package (a dev or manual
+// install). The CLI was renamed prowl-agent -> prowl; prefer the new name and
+// fall back to the old one upstream still ships. Best effort, one line either way.
 func prowlRefresh() {
-	path, err := exec.LookPath("prowl-agent")
+	path, err := exec.LookPath("prowl")
 	if err != nil {
-		return
+		if path, err = exec.LookPath("prowl-agent"); err != nil {
+			return
+		}
 	}
 	switch prowlDecide(true, prowlPacmanOwned(path)) {
 	case prowlManaged:
-		fmt.Println(i18n.T("==> prowl-agent is managed by pacman; refreshed with the system packages"))
+		fmt.Println(i18n.T("==> prowl is managed by pacman; refreshed with the system packages"))
 	case prowlSelfUpdate:
-		fmt.Println(i18n.T("==> Updating prowl-agent"))
+		fmt.Println(i18n.T("==> Updating prowl"))
 		if err := sys.Run(path, "update"); err != nil {
-			fmt.Fprintf(os.Stderr, i18n.T("warning: prowl-agent update failed: %v\n"), err)
+			fmt.Fprintf(os.Stderr, i18n.T("warning: prowl update failed: %v\n"), err)
 		}
 	}
 }
@@ -618,13 +1076,13 @@ func prowlPacmanOwned(path string) bool {
 	return exec.Command("pacman", "-Qo", path).Run() == nil
 }
 
-// prowlAction is what an update should do about prowl-agent.
+// prowlAction is what an update should do about prowl.
 type prowlAction int
 
 const (
 	prowlNoop       prowlAction = iota // not installed; nothing to do
 	prowlManaged                       // pacman-owned; the system upgrade covered it
-	prowlSelfUpdate                    // dev install; run `prowl-agent update`
+	prowlSelfUpdate                    // dev install; run `<bin> update`
 )
 
 // prowlDecide is the pure update decision, split out so it is unit-testable
@@ -889,17 +1347,39 @@ func Snapshots() error {
 	return nil
 }
 
-// snapshotRows lists the snapshots through snapper (root), parsed. sudo is
-// primed on the terminal first (it may prompt), then the list is captured
-// without a tty so the parse gets clean CSV instead of a password prompt.
+// snapshotRows lists the root snapshots, parsed, without ever prompting. It runs
+// snapper unprivileged first -- which succeeds once the config grants the user
+// read access (ALLOW_USERS + SYNC_ACL, snapper's own mechanism, which `ryoku
+// doctor` sets up) -- then a cached-credential `sudo -n`, which never prompts,
+// so it needs no tty and cannot trip pam_faillock. Only a real CSV listing
+// counts as success: snapper prints "No permissions." to stderr and still exits
+// 0 on a denied read, so the exit code alone would read an empty stdout as an
+// empty store. The error is returned when neither attempt yields a listing, so a
+// caller can tell a failed read from a genuinely empty one instead of both
+// looking like zero.
 func snapshotRows() ([]snapshotRow, error) {
-	primeSudo()
-	out, err := sys.RunOut("sudo", "-n", "snapper", "-c", snapperConfig, "--csvout",
-		"list", "--columns", "number,type,date,description,cleanup")
-	if err != nil {
-		return nil, err
+	args := []string{"-c", snapperConfig, "--csvout", "list",
+		"--columns", "number,type,date,description,cleanup"}
+	if out, err := sys.RunOut("snapper", args...); err == nil && isSnapshotCSV(out) {
+		return parseSnapshotRows(out), nil
 	}
-	return parseSnapshotRows(out), nil
+	if out, err := sys.RunOut("sudo", append([]string{"-n", "snapper"}, args...)...); err == nil && isSnapshotCSV(out) {
+		return parseSnapshotRows(out), nil
+	}
+	return nil, fmt.Errorf(i18n.T("snapper root snapshots are not readable (grant access with `ryoku doctor` or prime sudo)"))
+}
+
+// isSnapshotCSV reports whether out is a real `snapper --csvout list` listing:
+// its first non-empty line is the column header. A denied read ("No
+// permissions." on stderr, empty stdout, exit 0) fails this, so it is never
+// mistaken for an empty store.
+func isSnapshotCSV(out string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			return strings.HasPrefix(s, "number,")
+		}
+	}
+	return false
 }
 
 // snapshotRow is one parsed line of `snapper --csvout list`.
@@ -1029,13 +1509,16 @@ func Status(args []string) error {
 	} else {
 		fmt.Println(i18n.T("system:        up to date"))
 	}
-	// a bare 0 can't tell "configured but empty" from "snapper has no root
-	// config at all". doctor restores a missing config, so send the user
-	// there rather than letting status look healthy on a broken setup.
-	if sys.Exists("/etc/snapper/configs/root") {
-		fmt.Printf(i18n.T("snapshots:     %d\n"), r.Snapshots)
-	} else {
+	// Three distinct states, never conflated: no root config at all (doctor
+	// restores it), a config we could not read (a bare "0" here used to look
+	// like a real empty store -- the opposite meaning), and the real count.
+	switch {
+	case !sys.Exists("/etc/snapper/configs/root"):
 		fmt.Println(i18n.T("snapshots:     not configured (run ryoku doctor)"))
+	case !r.SnapshotsKnown:
+		fmt.Println(i18n.T("snapshots:     unavailable (grant read access: run ryoku doctor)"))
+	default:
+		fmt.Printf(i18n.T("snapshots:     %d\n"), r.Snapshots)
 	}
 	return nil
 }
@@ -1053,6 +1536,10 @@ type statusReport struct {
 	Recent    []updateItem `json:"recent"`
 	Channel   string       `json:"channel"`
 	Snapshots int          `json:"snapshots"`
+	// SnapshotsKnown is false when the count could not be read (no snapper access,
+	// cold sudo) rather than genuinely zero, so a consumer never reads a failed
+	// query as "no safety net". A bare `snapshots: 0` used to conflate the two.
+	SnapshotsKnown bool `json:"snapshotsKnown"`
 	// Packages is the OTHER lane: what the distribution (Arch or CachyOS) has
 	// waiting, kernel included. `sudo pacman -Syu` takes those; `ryoku update`
 	// deliberately does not, so Available stays about the Ryoku lane alone and
@@ -1119,15 +1606,17 @@ func packagedStatus(installed, latest string) statusReport {
 	installedSha := shortCommit(installed)
 	latestSha := shortCommit(latest)
 
+	snaps, snapsKnown := snapshotCount()
 	r := statusReport{
-		Installed:   installedSha,
-		Latest:      latestSha,
-		Updates:     []updateItem{}, // non-nil, so a current box marshals [] like the git path
-		Recent:      []updateItem{}, // non-nil, so the JSON stays stable when nothing is fetched
-		Channel:     ryokuChannel(),
-		Snapshots:   snapshotCount(),
-		Release:     sys.ReadRelease().Release,
-		ReleaseName: ReleaseName(),
+		Installed:      installedSha,
+		Latest:         latestSha,
+		Updates:        []updateItem{}, // non-nil, so a current box marshals [] like the git path
+		Recent:         []updateItem{}, // non-nil, so the JSON stays stable when nothing is fetched
+		Channel:        ryokuChannel(),
+		Snapshots:      snaps,
+		SnapshotsKnown: snapsKnown,
+		Release:        sys.ReadRelease().Release,
+		ReleaseName:    ReleaseName(),
 	}
 	if ch := sys.PackagedChannel(); ch != "" {
 		serves := channelServes(ch)
@@ -1255,28 +1744,22 @@ func aurUpdates() []updateItem {
 	return ups
 }
 
-func snapshotCount() int {
+// snapshotCount returns how many snapshots the root store holds and whether it
+// could be read at all. A failed read -- no snapper access and no cached sudo --
+// returns (0, false), distinct from a genuinely empty store (0, true), so
+// `ryoku status` can say "unavailable" instead of a bare "0" that means the
+// opposite. snapshotRows never prompts, so this is safe from the GUI's
+// terminal-less poll (a prompt with no tty trips pam_faillock and can lock the
+// account out of sudo -- found the loud way).
+func snapshotCount() (int, bool) {
 	if !sys.Has("snapper") {
-		return 0
+		return 0, false
 	}
-	// `ryoku status` is polled from the GUI (Hub + pill) on a timer, no
-	// controlling terminal. snapper wants root; interactive sudo with no tty
-	// can't read a password, the PAM conversation fails, pam_faillock counts
-	// each failure, and the account ends up locked out of sudo even with the
-	// correct password. (yes, found this one the loud way.) so a read-only
-	// status query MUST never escalate: skip the count unless a real terminal
-	// drives us, and even then never prompt (sudo -n = already-cached cred only).
-	if !sys.StdinIsTTY() {
-		return 0
-	}
-	out, err := sys.RunOut("sudo", "-n", "snapper", "-c", snapperConfig, "list")
+	rows, err := snapshotRows()
 	if err != nil {
-		return 0
+		return 0, false
 	}
-	if n := sys.CountNonEmpty(out) - 2; n > 0 {
-		return n
-	}
-	return 0
+	return len(rows), true
 }
 
 func orDash(s string) string {
@@ -1335,20 +1818,49 @@ func snapperPost(pre, desc string) {
 	_ = sys.Sudo("snapper", "-c", snapperConfig, "cleanup", "number")
 }
 
-// hyprPauseAutoreload stops Hyprland reloading the Lua config mid-swap, so a
-// half-written file is never observed (would trip the emergency overlay).
-func hyprPauseAutoreload() {
-	if sys.HyprLive() {
-		_ = exec.Command("hyprctl", "keyword", "misc:disable_autoreload", "true").Run()
+// pauseConfigAutoreload stops the compositor reloading its config mid-swap, so a
+// half-written tree is never observed.
+func pauseConfigAutoreload() {
+	c := wm.Open()
+	if c.Detection().Live {
+		_ = c.Act(wm.ActionConfigAutoreload, "off")
 	}
 }
 
-// hyprReload applies the materialized config in one clean pass. the reload
-// also restores auto-reload, since keywords reset from the config.
-func hyprReload() {
-	if sys.HyprLive() {
-		_ = exec.Command("hyprctl", "reload").Run()
+// reloadConfig applies materialized config in one clean pass where the provider
+// exposes an imperative reload. Niri watches its KDL and deliberately has no
+// reload action, so unsupported means the file watcher owns this step. Any
+// other live provider failure is fatal while the update sleep guard is held:
+// starting the lid inhibitor without its compositor event producer would turn
+// every close into a no-op.
+func configReloadResult(err error) error {
+	if errors.Is(err, wm.ErrUnsupported) {
+		return nil
 	}
+	return err
+}
+
+func reloadConfig() error {
+	c := wm.Open()
+	if !c.Detection().Live {
+		return nil
+	}
+	return configReloadResult(c.Act(wm.ActionConfigReload))
+}
+
+// regenerateConfig re-authors the live provider's generated config from the
+// store. Those files are a pure function of the store and the provider that
+// wrote them, so a provider update that emits a block differently (niri's
+// border only draws with an explicit on flag) has to rewrite them, or the old
+// output stays in force until a Hub edit happens to apply again. A box with
+// no store yet is left to the first Hub save.
+func regenerateConfig() error {
+	store := filepath.Join(sys.ConfigHome(), "ryoku", "desktop.json")
+	if !sys.Exists(store) {
+		return nil
+	}
+	_, err := wm.Open().Apply(store)
+	return err
 }
 
 // pkgBin resolves a Ryoku binary an update drives. The packaged /usr/bin copy
@@ -1372,9 +1884,9 @@ func pkgBin(name string) string {
 // The component list mirrors shell/ipc/daemon.go; "plugins" and "wallpaper"
 // are retired resident components, still reaped on boxes whose live daemon
 // predates their removal.
-func stopShell() {
+func stopShell() error {
 	if !sys.Has("ryoku-shell") {
-		return
+		return nil
 	}
 	// Under systemd the unit would respawn the daemon two seconds after the
 	// quit below and the update would race its own quiesce. Stopping the unit
@@ -1382,11 +1894,16 @@ func stopShell() {
 	_ = exec.Command("systemctl", "--user", "stop", "ryoku-shell").Run()
 	shell := pkgBin("ryoku-shell")
 	_ = exec.Command(shell, "quit").Run()
-	for i := 0; i < 20; i++ {
+	stopped := false
+	for range 50 {
 		if exec.Command(shell, "ping").Run() != nil {
+			stopped = true
 			break
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+	if !stopped {
+		return fmt.Errorf("pre-upgrade ryoku-shell did not stop")
 	}
 	// the pattern is anchored: quickshell is a general-purpose tool, and a bare
 	// "qs -c wallpaper" would also match a user's own longer config name
@@ -1413,50 +1930,163 @@ func stopShell() {
 	_ = exec.Command("pkill", "-f", "hub/quickshell").Run()
 	_ = exec.Command("pkill", "-f", "qs -c hub($| )").Run()
 	time.Sleep(200 * time.Millisecond)
+	return nil
 }
 
 // startShell brings the shell daemon back up, under systemd where the unit
 // exists so it stays supervised, else detached on the current binary. The
 // daemon-reload is what lets a unit materialize just laid down be found; a
 // stale-cached user manager would otherwise report it unknown at start.
-func startShell() {
+func startShell() error {
 	if !sys.Has("ryoku-shell") {
-		return
+		return nil
 	}
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
 	if exec.Command("systemctl", "--user", "restart", "ryoku-shell").Run() == nil {
-		return
+		return nil
+	}
+	if exec.Command("systemctl", "--user", "cat", "ryoku-shell.service").Run() == nil {
+		return fmt.Errorf("ryoku-shell.service failed its guarded restart")
+	}
+	activator := pkgBin("ryoku-qylock-activate")
+	if err := exec.Command(activator).Run(); err != nil {
+		return fmt.Errorf("activate qylock before fallback shell start: %w", err)
 	}
 	cmd := exec.Command("setsid", pkgBin("ryoku-shell"), "daemon")
 	logp := filepath.Join(sys.Xdg("XDG_STATE_HOME", ".local/state"), "ryoku-shell.log")
 	_ = os.MkdirAll(filepath.Dir(logp), 0o755)
 	if f, err := os.OpenFile(logp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); err == nil {
 		cmd.Stdout, cmd.Stderr = f, f
+		defer f.Close()
 	}
-	_ = cmd.Start()
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start fallback ryoku-shell: %w", err)
+	}
+	return nil
 }
 
-// restartWallpaper brings the wallpaper daemon onto the binary the update just
-// installed. It is a second supervised daemon, not part of ryoku-shell, and it
-// was quietly left running across every update: pacman replaced /usr/bin/ryogami
-// while the old process kept the ryogami.sock it owns, so the restarted shell's
-// QML spoke to a daemon from the previous release. The wallpaper, the picker and
-// the palette that follows the wallpaper all cross that socket, which is why all
-// three went at once (#159) and why nothing looked wrong: the unit was enabled
-// and active, just old.
-//
-// try-restart, not restart: outside a graphical session the unit's
-// ConditionEnvironment refuses a start and autostart brings it up at the next
-// login instead, so a down daemon must not be forced up here.
-func restartWallpaper() {
+type updaterLogin1Session struct {
+	ID   string
+	UID  uint32
+	User string
+	Seat string
+	Path dbus.ObjectPath
+}
+
+func login1GraphicalUserProperties(properties map[string]dbus.Variant) bool {
+	sessionType, typeOK := properties["Type"].Value().(string)
+	sessionClass, classOK := properties["Class"].Value().(string)
+	desktop, desktopOK := properties["Desktop"].Value().(string)
+	desktop = strings.ToLower(desktop)
+	supported := false
+	for _, provider := range wm.Providers() {
+		if desktop == strings.ToLower(provider) {
+			supported = true
+			break
+		}
+	}
+	return typeOK && classOK && desktopOK && supported &&
+		sessionType == "wayland" &&
+		(sessionClass == "user" || sessionClass == "user-early")
+}
+
+func graphicalSessionState() (present bool, active bool, err error) {
+	conn, err := dbus.ConnectSystemBus()
+	if err != nil {
+		return false, false, fmt.Errorf("connect login1 to inspect graphical sessions: %w", err)
+	}
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	manager := conn.Object("org.freedesktop.login1", dbus.ObjectPath("/org/freedesktop/login1"))
+	var sessions []updaterLogin1Session
+	if err := manager.CallWithContext(
+		ctx,
+		"org.freedesktop.login1.Manager.ListSessions",
+		0,
+	).Store(&sessions); err != nil {
+		return false, false, fmt.Errorf("list login1 sessions: %w", err)
+	}
+	var inspectErr error
+	for _, session := range sessions {
+		if session.UID != uint32(os.Getuid()) {
+			continue
+		}
+		var properties map[string]dbus.Variant
+		err := conn.Object("org.freedesktop.login1", session.Path).CallWithContext(
+			ctx,
+			"org.freedesktop.DBus.Properties.GetAll",
+			0,
+			"org.freedesktop.login1.Session",
+		).Store(&properties)
+		if err != nil {
+			inspectErr = err
+			continue
+		}
+		if !login1GraphicalUserProperties(properties) {
+			continue
+		}
+		present = true
+		isActive, ok := properties["Active"].Value().(bool)
+		if !ok {
+			inspectErr = fmt.Errorf("login1 session %s has no boolean Active property", session.ID)
+			continue
+		}
+		if isActive {
+			return true, true, nil
+		}
+	}
+	if inspectErr != nil {
+		return false, false, fmt.Errorf("inspect login1 sessions: %w", inspectErr)
+	}
+	return present, false, nil
+}
+
+func waitForShellReady(expected bool) (bool, error) {
+	if !sys.Has("ryoku-shell") {
+		if expected {
+			return false, fmt.Errorf("ryoku-shell is not installed")
+		}
+		return false, nil
+	}
+	shell := pkgBin("ryoku-shell")
+	if exec.Command(shell, "sleep-ready").Run() == nil {
+		return true, nil
+	}
+	if !expected {
+		return false, nil
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+		if exec.Command(shell, "sleep-ready").Run() == nil {
+			return true, nil
+		}
+	}
+	return false, fmt.Errorf("new ryoku-shell sleep guard did not become ready after restart")
+}
+
+// restartWallpaper brings a previously running wallpaper daemon onto the
+// binary the update just installed. Ryogami is supervised beside the shell and
+// owns the socket used by the wallpaper, picker and palette. A lifecycle rebind
+// stops the whole session target, so try-restart alone would leave it down; in
+// that case forceStart preserves the active state recorded before the rebind.
+// Outside a graphical session a down daemon is not forced up.
+func restartWallpaper(forceStart bool) {
 	if !sys.Has("ryogami") {
 		return
 	}
 	_ = exec.Command("systemctl", "--user", "daemon-reload").Run()
-	if exec.Command("systemctl", "--user", "try-restart", "ryogami.service").Run() == nil {
+	verb := "try-restart"
+	if forceStart {
+		_ = exec.Command("systemctl", "--user", "reset-failed", "ryogami.service").Run()
+		verb = "restart"
+	}
+	if exec.Command("systemctl", "--user", verb, "ryogami.service").Run() == nil {
 		return
 	}
-	// no unit yet (a box mid-cutover): drop the old process so the shell's
+	// No unit yet on a box mid-cutover: drop the old process so the shell's
 	// respawn picks up the installed binary.
 	_ = exec.Command("pkill", "-x", "ryogami").Run()
 }

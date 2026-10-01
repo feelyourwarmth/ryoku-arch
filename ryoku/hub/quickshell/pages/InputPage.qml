@@ -5,6 +5,7 @@ import QtQuick.Controls
 import Quickshell.Io
 import Ryoku.Ui
 import Ryoku.Ui.Singletons
+import "../Singletons"
 
 // Input (DESIGN.md, SYSTEM). Keyboard layout and remaps, pointer and touchpad
 // behaviour, and key repeat for the Hyprland session. Rendered as rows off the
@@ -36,7 +37,59 @@ Item {
     property var hub
 
     // gated so nothing paints stale before the first `hypr get` returns.
-    readonly property bool ready: pg.hub ? pg.hub.hyprLoaded === true : false
+    readonly property bool ready: pg.hub ? pg.hub.wmLoaded === true : false
+
+    // Installed cursor themes, enumerated by the backend so the row offers what
+    // this machine can actually wear (the Cursor page read the same command).
+    property var cursorThemeList: [{ "code": "DYNAMIC", "name": I18n.tr("Follow the wallpaper") }]
+    Process {
+        id: cursorEnum
+        running: false
+        command: ["ryoku-hub", "desktop", "cursors"]
+        stdout: StdioCollector {
+            onStreamFinished: {
+                try {
+                    var names = JSON.parse(this.text);
+                    if (!Array.isArray(names)) return;
+                    var out = [{ "code": "DYNAMIC", "name": I18n.tr("Follow the wallpaper") }];
+                    for (var i = 0; i < names.length; i++)
+                        out.push({ "code": String(names[i]), "name": String(names[i]) });
+                    pg.cursorThemeList = out;
+                } catch (e) {}
+            }
+        }
+    }
+
+    // The touchpad lock is a live device state the seam owns, not a saved
+    // setting, so it is read once through the seam (on|off) rather than off the
+    // settings draft, and re-read after a flip so the switch shows what the
+    // compositor actually did. Only wired where the compositor can toggle a pad.
+    property bool touchpadOn: true
+    Process {
+        id: touchpadStatus
+        running: false
+        command: ["ryoku", "wm", "act", "input.touchpad", "status"]
+        stdout: StdioCollector {
+            onStreamFinished: pg.touchpadOn = String(this.text).trim() !== "off"
+        }
+    }
+    Process {
+        id: touchpadSet
+        running: false
+        onExited: touchpadStatus.running = true
+    }
+    function setTouchpad(on) {
+        touchpadSet.command = ["ryoku", "wm", "act", "input.touchpad", on ? "on" : "off"];
+        touchpadSet.running = false;
+        touchpadSet.running = true;
+    }
+
+    Component.onCompleted: {
+        pg.refreshVariants();
+        cursorEnum.running = true;
+        if (Settings.supports("touchpadToggle"))
+            touchpadStatus.running = true;
+    }
 
     // ── hub access ──────────────────────────────────────────────────────────
     function hv(path) { return pg.hub ? pg.hub.hyprVal(path) : undefined }
@@ -49,10 +102,10 @@ Item {
     // because xkb aligns variants to layouts by position. `committed` reads disk
     // for the struck default.
     function kbLayoutStr(committed) {
-        return String((committed ? pg.cv("input.kbLayout") : pg.hv("input.kbLayout")) || "");
+        return String((committed ? pg.cv("desktop.input.kbLayout") : pg.hv("desktop.input.kbLayout")) || "");
     }
     function kbVariantStr(committed) {
-        return String((committed ? pg.cv("input.kbVariant") : pg.hv("input.kbVariant")) || "");
+        return String((committed ? pg.cv("desktop.input.kbVariant") : pg.hv("desktop.input.kbVariant")) || "");
     }
     function primaryLayout(committed) { return pg.kbLayoutStr(committed).split(",")[0]; }
     function secondaryLayout(committed) {
@@ -62,12 +115,12 @@ Item {
     function primaryVariant(committed) { return pg.kbVariantStr(committed).split(",")[0]; }
 
     function setLayouts(primary, secondary) {
-        pg.he("input.kbLayout", secondary ? primary + "," + secondary : primary);
+        pg.he("desktop.input.kbLayout", secondary ? primary + "," + secondary : primary);
         var v = pg.primaryVariant(false);
-        pg.he("input.kbVariant", secondary && v ? v + "," : v);
+        pg.he("desktop.input.kbVariant", secondary && v ? v + "," : v);
     }
     function setVariant(v) {
-        pg.he("input.kbVariant", pg.secondaryLayout(false) && v ? v + "," : v);
+        pg.he("desktop.input.kbVariant", pg.secondaryLayout(false) && v ? v + "," : v);
     }
 
     // ── curated remaps over kb_options ──────────────────────────────────────
@@ -82,7 +135,7 @@ Item {
     readonly property string swapId: "altwin:swap_alt_win"
 
     function kbOptionsStr(committed) {
-        return String((committed ? pg.cv("input.kbOptions") : pg.hv("input.kbOptions")) || "");
+        return String((committed ? pg.cv("desktop.input.kbOptions") : pg.hv("desktop.input.kbOptions")) || "");
     }
     function optTokens(committed) {
         var raw = pg.kbOptionsStr(committed).split(",");
@@ -123,7 +176,7 @@ Item {
                 out.push(toks[j]);
         if (value.length)
             out.push(value);
-        pg.he("input.kbOptions", out.join(","));
+        pg.he("desktop.input.kbOptions", out.join(","));
     }
     function setExtra(text) {
         var known = pg.knownIds();
@@ -138,7 +191,7 @@ Item {
             if (t.length)
                 keep.push(t);
         }
-        pg.he("input.kbOptions", keep.join(","));
+        pg.he("desktop.input.kbOptions", keep.join(","));
     }
 
     // family key <-> visible label, offered choices per family.
@@ -184,7 +237,7 @@ Item {
 
     Process {
         id: layoutsProc
-        command: ["ryoku-hub", "hypr", "layouts"]
+        command: ["ryoku-hub", "desktop", "layouts"]
         running: true
         stdout: StdioCollector {
             onStreamFinished: {
@@ -205,7 +258,7 @@ Item {
     Process {
         id: variantsProc
         property string forLayout: ""
-        command: ["ryoku-hub", "hypr", "variants", forLayout]
+        command: ["ryoku-hub", "desktop", "variants", forLayout]
         stdout: StdioCollector {
             onStreamFinished: {
                 var out = [{ "code": "", "name": I18n.tr("Default") }];
@@ -230,7 +283,6 @@ Item {
     }
     readonly property string curPrimary: pg.primaryLayout(false)
     onCurPrimaryChanged: pg.refreshVariants()
-    Component.onCompleted: pg.refreshVariants()
 
     function nameIn(list, code) {
         for (var i = 0; i < list.length; i++)
@@ -243,9 +295,9 @@ Item {
     // Out of band: this writes to /etc and rebuilds the boot image, not the
     // draft, and escalates through polkit.
     property string sysApplyState: ""
-    function applyLayoutArg() { return String(pg.hv("input.kbLayout") || "us"); }
-    function applyVariantArg() { return String(pg.hv("input.kbVariant") || ""); }
-    function applyOptionsArg() { return String(pg.hv("input.kbOptions") || ""); }
+    function applyLayoutArg() { return String(pg.hv("desktop.input.kbLayout") || "us"); }
+    function applyVariantArg() { return String(pg.hv("desktop.input.kbVariant") || ""); }
+    function applyOptionsArg() { return String(pg.hv("desktop.input.kbOptions") || ""); }
     // `ryoku keyboard apply` owns all four layers: it sets the greeter and the
     // console through localectl AND rebuilds the boot image, which localectl
     // alone cannot do. mkinitcpio bakes a copy of /etc/vconsole.conf into the
@@ -268,12 +320,12 @@ Item {
     readonly property bool kbClean: {
         if (!pg.hub)
             return false;
-        return JSON.stringify(pg.hv("input.kbLayout")) === JSON.stringify(pg.cv("input.kbLayout"))
-            && JSON.stringify(pg.hv("input.kbVariant")) === JSON.stringify(pg.cv("input.kbVariant"))
-            && JSON.stringify(pg.hv("input.kbOptions")) === JSON.stringify(pg.cv("input.kbOptions"));
+        return JSON.stringify(pg.hv("desktop.input.kbLayout")) === JSON.stringify(pg.cv("desktop.input.kbLayout"))
+            && JSON.stringify(pg.hv("desktop.input.kbVariant")) === JSON.stringify(pg.cv("desktop.input.kbVariant"))
+            && JSON.stringify(pg.hv("desktop.input.kbOptions")) === JSON.stringify(pg.cv("desktop.input.kbOptions"));
     }
 
-    readonly property bool swipeOn: pg.hv("input.workspaceSwipe") === true
+    readonly property bool swipeOn: pg.hv("desktop.input.workspaceSwipe") === true
 
     // ── the catalogue overlay (filtered pick over the runtime xkb lists) ─────
     property var catList: null            // [{ code, name }] while open, else null
@@ -358,7 +410,10 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         divider: true
-        visible: st.gate
+        // a row nothing in the active provider would write is dropped, same rule
+        // the schema pages gate on, so a pointer/touchpad knob the compositor has
+        // no key for is absent rather than a dead switch.
+        visible: st.gate && Settings.modelsKey(st.path)
         source: "hypr"
         block: st.segBand
         controlWidth: st.ctl === "sw" ? 54
@@ -544,10 +599,19 @@ Item {
     // ── head: eyebrow, Fraunces title, blurb (matches every settings page) ──
     Column {
         id: head
-        anchors { left: parent.left; right: parent.right; top: parent.top }
-        spacing: Tokens.s2
+        anchors.top: parent.top
+        // the head sits on the body's grid: the left inset and width of the
+        // cards below, so the title lands over the first column, not centred.
+        width: parent.width - Tokens.s3
+        x: 0
+        // the register row sits off the title: a rule over a 32px
+        // title needs more than the gap between two lines of body text
+        spacing: Tokens.s3
 
         Row {
+            // the register row holds a fixed box, so the rule and the seal keep
+            // their distance from the title on every page
+            height: Tokens.s5
             spacing: Tokens.s2
             Rectangle {
                 width: 16; height: 1; color: Tokens.ink
@@ -569,43 +633,34 @@ Item {
         }
         Text {
             width: Math.min(parent.width, 720)
-            text: I18n.tr("Keyboard layout and remaps, pointer and touchpad behaviour, and key repeat for the Hyprland session. Edits preview live; nothing is written until you save.")
+            text: I18n.tr("Keyboard, pointer and touchpad, and key repeat.")
             color: Tokens.inkMuted; font.family: Tokens.ui
             font.pixelSize: Tokens.fBody; wrapMode: Text.WordWrap
         }
     }
 
-    // marginalia in the head's right margin: the section register, ink only.
-    // Input draws its own head, so it carries its own strip (framed pages get
-    // the shared rail + bar registers automatically, but not a head one).
-    Marginalia {
-        anchors { right: parent.right; top: head.top }
-        anchors.rightMargin: Tokens.s6; anchors.topMargin: Tokens.s1
-        kana: "入力"
-        index: "02"; label: I18n.tr("DEVICES")
-        glyph: "wave"; glyph2: "column"
-    }
-
     // ── KEYBOARD MAP: pinned under the head so it stays in view while you edit,
     // never scrolled to. A compact live diagram of the layout and the remaps,
-    // beside a decorative plate that fills the space the small keyboard leaves.
-    // The page's one red head -- a showcase surface, not a settings group.
+    // beside the facts behind it -- the held layout, its variant, and the keys
+    // the remaps below will write -- so the band says something at a glance
+    // instead of leaving half its width blank.
     Section {
         id: kbmSect
-        anchors {
-            left: parent.left; right: parent.right; top: head.bottom
-            topMargin: Tokens.s5; rightMargin: Tokens.s3
-        }
+        anchors { top: head.bottom; topMargin: Tokens.s5 }
+        // the showcase spans the body: its rule runs the width of the cards
+        // below and the diagram sits over the first column.
+        width: parent.width - Tokens.s3
+        x: 0
         title: I18n.tr("KEYBOARD MAP")
         titleColor: Tokens.sunDeep
 
         Row {
-            spacing: Tokens.s4
+            spacing: Tokens.s6
             KeyboardMap {
                 id: pinnedMap
                 compact: true
                 keyMax: 40
-                width: Math.round(kbmSect.span(Spans.cols) * 0.46)
+                width: Math.min(500, Math.round(kbmSect.span(Spans.cols) * 0.46))
                 height: implicitHeight
                 layoutCode: pg.primaryLayout(false)
                 layoutName: pg.nameIn(pg.layoutOptions, pg.primaryLayout(false))
@@ -614,15 +669,41 @@ Item {
                 swapAltSuper: pg.pickFrom([pg.swapId], false) === pg.swapId
                 composeKey: pg.pickFrom(pg.composeIds, false)
                 switchChord: pg.pickFrom(pg.grpIds, false)
-                numlock: pg.hv("input.numlockByDefault") === true
+                numlock: pg.hv("desktop.input.numlockByDefault") === true
             }
-            Decor {
-                width: kbmSect.span(Spans.cols) - pinnedMap.width - Tokens.s4
-                height: pinnedMap.height
-                title: "入力"; sub: "キーボード"
-                tate: "配列と再配置"
-                caption: I18n.tr("The layout, and the keys you taught new jobs. It answers live as you edit.")
-                code: "INPUT-02"; seal: "力"; seed: 4; ditherFreq: 1.0; boxId: "input.map"
+
+            // the facts the diagram draws, in words: a mono label over its value
+            Column {
+                width: Math.max(200, kbmSect.span(Spans.cols) - pinnedMap.width - Tokens.s6)
+                anchors.verticalCenter: pinnedMap.verticalCenter
+                spacing: Tokens.s3
+                Repeater {
+                    model: [
+                        { k: I18n.tr("LAYOUT"), v: pg.nameIn(pg.layoutOptions, pg.primaryLayout(false)) },
+                        { k: I18n.tr("VARIANT"), v: pg.nameIn(pg.variantOptions, pg.primaryVariant(false)) },
+                        { k: I18n.tr("CAPS"), v: pg.mapLabel(pg.capsMap, pg.pickFrom(pg.capsIds, false)) },
+                        { k: I18n.tr("COMPOSE"), v: pg.mapLabel(pg.composeMap, pg.pickFrom(pg.composeIds, false)) },
+                        { k: I18n.tr("SWITCH"), v: pg.mapLabel(pg.grpMap, pg.pickFrom(pg.grpIds, false)) }
+                    ]
+                    delegate: Column {
+                        required property var modelData
+                        width: parent.width
+                        spacing: 1
+                        Text {
+                            text: modelData.k
+                            color: Tokens.inkFaint
+                            font.family: Tokens.mono; font.pixelSize: Tokens.fTiny
+                            font.letterSpacing: Tokens.trackMark
+                        }
+                        Text {
+                            width: parent.width
+                            text: modelData.v || "—"
+                            color: Tokens.ink
+                            font.family: Tokens.ui; font.pixelSize: Tokens.fSmall
+                            elide: Text.ElideRight
+                        }
+                    }
+                }
             }
         }
     }
@@ -640,20 +721,25 @@ Item {
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+        WheelScroll { }
 
-        Column {
+        CardColumns {
             id: body
-            width: flick.width - Tokens.s3   // reserve a lane for the scroll rail
+            // a body of cards fills the measure and splits into balanced columns
+            width: flick.width - Tokens.s3
             spacing: Tokens.s5
+            // short once the rarely-touched drawers fold: centre the cards in
+            // the body instead of hanging them off the top of a wide window.
+            fillTo: flick.height
 
             SettingCard {
-                width: body.width
+                width: body.colWidth
                 title: I18n.tr("KEYBOARD")
 
                 PickCell {
                     divider: false
                     cellLabel: I18n.tr("Layout")
-                    cellDesc: I18n.tr("The main keyboard layout.")
+                    cellDesc: I18n.tr("What your keys type: QWERTY, AZERTY, Dvorak.")
                     pickTitle: I18n.tr("KEYBOARD LAYOUT")
                     list: pg.layoutOptions
                     currentCode: pg.primaryLayout(false)
@@ -662,7 +748,7 @@ Item {
                 }
                 PickCell {
                     cellLabel: I18n.tr("Style")
-                    cellDesc: I18n.tr("A variant of the main layout, like Dvorak or intl.")
+                    cellDesc: I18n.tr("A tweak on the layout, like intl or Colemak.")
                     pickTitle: I18n.tr("LAYOUT STYLE")
                     list: pg.variantOptions
                     currentCode: pg.primaryVariant(false)
@@ -671,7 +757,7 @@ Item {
                 }
                 PickCell {
                     cellLabel: I18n.tr("Second layout")
-                    cellDesc: I18n.tr("A spare layout kept loaded; the chord below switches to it.")
+                    cellDesc: I18n.tr("A spare layout kept loaded; a chord switches to it.")
                     pickTitle: I18n.tr("SECOND LAYOUT")
                     list: [{ "code": "", "name": I18n.tr("None") }].concat(pg.layoutOptions)
                     currentCode: pg.secondaryLayout(false)
@@ -681,13 +767,13 @@ Item {
                 OptCell {
                     gate: pg.secondaryLayout(false).length > 0
                     cellLabel: I18n.tr("Switch layouts")
-                    cellDesc: I18n.tr("The chord that toggles between the two loaded layouts.")
+                    cellDesc: I18n.tr("The chord that flips between your two layouts.")
                     ids: pg.grpIds
                     map: pg.grpMap
                     kind: "seg"
                 }
                 Setting {
-                    path: "input.numlockByDefault"
+                    path: "desktop.input.numlockByDefault"
                     ctl: "sw"
                     label: I18n.tr("Numlock on at login")
                     desc: I18n.tr("Start each session with the keypad typing digits.")
@@ -695,20 +781,131 @@ Item {
             }
 
             SettingCard {
-                width: body.width
+                width: body.colWidth
+                title: I18n.tr("POINTER")
+
+                Setting {
+                    divider: false
+                    path: "desktop.input.sensitivity"
+                    ctl: "slid"; lo: -1; hi: 1; sc: 100; dec: 2
+                    label: I18n.tr("Sensitivity")
+                    desc: I18n.tr("Pointer speed offset; 0 is default.")
+                }
+                Setting {
+                    path: "desktop.input.mouseScrollFactor"
+                    ctl: "slid"; lo: 0.2; hi: 3; sc: 10; dec: 1; unit: "×"
+                    label: I18n.tr("Scroll speed")
+                    desc: I18n.tr("Multiplier on each wheel notch.")
+                }
+                Setting {
+                    path: "desktop.input.followMouse"
+                    ctl: "seg"; asInt: true
+                    opts: [{ "key": 0, "label": I18n.tr("Ignore pointer movement") }, { "key": 1, "label": I18n.tr("Focus under pointer") }, { "key": 2, "label": I18n.tr("Click to focus") }]
+                    label: I18n.tr("Focus behavior")
+                    desc: I18n.tr("How windows take focus as the pointer moves.")
+                }
+                Setting {
+                    path: "desktop.input.leftHanded"
+                    ctl: "sw"
+                    label: I18n.tr("Left-handed buttons")
+                    desc: I18n.tr("Swap the left and right mouse buttons.")
+                }
+                Setting {
+                    path: "desktop.input.accelProfile"
+                    ctl: "seg"
+                    opts: [{ "key": "", "label": I18n.tr("Default") }, { "key": "flat", "label": I18n.tr("Flat") }, { "key": "adaptive", "label": I18n.tr("Adaptive") }]
+                    label: I18n.tr("Acceleration")
+                    desc: I18n.tr("Flat ties travel to the hand; Adaptive speeds quick moves.")
+                }
+                Setting {
+                    path: "desktop.input.mouseNaturalScroll"
+                    ctl: "sw"
+                    label: I18n.tr("Natural scroll")
+                    desc: I18n.tr("Roll the wheel up and the page moves up.")
+                }
+                Setting {
+                    path: "desktop.input.middleClickPaste"
+                    ctl: "sw"
+                    label: I18n.tr("Middle-click pastes")
+                    desc: I18n.tr("Press the wheel to insert the last highlighted text.")
+                }
+            }
+
+            SettingCard {
+                id: cursorSect
+                width: body.colWidth
+                title: I18n.tr("CURSOR")
+
+                PickCell {
+                    divider: false
+                    cellLabel: I18n.tr("Theme")
+                    cellDesc: I18n.tr("The installed pointer set; applies now and to new apps.")
+                    pickTitle: I18n.tr("POINTER THEME")
+                    list: pg.cursorThemeList
+                    currentCode: pg.hub ? String(pg.hub.hyprVal("desktop.cursor.theme") || "DYNAMIC") : ""
+                    committedCode: pg.hub ? String(pg.hub.hyprCommittedVal("desktop.cursor.theme") || "DYNAMIC") : ""
+                    applyFn: function (code) { pg.he("desktop.cursor.theme", code); }
+                }
+                Setting {
+                    path: "desktop.cursor.size"
+                    ctl: "step"; lo: 12; hi: 64; stepBy: 2; asInt: true
+                    label: I18n.tr("Size")
+                    desc: I18n.tr("How large the pointer is drawn.")
+                    unit: "px"
+                }
+                Setting {
+                    path: "desktop.cursor.inactiveTimeout"
+                    ctl: "step"; lo: 0; hi: 30; stepBy: 1; asInt: true
+                    label: I18n.tr("Hide after idle")
+                    desc: I18n.tr("Seconds of stillness before it hides; 0 never hides.")
+                    unit: "s"
+                }
+                Setting {
+                    path: "desktop.cursor.hideOnKeyPress"
+                    ctl: "sw"
+                    label: I18n.tr("Hide while typing")
+                    desc: I18n.tr("It vanishes on a keypress and returns when moved.")
+                }
+            }
+
+            SettingCard {
+                width: body.colWidth
+                title: I18n.tr("KEY REPEAT")
+
+                Setting {
+                    divider: false
+                    path: "desktop.input.repeatRate"
+                    ctl: "step"; lo: 1; hi: 100; stepBy: 1; unit: "/s"
+                    label: I18n.tr("Repeat rate")
+                    desc: I18n.tr("Characters per second while a key is held.")
+                }
+                Setting {
+                    path: "desktop.input.repeatDelay"
+                    ctl: "step"; lo: 100; hi: 2000; stepBy: 50; unit: "ms"
+                    label: I18n.tr("Repeat delay")
+                    desc: I18n.tr("Pause before a held key starts repeating.")
+                }
+            }
+
+            // rarely touched once set: folded by default so the page leads with
+            // layout, pointer and cursor. The summary says what the drawer holds.
+            SettingCard {
+                width: body.colWidth
                 title: I18n.tr("KEY REMAPS")
+                expanded: false
+                summary: I18n.tr("CAPS, COMPOSE, XKB")
 
                 OptCell {
                     divider: false
                     cellLabel: I18n.tr("Caps Lock")
-                    cellDesc: I18n.tr("Turn the Caps Lock key into something more useful.")
+                    cellDesc: I18n.tr("Remap it to Escape, Ctrl, or switch it off.")
                     ids: pg.capsIds
                     map: pg.capsMap
                     kind: "chips"
                 }
                 OptCell {
                     cellLabel: I18n.tr("Swap Alt and Super")
-                    cellDesc: I18n.tr("Exchange the Alt and Super modifier keys.")
+                    cellDesc: I18n.tr("Trade the two keys for macOS-style shortcuts.")
                     ids: [pg.swapId]
                     map: []
                     kind: "sw"
@@ -716,7 +913,7 @@ Item {
                 }
                 OptCell {
                     cellLabel: I18n.tr("Compose key")
-                    cellDesc: I18n.tr("A key that begins a compose sequence for accents and symbols.")
+                    cellDesc: I18n.tr("Starts a sequence for accents like é and ñ.")
                     ids: pg.composeIds
                     map: pg.composeMap
                     kind: "seg"
@@ -734,7 +931,7 @@ Item {
                     footH: 32
                     source: "hypr"
                     label: I18n.tr("Extra options")
-                    desc: I18n.tr("Raw xkb options, comma separated. The pickers above manage their own.")
+                    desc: I18n.tr("Raw xkb options, comma separated, for power users.")
                     changed: pg.extraOptions(false) !== pg.extraOptions(true)
 
                     Field {
@@ -761,7 +958,7 @@ Item {
                     controlWidth: 84
                     source: "vconsole"
                     label: I18n.tr("Apply system-wide")
-                    desc: I18n.tr("Also set the login screen, the TTYs, and the disk passphrase prompt.")
+                    desc: I18n.tr("Match the login screen, TTYs, and boot prompt too.")
                     changed: false
 
                     Btn {
@@ -790,152 +987,106 @@ Item {
             }
 
             SettingCard {
-                width: body.width
-                title: I18n.tr("POINTER")
-
-                Setting {
-                    divider: false
-                    path: "input.sensitivity"
-                    ctl: "slid"; lo: -1; hi: 1; sc: 100; dec: 2
-                    label: I18n.tr("Sensitivity")
-                    desc: I18n.tr("Pointer speed offset; 0 is the device default.")
-                }
-                Setting {
-                    path: "input.mouseScrollFactor"
-                    ctl: "slid"; lo: 0.2; hi: 3; sc: 10; dec: 1; unit: "×"
-                    label: I18n.tr("Scroll speed")
-                    desc: I18n.tr("Multiplier on each wheel notch.")
-                }
-                Setting {
-                    path: "input.followMouse"
-                    ctl: "seg"; asInt: true
-                    opts: [{ "key": 0, "label": I18n.tr("Ignore pointer movement") }, { "key": 1, "label": I18n.tr("Focus under pointer") }, { "key": 2, "label": I18n.tr("Click to focus") }]
-                    label: I18n.tr("Focus behavior")
-                    desc: I18n.tr("Click to focus keeps newly launched and dock-selected apps in front.")
-                }
-                Setting {
-                    path: "input.leftHanded"
-                    ctl: "sw"
-                    label: I18n.tr("Left-handed buttons")
-                    desc: I18n.tr("Swap the left and right mouse buttons.")
-                }
-                Setting {
-                    path: "input.accelProfile"
-                    ctl: "seg"
-                    opts: [{ "key": "", "label": I18n.tr("Default") }, { "key": "flat", "label": I18n.tr("Flat") }, { "key": "adaptive", "label": I18n.tr("Adaptive") }]
-                    label: I18n.tr("Acceleration")
-                    desc: I18n.tr("Flat ties travel to the hand; Adaptive speeds quick moves.")
-                }
-                Setting {
-                    path: "input.mouseNaturalScroll"
-                    ctl: "sw"
-                    label: I18n.tr("Natural scroll")
-                    desc: I18n.tr("Roll the wheel up and the page moves up.")
-                }
-                Setting {
-                    path: "input.middleClickPaste"
-                    ctl: "sw"
-                    label: I18n.tr("Middle-click pastes")
-                    desc: I18n.tr("Press the wheel to insert the last highlighted text.")
-                }
-            }
-
-            SettingCard {
-                width: body.width
+                width: body.colWidth
                 title: I18n.tr("TOUCHPAD")
+                expanded: false
+                summary: I18n.tr("TAP, SCROLL, SWIPE")
 
-                Setting {
+                // The touchpad lock, the FN touchpad key's job, as a switch. A
+                // live seam action rather than a saved setting, so it applies at
+                // once and shows the pad's real state; hidden where the
+                // compositor cannot toggle a pad.
+                SettingRow {
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    visible: Settings.supports("touchpadToggle")
                     divider: false
-                    path: "input.naturalScroll"
+                    controlWidth: 54
+                    source: "hypr"
+                    label: I18n.tr("Touchpad")
+                    desc: I18n.tr("Turn the touchpad off, the way the FN touchpad key does.")
+                    changed: false
+
+                    Sw {
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        on: pg.touchpadOn
+                        onToggled: (v) => pg.setTouchpad(v)
+                    }
+                }
+                Setting {
+                    divider: true
+                    path: "desktop.input.naturalScroll"
                     ctl: "sw"
                     label: I18n.tr("Natural scroll")
                     desc: I18n.tr("Two fingers drag the content like a touchscreen.")
                 }
                 Setting {
-                    path: "input.tapToClick"
+                    path: "desktop.input.tapToClick"
                     ctl: "sw"
                     label: I18n.tr("Tap to click")
                     desc: I18n.tr("A tap counts as a click; two fingers right, three middle.")
                 }
                 Setting {
-                    path: "input.tapAndDrag"
+                    path: "desktop.input.tapAndDrag"
                     ctl: "sw"
                     label: I18n.tr("Tap and drag")
                     desc: I18n.tr("Tap, then hold the finger down to drag what you tapped.")
                 }
                 Setting {
-                    path: "input.disableWhileTyping"
+                    path: "desktop.input.disableWhileTyping"
                     ctl: "sw"
                     label: I18n.tr("Disable while typing")
-                    desc: I18n.tr("Ignore the touchpad while you type so a palm cannot nudge it.")
+                    desc: I18n.tr("Ignore the pad while typing so a palm can't nudge it.")
                 }
                 Setting {
-                    path: "input.clickfinger"
+                    path: "desktop.input.clickfinger"
                     ctl: "sw"
                     label: I18n.tr("Click by finger count")
                     desc: I18n.tr("One finger clicks left, two right, three middle.")
                 }
                 Setting {
-                    path: "input.middleEmulation"
+                    path: "desktop.input.middleEmulation"
                     ctl: "sw"
                     label: I18n.tr("Emulate middle click")
                     desc: I18n.tr("Press left and right together for a middle click.")
                 }
                 Setting {
-                    path: "input.touchScrollFactor"
+                    path: "desktop.input.touchScrollFactor"
                     ctl: "slid"; lo: 0.2; hi: 3; sc: 10; dec: 1; unit: "×"
                     label: I18n.tr("Scroll speed")
-                    desc: I18n.tr("Multiplier on two-finger scroll distance.")
+                    desc: I18n.tr("Multiplier on two-finger scroll.")
                 }
                 Setting {
-                    path: "input.workspaceSwipe"
+                    path: "desktop.input.workspaceSwipe"
                     ctl: "sw"
                     label: I18n.tr("Swipe between workspaces")
                     desc: I18n.tr("A horizontal swipe slides to the next workspace.")
                 }
                 Setting {
-                    path: "input.swipeFingers"
+                    path: "desktop.input.swipeFingers"
                     ctl: "seg"; asInt: true; gate: pg.swipeOn
                     opts: [{ "key": 3, "label": "3" }, { "key": 4, "label": "4" }]
                     label: I18n.tr("Swipe fingers")
                     desc: I18n.tr("How many fingers count as a workspace swipe.")
                 }
                 Setting {
-                    path: "input.swipeInvert"
+                    path: "desktop.input.swipeInvert"
                     ctl: "sw"; gate: pg.swipeOn
                     label: I18n.tr("Natural swipe direction")
                     desc: I18n.tr("The workspace row follows your fingers.")
                 }
                 Setting {
-                    path: "input.swipeCreateNew"
+                    path: "desktop.input.swipeCreateNew"
                     ctl: "sw"; gate: pg.swipeOn
                     label: I18n.tr("Swipe past the last workspace")
-                    desc: I18n.tr("Swiping past the end opens a fresh workspace instead of stopping.")
+                    desc: I18n.tr("Swiping past the end opens a fresh workspace.")
                 }
                 Setting {
-                    path: "input.swipeDistance"
+                    path: "desktop.input.swipeDistance"
                     ctl: "slid"; lo: 100; hi: 600; sc: 1; dec: 0; unit: "px"; gate: pg.swipeOn
                     label: I18n.tr("Swipe distance")
-                    desc: I18n.tr("Finger travel for a full switch; lower flips sooner.")
-                }
-            }
-
-            SettingCard {
-                width: body.width
-                title: I18n.tr("KEY REPEAT")
-
-                Setting {
-                    divider: false
-                    path: "input.repeatRate"
-                    ctl: "step"; lo: 1; hi: 100; stepBy: 1; unit: "/s"
-                    label: I18n.tr("Repeat rate")
-                    desc: I18n.tr("Characters per second while a key is held.")
-                }
-                Setting {
-                    path: "input.repeatDelay"
-                    ctl: "step"; lo: 100; hi: 2000; stepBy: 50; unit: "ms"
-                    label: I18n.tr("Repeat delay")
-                    desc: I18n.tr("Pause before a held key starts repeating.")
+                    desc: I18n.tr("Finger travel for a full switch.")
                 }
             }
         }

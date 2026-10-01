@@ -3,9 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
-	"time"
 )
 
 // restoreDaemon builds a daemon whose cache/config/state all point at temp
@@ -52,6 +50,58 @@ func TestRestoreRetriesUntilFilePresent(t *testing.T) {
 	}
 	if got := d.surface.snapshot().Default.Path; got != pic {
 		t.Fatalf("restored frame path = %q, want %q", got, pic)
+	}
+}
+
+// A recorded wallpaper that never arrives used to leave the session grey once
+// the retry window closed: the daemon must then paint the default and record it.
+func TestRestoreFallbackPaintsTheDefault(t *testing.T) {
+	d, cache := restoreDaemon(t)
+	walls := t.TempDir()
+	d.cfg.Paths.Wallpaper = walls
+	def := filepath.Join(walls, "fallback.png")
+	writeE2EPNG(t, def)
+	dead := filepath.Join(t.TempDir(), "gone.png")
+	if err := os.WriteFile(filepath.Join(cache, "outputs.json"),
+		[]byte(`{"*":{"type":"static","path":"`+dead+`"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d.restoreFallback()
+
+	if got := d.surface.snapshot().Default.Path; got != def {
+		t.Fatalf("fallback frame = %q, want the default %q", got, def)
+	}
+	state := map[string]map[string]interface{}{}
+	loadJSON(filepath.Join(cache, "outputs.json"), &state)
+	if got, _ := state["*"]["path"].(string); got != def {
+		t.Fatalf("recorded path = %q, want the fallback %q", got, def)
+	}
+}
+
+// A choice that is merely late is untouched: the fallback paints it and leaves
+// the recording alone.
+func TestRestoreFallbackLeavesALiveChoice(t *testing.T) {
+	d, cache := restoreDaemon(t)
+	walls := t.TempDir()
+	d.cfg.Paths.Wallpaper = walls
+	writeE2EPNG(t, filepath.Join(walls, "fallback.png"))
+	pic := filepath.Join(t.TempDir(), "chosen.png")
+	writeE2EPNG(t, pic)
+	if err := os.WriteFile(filepath.Join(cache, "outputs.json"),
+		[]byte(`{"*":{"type":"static","path":"`+pic+`"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	d.restoreFallback()
+
+	if got := d.surface.snapshot().Default.Path; got != pic {
+		t.Fatalf("frame = %q, want the recorded choice %q", got, pic)
+	}
+	state := map[string]map[string]interface{}{}
+	loadJSON(filepath.Join(cache, "outputs.json"), &state)
+	if got, _ := state["*"]["path"].(string); got != pic {
+		t.Fatalf("recorded path was rewritten to %q, want it left at %q", got, pic)
 	}
 }
 
@@ -170,40 +220,5 @@ func TestApplyDefaultWallpaperPaintsAndPersists(t *testing.T) {
 	// Persisted, so a plain restore (no fallback) reproduces the choice next login.
 	if want, applied := d.restoreOutputs(); want != 1 || applied != 1 {
 		t.Fatalf("after default apply: restore want/applied = %d/%d, expected 1/1", want, applied)
-	}
-}
-
-// hyprEventSocket returns the newest instance's .socket2.sock and "" when no
-// compositor socket has landed, so the watcher targets the live session and
-// backs off cleanly during a login-time race.
-func TestHyprEventSocketPicksNewest(t *testing.T) {
-	rt := t.TempDir()
-	t.Setenv("XDG_RUNTIME_DIR", rt)
-
-	if got := hyprEventSocket(); strings.HasPrefix(got, rt) {
-		t.Fatalf("no instance under the runtime dir yet, but got %q", got)
-	}
-
-	older := filepath.Join(rt, "hypr", "sig-old")
-	newer := filepath.Join(rt, "hypr", "sig-new")
-	for _, d := range []string{older, newer} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(d, ".socket2.sock"), nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// Push both far into the future so a real /tmp/hypr socket on the host can
-	// never outrank them, and make sig-new the newest.
-	future := time.Now().Add(48 * time.Hour)
-	if err := os.Chtimes(filepath.Join(older, ".socket2.sock"), future, future); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(filepath.Join(newer, ".socket2.sock"), future.Add(time.Hour), future.Add(time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	if got, want := hyprEventSocket(), filepath.Join(newer, ".socket2.sock"); got != want {
-		t.Fatalf("hyprEventSocket() = %q, want the newest %q", got, want)
 	}
 }

@@ -3,7 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import Quickshell
 import Quickshell.Wayland
-import Quickshell.Hyprland
+import Ryoku.Ui.Singletons
 import shell.services
 
 // The Ryoku dock: a first-class shell surface (namespace ryoku-dock), one per
@@ -72,13 +72,7 @@ PanelWindow {
     implicitWidth: dock.horizontal ? 0 : (dock.depth + dock.edgeGap + dock.headroom)
 
     // ── reveal state machine ──────────────────────────────────────────────────
-    readonly property bool monFullscreen: {
-        const mons = Hyprland.monitors.values;
-        for (let i = 0; i < mons.length; ++i)
-            if (mons[i].name === (dock.screen ? dock.screen.name : ""))
-                return mons[i].activeWorkspace ? (Fullscreen.byWs[mons[i].activeWorkspace.id] === true) : false;
-        return false;
-    }
+    readonly property bool monFullscreen: Wm.outputHasFullscreen(dock.screen ? dock.screen.name : "")
     readonly property bool pointerInside: band.hovered || peekHover.hovered
     readonly property string screenName: dock.screen ? dock.screen.name : ""
     readonly property bool menuHere: Dock.menuOpen && Dock.menuScreen === dock.screenName
@@ -121,10 +115,10 @@ PanelWindow {
     // along the axis but stays pinned to the edge across it.
     Item {
         id: peekStrip
-        x: dock.horizontal ? band.x : (dock.edge === "left" ? 0 : dock.width - dock.peek)
-        y: dock.horizontal ? (dock.edge === "top" ? 0 : dock.height - dock.peek) : band.y
-        width: dock.horizontal ? band.width : dock.peek
-        height: dock.horizontal ? dock.peek : band.height
+        x: dock.horizontal ? band.x : (dock.edge === "left" ? 0 : dock.width - dock.edgeGap)
+        y: dock.horizontal ? (dock.edge === "top" ? 0 : dock.height - dock.edgeGap) : band.y
+        width: dock.horizontal ? band.width : dock.edgeGap
+        height: dock.horizontal ? dock.edgeGap : band.height
         HoverHandler { id: peekHover }
     }
     // Input mask = band rect ∪ peek strip, so the empty margins and the magnify

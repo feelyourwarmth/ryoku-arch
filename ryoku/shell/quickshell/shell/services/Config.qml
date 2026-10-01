@@ -3,6 +3,7 @@ import QtQuick
 import Quickshell
 import Quickshell.Io
 import Ryoku.FrameBars
+import Ryoku.Ui.Singletons
 
 // live shell appearance config. one source of truth for the look knobs Ryoku
 // Settings' Shell section edits, plus the shipped defaults the shell falls back
@@ -45,6 +46,7 @@ Singleton {
     property alias obi: adapter.obi
     property alias nacre: adapter.nacre
     property alias qsbar: adapter.qsbar
+    property alias kairos: adapter.kairos
 
     // dock: the first-class app dock surface (modules/dock). A top-level store,
     // not a bar-style key, because the dock is now style-agnostic -- neither qsbar
@@ -52,6 +54,11 @@ Singleton {
     // Read and written through the services Dock singleton so every consumer goes
     // through one place.
     property alias dock: adapter.dock
+
+    // clipboard: geometry and corner treatment for the bottom-centred history
+    // surface. The adapter keeps it a self-contained shell.json subtree so it
+    // can retune live without a shell restart.
+    property alias clipboard: adapter.clipboard
     readonly property var normalizedNacre: NacreConfig.normalize(nacre)
 
     // typography: a scale that grows or shrinks the whole shell (the bar text
@@ -80,10 +87,8 @@ Singleton {
     // Region control; a plain passthrough key in shell.json.
     property alias formatLocale: adapter.formatLocale
 
-    // screenShader: the compositor's print filter, by shader name. Persisted for
-    // the reload path (decoration.lua reads the key) and applied live here. The
-    // live call is `hyprctl eval` with Lua, not `keyword`, which this Hyprland
-    // fork rejects outright.
+    // screenShader: the compositor's print filter, by shader name. Persisted, and
+    // applied live through the provider, which resolves the name to its shader.
     property alias screenShader: adapter.screenShader
     readonly property var screenShaders: ["", "halftone", "bone", "onebit", "vignette", "grain"]
     function setScreenShader(name) {
@@ -95,11 +100,7 @@ Singleton {
             shaderCtl.flushQueued();
         else
             shaderCtl.connected = true;
-        const path = pick === ""
-            ? ""
-            : (Quickshell.env("HOME") || "") + "/.config/hypr/shaders/" + pick + ".glsl";
-        Quickshell.execDetached(["hyprctl", "eval",
-            'hl.config({ decoration = { screen_shader = "' + path + '" } })']);
+        Wm.setScreenShader(pick);
     }
 
     // Which surface the bar's brand logo opens: "studio" (QS Bar Settings) or
@@ -194,6 +195,7 @@ Singleton {
             property var obi: ({})
             property var nacre: NacreConfig.defaultConfig()
             property var qsbar: ({})
+            property var kairos: ({})
             property var dock: ({
                 "enabled": false,
                 "edge": "auto",
@@ -204,6 +206,15 @@ Singleton {
                 "shadow": true,
                 "labels": true,
                 "media": false
+            })
+            property var clipboard: ({
+                "widthPercent": 65,
+                "heightPercent": 42,
+                "bottomPercent": 0,
+                "panelRadius": 18,
+                "paneRadius": 12,
+                "cardRadius": 9,
+                "pruneWeekly": false
             })
         }
     }

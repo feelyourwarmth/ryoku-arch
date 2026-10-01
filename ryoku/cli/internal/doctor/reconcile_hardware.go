@@ -54,7 +54,52 @@ func reconcileBacklight(_ bool) recResult {
 		}
 		return noteRes("%s", detail).withFix(fix)
 	}
+	if len(devs) > 1 {
+		// More than one backlight means one of them is a phantom on this
+		// hardware, and a brightness control that "only has off and full" is
+		// exactly what writing percentages to the wrong one looks like. Name
+		// the device every Ryoku writer targets and each candidate's current
+		// level, so the next report from such a box pinpoints it in one line.
+		pick := backlightPick()
+		if pick == "" {
+			pick = "-"
+		}
+		return noteRes(i18n.T("backlight: %s; Ryoku writes to %s (%s)"),
+			strings.Join(devs, ", "), pick, backlightLevels(devs))
+	}
 	return okRes(i18n.T("backlight: %s"), strings.Join(devs, ", "))
+}
+
+// backlightSysRoot is the sysfs root the backlight readings use; a var so the
+// level formatter is unit-tested against a fixture tree.
+var backlightSysRoot = "/sys/class/backlight"
+
+// backlightPick is the device every Ryoku brightness writer targets (the media
+// keys, the OSD daemon and the bar slider all call the same helper). Empty when
+// the helper is absent or cannot decide.
+var backlightPick = func() string {
+	out, err := sys.RunOut("ryoku-hw-backlight")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(out)
+}
+
+// backlightLevels renders "name cur/max" per device from sysfs, so a phantom
+// (stuck at max while the panel dims, or stuck at 0) is visible in the report.
+func backlightLevels(devs []string) string {
+	parts := make([]string, 0, len(devs))
+	for _, d := range devs {
+		read := func(attr string) string {
+			b, err := os.ReadFile(filepath.Join(backlightSysRoot, d, attr))
+			if err != nil {
+				return "?"
+			}
+			return strings.TrimSpace(string(b))
+		}
+		parts = append(parts, fmt.Sprintf("%s %s/%s", d, read("brightness"), read("max_brightness")))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // nvidiaBacklightDead: the kernel's own tell that the dGPU has no usable
@@ -382,4 +427,68 @@ func reconcileNvidiaGuardHook(checkOnly bool) recResult {
 			withFix(i18n.T("re-run with sudo access"))
 	}
 	return fixedRes(i18n.T("installed the NVIDIA update guard hook so a failed DKMS rebuild can't strand the login"))
+}
+
+// ---- reconciler: NVIDIA sleep units ------------------------------------------
+
+// nvidiaSleepUnits are the systemd sleep hooks nvidia-utils ships and the
+// installer enables (system/hardware/drivers/nvidia.sh). They save and restore
+// the GPU's VRAM across suspend/hibernate; with the driver's default
+// NVreg_UseKernelSuspendNotifiers=1 they exit early (the kernel PM chain does
+// the work), but boxes that turn the notifier off depend on them. A box
+// installed before the installer's enable step, or converted from another
+// distro, carries them disabled: drift from the shipped contract, repaired here.
+var nvidiaSleepUnits = []string{
+	"nvidia-suspend.service",
+	"nvidia-hibernate.service",
+	"nvidia-resume.service",
+}
+
+const nvidiaUnitDir = "/usr/lib/systemd/system"
+
+// planNvidiaSleepUnits decides from observed state: which of the units exist
+// and which are enabled. Pure, so the healthy-box silence and the
+// partial-enable repair are testable without a live systemd.
+func planNvidiaSleepUnits(nvidiaActive bool, exists map[string]bool, enabled map[string]bool) (missing []string, verdict string) {
+	if !nvidiaActive {
+		return nil, "no proprietary NVIDIA driver in use"
+	}
+	for _, u := range nvidiaSleepUnits {
+		if !exists[u] {
+			// nvidia-utils not installed (or a mesa-only box): nothing to enable.
+			return nil, "the NVIDIA sleep units are not installed on this machine"
+		}
+	}
+	for _, u := range nvidiaSleepUnits {
+		if !enabled[u] {
+			missing = append(missing, u)
+		}
+	}
+	if len(missing) == 0 {
+		return nil, "the NVIDIA sleep units are enabled"
+	}
+	return missing, ""
+}
+
+func reconcileNvidiaSleepUnits(checkOnly bool) recResult {
+	exists := map[string]bool{}
+	enabled := map[string]bool{}
+	for _, u := range nvidiaSleepUnits {
+		exists[u] = sys.Exists(nvidiaUnitDir + "/" + u)
+		enabled[u] = sys.UnitEnabled(u)
+	}
+	missing, verdict := planNvidiaSleepUnits(nvidiaDriverActive(), exists, enabled)
+	if verdict != "" {
+		return okRes(i18n.T("%s"), verdict)
+	}
+	if checkOnly {
+		return wouldRes(i18n.T("the NVIDIA sleep units (%s) are disabled, so VRAM is not saved across suspend the way the installer sets up; a box with the kernel suspend notifier off wakes to a corrupted session"), strings.Join(missing, ", ")).
+			withFix(i18n.T("ryoku doctor  (enables them with sudo systemctl)"))
+	}
+	args := append([]string{"systemctl", "enable"}, missing...)
+	if err := sys.Sudo(args...); err != nil {
+		return failRes(i18n.T("could not enable %s: %v"), strings.Join(missing, ", "), err).
+			withFix(i18n.T("sudo systemctl enable %s"), strings.Join(missing, " "))
+	}
+	return fixedRes(i18n.T("enabled the NVIDIA sleep units so VRAM is preserved across suspend, matching the installer's contract"))
 }

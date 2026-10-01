@@ -20,6 +20,47 @@ Rectangle {
 
     property bool isQuickshell: typeof sddm === "undefined" || sddm.hostName === undefined
 
+    // --- Software cursor for the SDDM login screen --------------------------
+    // weston (the greeter's compositor) implements no wp_cursor_shape, and its
+    // wl_pointer.set_cursor fallback never renders on this hybrid GPU, so the
+    // login pointer is invisible (issue #191). Draw one in the scene instead: a
+    // passive HoverHandler tracks the pointer without stealing clicks or hover,
+    // and an arrow follows it. Only under the SDDM greeter -- the in-session lock
+    // runs on the shell's own compositor, which draws a real cursor, so off there.
+    HoverHandler {
+        id: swPointer
+        enabled: !root.isQuickshell
+    }
+    Canvas {
+        id: swCursor
+        width: 26 * root.s
+        height: 26 * root.s
+        z: 2000000
+        visible: !root.isQuickshell && swPointer.hovered
+        x: swPointer.point.position.x
+        y: swPointer.point.position.y
+        antialiasing: true
+        onPaint: {
+            var ctx = getContext("2d");
+            ctx.reset();
+            ctx.scale(root.s, root.s);
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(0, 16);
+            ctx.lineTo(4, 12.5);
+            ctx.lineTo(6.5, 19);
+            ctx.lineTo(9, 18);
+            ctx.lineTo(6.5, 11.5);
+            ctx.lineTo(11, 11.5);
+            ctx.closePath();
+            ctx.fillStyle = "#ffffff";
+            ctx.fill();
+            ctx.lineWidth = 1.2;
+            ctx.strokeStyle = "#000000";
+            ctx.stroke();
+        }
+    }
+
     // The 60fps clock timer below only feeds the smooth second-hand, so keep it
     // awake only while this surface is on screen. Under the SDDM greeter that is
     // when the window is focused; a backgrounded or orphaned greeter then stops
@@ -109,7 +150,15 @@ Rectangle {
 
     ParallelAnimation {
         id: boomSequence
-        onFinished: root.doLogin()
+        onFinished: {
+            root.doLogin()
+            // A sensor win committed auth before the wind-up ran; the reveal
+            // that the password path plays on loginSucceeded belongs here.
+            if (root._sensorWindup) {
+                root._sensorWindup = false
+                root.playUnlockReveal()
+            }
+        }
         NumberAnimation { target: root; property: "boomScale"; to: 35.0; duration: 150; easing.type: Easing.InQuad }
         NumberAnimation { target: root; property: "boomOpacity"; to: 1.0; duration: 120; easing.type: Easing.InQuad }
     }
@@ -383,10 +432,11 @@ Rectangle {
     // second PAM auth if the fingerprint wins mid-windup (after
     // boomTriggerTimer at 1450ms). boomSequence.stop() kills the animation.
     property bool _unlocked: false
+    property bool _sensorWindup: false
     function doLogin() { if (_unlocked) return; _unlocked = true; root.authInfo = ""; var uname = (userHelper.currentItem && userHelper.currentItem.uLogin) ? userHelper.currentItem.uLogin : (typeof userModel !== "undefined" ? userModel.lastUser : "user"); if (typeof sddm !== "undefined") sddm.login(uname, passInput.text, root.sessionIndex); authWatchdog.restart() }
     // The flash stays up until auth answers; the watchdog lowers it if it never does.
     function clearUnlockFlash() {
-        _unlocked = false; isWindup = false
+        _unlocked = false; _sensorWindup = false; isWindup = false
         windupAnim.stop(); boomTriggerTimer.stop(); boomSequence.stop()
         root.windupOffset = 0; root.boomScale = 1.0; root.boomOpacity = 0.0; root.sparkIntensity = 0
     }
@@ -406,18 +456,22 @@ Rectangle {
         function onLoginSucceeded() {
             authWatchdog.stop()
             if (typeof sddm !== "undefined" && sddm.fingerprintUnlock === true) {
-                // Sensor win: skip the windup, play the reveal flourish, no
-                // second authentication. The _unlocked guard prevents
-                // boomSequence.onFinished from calling doLogin() again.
+                // Sensor win: auth is already committed. Run the same wind-up
+                // the password path plays; _unlocked keeps boomSequence's
+                // doLogin() from re-authenticating.
                 _unlocked = true
-                windupAnim.stop()
-                boomTriggerTimer.stop()
-                boomSequence.stop()
-                boomReveal.start()
-            }
-            // auth already committed, so this is cosmetic only
-            if (root.enableWindup)
+                if (root.enableWindup) {
+                    _sensorWindup = true
+                    isWindup = true
+                    windupAnim.start()
+                    boomTriggerTimer.start()
+                } else {
+                    boomReveal.start()
+                }
+            } else if (root.enableWindup) {
+                // Password win: the wind-up already ran; lower the curtain.
                 playUnlockReveal()
+            }
         }
         function onLoginFailed() { authWatchdog.stop(); clearUnlockFlash(); root.authInfo = ""; errText.text = I18n.tr("ACCESS DENIED"); passInput.text = ""; passInput.forceActiveFocus(); shake.start() }
     }
@@ -488,8 +542,8 @@ Rectangle {
         revealOut.restart()
     }
 
-    // Default the picker to the plain "Hyprland" session, not the package's
-    // "Hyprland (uwsm-managed)", which Ryoku's logout path does not drive.
+    // Prefer the session matching the running compositor, resolved from the
+    // environment by the shim (sessionModel.desktopName), never a name literal.
     Item {
         visible: false
         Repeater {
@@ -501,16 +555,19 @@ Rectangle {
     function preferredSessionIndex() {
         if (typeof sessionModel === "undefined")
             return 0
+        var want = (typeof sessionModel.desktopName === "string") ? sessionModel.desktopName : ""
         var exact = -1, loose = -1
         for (var i = 0; i < sessionScan.count; i++) {
             var it = sessionScan.itemAt(i)
             if (!it)
                 continue
-            var nm = it.sName || ""
-            var low = nm.toLowerCase()
-            if (nm === "Hyprland")
+            var low = (it.sName || "").toLowerCase()
+            // uwsm-managed is a duplicate entry Ryoku's logout path does not drive.
+            if (low.indexOf("uwsm") >= 0)
+                continue
+            if (want !== "" && low === want)
                 exact = i
-            else if (low.indexOf("hyprland") >= 0 && low.indexOf("uwsm") < 0 && loose < 0)
+            else if (want !== "" && low.indexOf(want) >= 0 && loose < 0)
                 loose = i
         }
         if (exact >= 0)

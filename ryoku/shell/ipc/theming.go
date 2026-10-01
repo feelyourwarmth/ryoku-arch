@@ -9,7 +9,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
+
+	wm "ryoku-wm"
 )
 
 // theming.go is what ryoku-shell keeps of the old wallpaper file after Ryogami
@@ -167,10 +170,6 @@ func (d *daemon) scheduleTheme() {
 // trigger. Runs for the life of the daemon.
 func (d *daemon) paintWorker() {
 	for range d.paintSig {
-		// Self-heal a stale signature before any hyprctl fork: if Hyprland
-		// restarted under this persisted daemon, re-bind so the border reload
-		// and the cursor recolour reach the live compositor (see hyprsig.go).
-		ensureLiveHyprSignature()
 		// The surfaces floating on the picture need its luminance map either
 		// way, named theme or not.
 		writeWallpaperTone(d.currentWall())
@@ -182,11 +181,12 @@ func (d *daemon) paintWorker() {
 					fmt.Fprintf(os.Stderr, "paintWorker matugen static: %v\n", err)
 					continue
 				}
-				_ = exec.Command("hyprctl", "reload", "config-only").Run()
-				// A hyprctl reload re-runs decoration.lua, which reverts
-				// col.active_border to the value it parses at config time; the
-				// eval is the only path that lands the live palette border.
-				applyHyprBorder()
+				if d.wmc.Can(wm.CapConfigReload) {
+					_ = d.wmc.Act(wm.ActionConfigReload, "config-only")
+				}
+				// A config reload drops the live border to its config value.
+				d.applyBorderColors()
+				d.reassertPreview()
 				select {
 				case d.ledsSig <- struct{}{}:
 				default:
@@ -211,17 +211,70 @@ func (d *daemon) paintWorker() {
 			// decoration.lua's red fallback.
 			continue
 		}
-		_ = exec.Command("hyprctl", "reload", "config-only").Run()
-		// The reload reverts the window border to decoration.lua's parsed
-		// fallback (#e0563b when hypr-colors.lua is stale); eval lands the live
-		// wallpaper border over it. Lost when the wallpaper backend moved to the
-		// daemon, which is why the border kept snapping back to red.
-		applyHyprBorder()
+		if d.wmc.Can(wm.CapConfigReload) {
+			_ = d.wmc.Act(wm.ActionConfigReload, "config-only")
+		}
+		// A config reload drops the live border to its config value.
+		d.applyBorderColors()
+		d.reassertPreview()
 		select {
 		case d.ledsSig <- struct{}{}:
 		default:
 		}
 	}
+}
+
+// reassertPreview lands the Hub's live desktop preview again after a config
+// reload. A preview is live-only: it writes no config, so the reload the
+// palette pipeline just ran re-reads disk and silently drops whatever the user
+// is previewing -- a focus-behaviour change snaps back mid-session while the
+// settings window is still open.
+func (d *daemon) reassertPreview() {
+	if !d.wmc.Can(wm.CapLiveConfigEval) {
+		return
+	}
+	draft, ok := readLivePreview(filepath.Join(ryokuConfigDir(), ".desktop-preview.json"))
+	if !ok {
+		return
+	}
+	f, err := os.CreateTemp("", "ryoku-desktop-preview-*.json")
+	if err != nil {
+		return
+	}
+	defer os.Remove(f.Name())
+	if json.NewEncoder(f).Encode(draft) != nil {
+		f.Close()
+		return
+	}
+	f.Close()
+	_, _ = d.wmc.Preview(f.Name())
+}
+
+// readLivePreview decodes the Hub's preview marker and reports whether it still
+// belongs to a live Hub. The marker carries the Hub's pid: while that process
+// lives the preview is the user's intent and survives reloads; once it dies
+// (closed without saving, or killed) the marker goes, so the next reload
+// reverts the orphaned preview to disk -- which is what an unsaved quit means.
+func readLivePreview(path string) (map[string]any, bool) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	var rec struct {
+		Pid   int            `json:"pid"`
+		Draft map[string]any `json:"draft"`
+	}
+	if json.Unmarshal(b, &rec) != nil || rec.Draft == nil {
+		_ = os.Remove(path)
+		return nil, false
+	}
+	// pid 1 is the reparented-CLI case (its own parent exited), and kill(1,0)
+	// succeeds on permission grounds, so neither can attest to a live Hub.
+	if rec.Pid <= 1 || syscall.Kill(rec.Pid, 0) == syscall.ESRCH {
+		_ = os.Remove(path)
+		return nil, false
+	}
+	return rec.Draft, true
 }
 
 // themeAppsEnabled reports whether the palette should reach GTK / GUI apps.

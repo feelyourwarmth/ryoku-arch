@@ -15,10 +15,15 @@ Singleton {
     id: root
 
     readonly property string home: Quickshell.env("HOME") || ""
-    readonly property string dir: home + "/Downloads/Stash"
-    readonly property string scriptDir: home + "/.config/hypr/scripts"
-    readonly property string cobaltScript: scriptDir + "/stash-cobalt.sh"
-    readonly property string serverScript: scriptDir + "/stash-cobalt-server.sh"
+    // The Downloads root is the localized XDG dir the session exports (the
+    // ryoku user-environment generator does); ~/Downloads only when it is unset,
+    // so a Spanish desktop lands in ~/Descargas/Stash instead of the generator
+    // recreating ~/Downloads on every shell start (#246).
+    readonly property string dir: (Quickshell.env("XDG_DOWNLOAD_DIR") || (home + "/Downloads")) + "/Stash"
+    // On PATH, installed with the shell: these are shell helpers, not compositor
+    // config, so they must resolve without a compositor config tree.
+    readonly property string cobaltScript: "stash-cobalt.sh"
+    readonly property string serverScript: "stash-cobalt-server.sh"
 
     readonly property alias files: files
     readonly property int count: files.count
@@ -60,9 +65,10 @@ Singleton {
     // ── Cobalt first-run setup ──────────────────────────────────────────
     // The switch used to dead-end on "Install Docker to use cobalt", naming two
     // chores and doing neither. The wizard drives ryoku-docker instead: start
-    // the service, grant container access, pull the image, start cobalt, each
-    // step reporting for itself. No reboot step exists because the helper
-    // escalates through polkit and never reads this session's groups.
+    // the service, pull the image, start cobalt, each step reporting for itself.
+    // No reboot or "add yourself to a group" step exists: the helper escalates
+    // through polkit and does the docker work as root, so the user's session is
+    // never granted docker access of its own (that would be passwordless root).
     //
     // Every step is convergent, which is what makes a single Retry honest: it
     // re-runs the whole flow and the finished steps no-op.
@@ -80,7 +86,6 @@ Singleton {
         var defs = [
             { key: "runtime", label: I18n.tr("Container runtime installed") },
             { key: "service", label: I18n.tr("Start the container service") },
-            { key: "access",  label: I18n.tr("Grant your user container access") },
             { key: "image",   label: I18n.tr("Download the cobalt image") },
             { key: "start",   label: I18n.tr("Start cobalt") }
         ];
@@ -126,17 +131,11 @@ Singleton {
 
     function onProvisionLine(line) {
         var t = ("" + line).split("\t");
-        if (t[0] === "STEP") {
-            // The helper reports the host work it actually had to do; anything
-            // it skipped was already true.
-            if (t[1] === "group") {
-                setupMark("service", "done");
-                setupMark("access", "running");
-            }
-        } else if (t[0] === "OK") {
+        // The helper's STEP lines (service, socket) are progress detail under the
+        // single "Start the container service" step, which is already running;
+        // only OK and ERROR move the wizard on.
+        if (t[0] === "OK") {
             setupMark("service", "done");
-            setupMark("access", "done",
-                I18n.tr("Plain `docker` on the command line starts working at your next login"));
             setupMark("image", "running");
             root.setupOwnsEngine = true;
             root.setEngine(true);
@@ -179,11 +178,11 @@ Singleton {
     // (PanelPicker); the launcher entries deep-link to the same picker.
     function compress(paths) {
         if (!paths || paths.length === 0) return;
-        Quickshell.execDetached(["bash", root.scriptDir + "/stash-compress.sh"].concat(paths));
+        Quickshell.execDetached(["stash-compress.sh"].concat(paths));
     }
     function install(paths) {
         if (!paths || paths.length === 0) return;
-        Quickshell.execDetached(["bash", root.scriptDir + "/stash-install.sh"].concat(paths));
+        Quickshell.execDetached(["stash-install.sh"].concat(paths));
     }
 
     // ── Cobalt download + remux ─────────────────────────────────────────

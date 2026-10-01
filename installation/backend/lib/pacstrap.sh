@@ -145,10 +145,18 @@ ryoku_pacstrap_install() {
       return 0
     fi
     [[ $olog == /dev/null ]] || cat -- "$olog"
-    local conflict="" conflict_msg=""
+    local conflict="" corrupt="" conflict_msg=""
     [[ $olog == /dev/null ]] \
       || conflict=$(grep -aoE "[^ ]+ exists in filesystem" "$olog" 2>/dev/null | tail -n1) || conflict=""
+    [[ $olog == /dev/null ]] \
+      || corrupt=$(grep -aoE "File [^ ]+ is corrupted" "$olog" 2>/dev/null | tail -n1) || corrupt=""
     rm -f -- "$olog" 2>/dev/null || true
+    # A corrupt package is not a closure defect: off the network the bad bytes
+    # came from the download or the USB write, and the fix is a fresh medium,
+    # not a bug report.
+    if [[ -n $corrupt ]]; then
+      die 'the offline install stopped on %s, which fails its recorded checksum. Every package lives on the disc, so the copy that reached the installer is bad: the ISO download or the USB write, most likely. Check the ISO checksum against the release page, rewrite the install medium, and run the installer again. If the checksum already matches, report it with /var/log/ryoku-install.log.' "$corrupt"
+    fi
     [[ -n $conflict ]] && conflict_msg=$(tf ' File conflict: %s.' "$conflict")
     die 'the offline install could not lay the base system from the ISO'\''s baked package set.%s No network or mirror is involved (every package is on the disc), so this is either a defect in the baked closure or something the installer put at a path a package owns. Report the file conflict above with /var/log/ryoku-install.log; re-running the installer will not help.' "$conflict_msg"
   fi

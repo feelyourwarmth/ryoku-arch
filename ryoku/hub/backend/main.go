@@ -45,8 +45,18 @@ func main() {
 			fmt.Fprintln(os.Stderr, "ryoku-hub:", err)
 			os.Exit(1)
 		}
-	case "hypr":
-		if err := runHypr(args[1:]); err != nil {
+	case "desktop":
+		if err := runDesktop(args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "ryoku-hub:", err)
+			os.Exit(1)
+		}
+	case "wm":
+		if err := runWm(args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "ryoku-hub:", err)
+			os.Exit(1)
+		}
+	case "outputs":
+		if err := runOutputs(args[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, "ryoku-hub:", err)
 			os.Exit(1)
 		}
@@ -105,6 +115,21 @@ func main() {
 			fmt.Fprintln(os.Stderr, "ryoku-hub:", err)
 			os.Exit(1)
 		}
+	case "palette-bridge":
+		if err := runPaletteBridge(args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "ryoku-hub:", err)
+			os.Exit(1)
+		}
+	case "share":
+		if err := runShare(args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "ryoku-hub:", err)
+			os.Exit(1)
+		}
+	case "clipboard":
+		if err := runClipboard(args[1:]); err != nil {
+			fmt.Fprintln(os.Stderr, "ryoku-hub:", err)
+			os.Exit(1)
+		}
 	default:
 		usage()
 		os.Exit(2)
@@ -142,14 +167,22 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  ryoku-hub config get <key>")
 	fmt.Fprintln(os.Stderr, "  ryoku-hub config set <key> <value>")
 	fmt.Fprintln(os.Stderr, "  ryoku-hub shell get|set <fish|bash|zsh>")
-	fmt.Fprintln(os.Stderr, "  ryoku-hub hypr get|defaults|cursors|layouts")
-	fmt.Fprintln(os.Stderr, "  ryoku-hub hypr variants <layout>")
-	fmt.Fprintln(os.Stderr, "  ryoku-hub hypr save|preview <json>")
-	fmt.Fprintln(os.Stderr, "  ryoku-hub hypr restore")
-	fmt.Fprintln(os.Stderr, "  ryoku-hub hypr plugins list")
-	fmt.Fprintln(os.Stderr, "  ryoku-hub hypr plugins rebuild [--all|--stale] [--checkout <dir>] [<id>...]")
-	fmt.Fprintln(os.Stderr, "  ryoku-hub hypr plugins add [--inspect] <git-url> [<plugin>...]")
-	fmt.Fprintln(os.Stderr, "  ryoku-hub hypr plugins remove <id>")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub desktop get|defaults|cursors|layouts")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub desktop variants <layout>")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub desktop save|preview <json>")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub desktop restore")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub desktop set-rebind <default> <chosen>")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub desktop plugins list")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub desktop plugins rebuild [--all|--stale] [--checkout <dir>] [<id>...]")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub desktop plugins add [--inspect] <git-url> [<plugin>...]")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub desktop plugins remove <id>")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub wm list")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub wm preview <name>")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub outputs [list]")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub outputs apply <json>")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub outputs profiles")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub outputs save <name> <json>")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub outputs load|rm <name>")
 	fmt.Fprintln(os.Stderr, "  ryoku-hub lock list")
 	fmt.Fprintln(os.Stderr, "  ryoku-hub lock set <slug>")
 	fmt.Fprintln(os.Stderr, "  ryoku-hub gpu caps|mode")
@@ -166,12 +199,15 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  ryoku-hub voxtype get|ensure")
 	fmt.Fprintln(os.Stderr, "  ryoku-hub voxtype set <json>")
 	fmt.Fprintln(os.Stderr, "  ryoku-hub voxtype download|rmmodel <key>")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub palette-bridge status|install|service|integration|doctor [<source>]")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub share status")
 	fmt.Fprintln(os.Stderr, "  ryoku-hub rice list|preflight|capture|apply|restore|save|fork|delete|import|publish|setwall|files|export")
 	fmt.Fprintln(os.Stderr, "  ryoku-hub fastfetch get|preview <json>")
 	fmt.Fprintln(os.Stderr, "  ryoku-hub fastfetch save <json>")
 	fmt.Fprintln(os.Stderr, "  ryoku-hub fastfetch import-logo <path>")
 	fmt.Fprintln(os.Stderr, "  ryoku-hub reload-cover import <path>")
 	fmt.Fprintln(os.Stderr, "  ryoku-hub reload-cover prune [<managed-path>]")
+	fmt.Fprintln(os.Stderr, "  ryoku-hub clipboard stats|prune")
 	fmt.Fprintln(os.Stderr, "  ryoku-hub import scan <path|url>")
 	fmt.Fprintln(os.Stderr, "  ryoku-hub import apply <decisions.json|->")
 	fmt.Fprintln(os.Stderr, "  ryoku-hub import undo [<ts>]")

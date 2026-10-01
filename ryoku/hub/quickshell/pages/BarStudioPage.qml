@@ -52,9 +52,29 @@ Item {
     readonly property bool horizontal: page.edge === "top" || page.edge === "bottom"
 
     property var barStyles: []
+    property string updatingId: ""    // the style whose update is in flight
 
     function browseBarStyles() {
         Quickshell.execDetached(["ryostore", "open", "barstyles"]);
+    }
+
+    // Settings owns updates (docs/store.md); RyoStore only installs. The same
+    // transaction engine serves both, so this re-runs an install over the
+    // receipt-owned tree, which replaces the style in place. Install never
+    // activates, and only a removal rewrites the bar selection, so updating the
+    // style you are wearing is safe: the shell keys style URLs to the store
+    // revision and swaps the new content without a reload.
+    function updateStyle(id) {
+        if (!id || page.updatingId !== "")
+            return;
+        page.updatingId = id;
+        updateProc.command = ["ryostore", "install", "barstyles", id];
+        updateProc.running = true;
+    }
+
+    function refreshBarStyles() {
+        styleProc.running = false;
+        styleProc.running = true;
     }
 
     Process {
@@ -65,18 +85,51 @@ Item {
             onStreamFinished: {
                 try {
                     const catalog = JSON.parse(this.text || "{}");
+                    // Every bar style the catalogue carries, not only the ones
+                    // already installed: a style you have yet to fetch still
+                    // belongs on the shelf so you can see it exists and how to
+                    // get it. The one style hidden here is one written for
+                    // another compositor that you have not installed -- it can
+                    // neither run nor be fetched, so it is not offered. Install
+                    // still lives in RyoStore; this page only shows state and
+                    // applies what is yours.
                     page.barStyles = (catalog.items || [])
-                        .filter(item => item.category === "barstyles" && item.installed === true)
+                        .filter(item => item.category === "barstyles"
+                            && !(item.unavailable === true && item.installed !== true))
                         .map(item => ({
                             id: item.id,
                             name: item.name || item.id,
                             desc: item.summary || item.description || "",
-                            active: item.active === true
+                            installed: item.installed === true,
+                            // The catalogue's versions ride through so the shelf
+                            // can name the update it offers: Settings owns
+                            // applying it, RyoStore does not (docs/store.md).
+                            version: item.version || "",
+                            installedVersion: item.installedVersion || "",
+                            updateAvailable: item.updateAvailable === true,
+                            active: item.active === true,
+                            unavailable: item.unavailable === true,
+                            unavailableReason: item.unavailableReason || "",
+                            requiredWindowManager: item.requiredWindowManager || "",
+                            downloadPaused: item.downloadPaused === true,
+                            downloadPauseReason: item.downloadPauseReason || ""
                         }));
                 } catch (e) {
                     page.barStyles = [];
                 }
             }
+        }
+    }
+
+    // The update runs in the background: a bar style installs into the user's
+    // own data tree, so unlike a package there is no sudo prompt and no terminal
+    // to hand it. On any outcome the shelf is re-read, so a failed update leaves
+    // the same UPDATE affordance up rather than a dead button.
+    Process {
+        id: updateProc
+        onExited: {
+            page.updatingId = "";
+            page.refreshBarStyles();
         }
     }
 
@@ -183,13 +236,22 @@ Item {
     // ── head: the eyebrow band, the title, the blurb ─────────────────────────
     Column {
         id: head
-        anchors { left: parent.left; right: parent.right; top: parent.top }
-        spacing: Tokens.s2
+        anchors.top: parent.top
+        // the head sits on the body's grid: full body width from the left, so
+        // the title starts over the first card column instead of floating centred
+        x: 0
+        width: page.width - 14
+        // the register row sits off the title: a rule over a 32px
+        // title needs more than the gap between two lines of body text
+        spacing: Tokens.s3
 
         Item {
             width: parent.width
             height: 14
             Row {
+                // the register row holds a fixed box, so the rule and the seal keep
+                // their distance from the title on every page
+                height: Tokens.s5
                 id: ebrow
                 spacing: Tokens.s2
                 anchors.verticalCenter: parent.verticalCenter
@@ -230,7 +292,7 @@ Item {
         }
         Text {
             width: Math.min(parent.width, 720)
-            text: I18n.tr("Choose which bar the desktop draws, and tune the built-in styles. QS Bar keeps its layout, widgets and dock in QS Bar Settings; Sumi's frame and rails are set below. Changes land live, and Save keeps them.")
+            text: I18n.tr("Which bar the desktop draws, and how it looks.")
             color: Tokens.inkMuted
             font.family: Tokens.ui
             font.pixelSize: Tokens.fBody
@@ -243,20 +305,29 @@ Item {
         id: flick
         anchors { left: parent.left; right: parent.right; top: head.bottom; bottom: parent.bottom; topMargin: Tokens.s5 }
         contentWidth: width
-        contentHeight: col.height + Tokens.s5
+        contentHeight: Math.max(col.height, flick.height)
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+        WheelScroll { }
 
-        Column {
-            id: col
+        CardColumns {
+
+        id: col
+            // a body of cards fills the measure and splits into balanced columns
             width: flick.width - 14
             spacing: Tokens.s5
+            fillTo: flick.height
 
             // ── BAR STYLE: which bar the desktop draws ───────────────────────
             SettingCard {
                 id: styleSect
-                width: col.width
+                // The primary choice of the page takes the band across the
+                // columns: eight style tiles need the room, and a column-width
+                // card crams them two to a row while the page's other half
+                // sits empty.
+                property bool fullWidth: true
+                width: col.colWidth
                 title: I18n.tr("BAR STYLE")
 
                 Item {
@@ -267,28 +338,88 @@ Item {
                         anchors { left: parent.left; right: parent.right; top: parent.top }
                         anchors.leftMargin: Tokens.s4; anchors.rightMargin: Tokens.s4; anchors.topMargin: Tokens.s3
                         spacing: Tokens.s3
-                        Row {
+                        // A gallery, not a filmstrip: with a bar style per tile the
+                        // captions are what tell them apart, so the tiles wrap into
+                        // as many rows as they need instead of squeezing 8 into one.
+                        // The height is computed, not measured: a Flow reports its
+                        // post-wrap height a polish pass late, and CardColumns would
+                        // place the next card over this one's second row.
+                        Flow {
                             id: styleRow
                             width: parent.width
                             spacing: Tokens.s2
+                            readonly property int perRow: Math.max(2, Math.floor((width + Tokens.s2) / 210))
+                            readonly property int tileH: 64
+                            readonly property int rowCount: Math.max(1, Math.ceil(styleRep.count / perRow))
+                            height: rowCount * tileH + (rowCount - 1) * spacing
                             Repeater {
+                                id: styleRep
                                 model: page.barStyles
                                 delegate: Rectangle {
                                     id: styleCard
                                     required property var modelData
-                                    readonly property bool on: page.activeStyle === styleCard.modelData.id
+                                    // A style applies only when it is installed
+                                    // and can run on this compositor. A paused
+                                    // style stays applyable once installed (the
+                                    // pause blocks only new downloads); a
+                                    // not-installed or wm-gated one cannot.
+                                    readonly property bool applyable: styleCard.modelData.installed && !styleCard.modelData.unavailable
+                                    readonly property bool on: styleCard.applyable && page.activeStyle === styleCard.modelData.id
+                                    // The backend refuses an install over a paused download or a
+                                    // product written for another compositor, so an update is
+                                    // offered only where re-running the install can succeed --
+                                    // never a button that is guaranteed to do nothing.
+                                    readonly property bool updatable: styleCard.modelData.updateAvailable === true
+                                        && styleCard.modelData.version.length > 0
+                                        && !styleCard.modelData.unavailable && !styleCard.modelData.downloadPaused
+                                    // The sub line reads the style's own blurb
+                                    // when it is yours to apply, otherwise the
+                                    // honest reason it is not: the compositor it
+                                    // wants, that it is under construction, or
+                                    // where to fetch it. A style with an update
+                                    // shows the version it would move to, so the
+                                    // UPDATE button next to it is self-explanatory.
+                                    readonly property string subText: {
+                                        if (styleCard.updatable) {
+                                            const cur = styleCard.modelData.installedVersion.length > 0
+                                                ? styleCard.modelData.installedVersion : styleCard.modelData.version;
+                                            return I18n.tr("%1 \u2192 %2").arg(cur).arg(styleCard.modelData.version);
+                                        }
+                                        if (styleCard.applyable)
+                                            return I18n.tr(styleCard.modelData.desc);
+                                        if (styleCard.modelData.unavailable) {
+                                            const wm = ("" + styleCard.modelData.requiredWindowManager).toUpperCase();
+                                            const tag = wm.length > 0 ? I18n.tr("%1 only").arg(wm) : I18n.tr("Unavailable");
+                                            return styleCard.modelData.unavailableReason.length > 0
+                                                ? tag + " \u00b7 " + styleCard.modelData.unavailableReason : tag;
+                                        }
+                                        if (styleCard.modelData.downloadPaused)
+                                            return styleCard.modelData.downloadPauseReason.length > 0
+                                                ? I18n.tr("Under construction") + " \u00b7 " + styleCard.modelData.downloadPauseReason
+                                                : I18n.tr("Under construction");
+                                        return I18n.tr("Available \u00b7 install from RyoStore");
+                                    }
 
                                     objectName: "bar-style-" + styleCard.modelData.id
-                                    width: (styleRow.width - (page.barStyles.length - 1) * Tokens.s2) / page.barStyles.length
-                                    height: 64
+                                    // fill the row evenly: as many ~210px tiles as the
+                                    // measure holds, stretched to close the last gap.
+                                    width: Math.floor((styleRow.width - (styleRow.perRow - 1) * Tokens.s2) / styleRow.perRow)
+                                    height: styleRow.tileH
                                     radius: Tokens.radius
+                                    // dim a style you cannot apply from here
+                                    opacity: styleCard.applyable ? 1.0 : 0.55
                                     color: styleCard.on ? Tokens.bone : (sma.containsMouse ? Tokens.tint5 : "transparent")
                                     border.width: Tokens.border
                                     border.color: styleCard.on ? Tokens.bone : Tokens.line
                                     Behavior on color { ColorAnimation { duration: Tokens.snap } }
 
                                     Column {
-                                        anchors { left: parent.left; right: parent.right; margins: Tokens.s3; verticalCenter: parent.verticalCenter }
+                                        anchors {
+                                            left: parent.left
+                                            right: updateBtn.visible ? updateBtn.left : parent.right
+                                            margins: Tokens.s3; rightMargin: updateBtn.visible ? Tokens.s2 : Tokens.s3
+                                            verticalCenter: parent.verticalCenter
+                                        }
                                         spacing: 3
                                         Text {
                                             text: styleCard.modelData.name.toUpperCase()
@@ -300,7 +431,7 @@ Item {
                                         }
                                         Text {
                                             width: parent.width
-                                            text: I18n.tr(styleCard.modelData.desc)
+                                            text: styleCard.subText
                                             color: styleCard.on ? Tokens.inkOnBoneDim : Tokens.inkFaint
                                             font.family: Tokens.ui
                                             font.pixelSize: Tokens.fTiny
@@ -313,7 +444,22 @@ Item {
                                         hoverEnabled: true
                                         preventStealing: true
                                         cursorShape: Qt.PointingHandCursor
-                                        onClicked: page.fedit("barStyle", styleCard.modelData.id)
+                                        onClicked: styleCard.applyable ? page.fedit("barStyle", styleCard.modelData.id) : page.browseBarStyles()
+                                    }
+                                    // Declared after the MouseArea so it stacks
+                                    // above it: the tile applies on click, and the
+                                    // update must not be stolen by that handler.
+                                    Btn {
+                                        id: updateBtn
+                                        anchors { right: parent.right; rightMargin: Tokens.s3; verticalCenter: parent.verticalCenter }
+                                        visible: styleCard.updatable
+                                        compact: true
+                                        armed: page.updatingId === ""
+                                        text: page.updatingId === styleCard.modelData.id
+                                            ? I18n.tr("UPDATING")
+                                            : I18n.tr("UPDATE")
+                                        objectName: "bar-style-update-" + styleCard.modelData.id
+                                        onAct: page.updateStyle(styleCard.modelData.id)
                                     }
                                 }
                             }
@@ -329,7 +475,7 @@ Item {
             // ── QS BAR: its layout, widgets, form and dock live in QS Bar Settings
             SettingCard {
                 id: qsbarSect
-                width: col.width
+                width: col.colWidth
                 visible: page.activeStyle === "qsbar"
                 title: I18n.tr("QS BAR")
                 kana: "帯"
@@ -371,7 +517,7 @@ Item {
             // barstyles/<id>/ folder, so the Sumi editors below stand down.
             SettingCard {
                 id: folderNote
-                width: col.width
+                width: col.colWidth
                 visible: !page.sumiActive && page.activeStyle !== "qsbar"
                 title: I18n.tr("LAYOUT")
 
@@ -379,7 +525,7 @@ Item {
                     width: parent.width
                     leftPadding: Tokens.s4; rightPadding: Tokens.s4
                     topPadding: Tokens.s3; bottomPadding: Tokens.s4
-                    text: I18n.tr("The %1 style manages its own layout in barstyles/%2. Its controls are below.").arg(page.activeName).arg(page.activeStyle)
+                    text: I18n.tr("The %1 style manages its own layout in barstyles/%2.").arg(page.activeName).arg(page.activeStyle)
                     color: Tokens.inkMuted
                     font.family: Tokens.ui
                     font.pixelSize: Tokens.fBody
@@ -390,7 +536,7 @@ Item {
             // OBI WIDGETS: show or hide each widget on the Obi bar.
             SettingCard {
                 id: obiSect
-                width: col.width
+                width: col.colWidth
                 visible: page.activeStyle === "obi"
                 title: I18n.tr("OBI WIDGETS")
 
@@ -419,7 +565,7 @@ Item {
 
             SettingCard {
                 id: nacreSect
-                width: col.width
+                width: col.colWidth
                 visible: page.activeStyle === "nacre"
                 title: I18n.tr("NACRE LAYOUT")
 
@@ -439,7 +585,7 @@ Item {
             // ── FRAME: the chrome the shell draws around the desktop ─────────
             SettingCard {
                 id: frameSect
-                width: col.width
+                width: col.colWidth
                 title: I18n.tr("FRAME")
                 visible: page.sumiActive
 
@@ -450,7 +596,7 @@ Item {
                     label: I18n.tr("Draw frame")
                     def: page.fwas("frameEnabled") === undefined ? "" : (page.fwas("frameEnabled") ? I18n.tr("ON") : I18n.tr("OFF"))
                     changed: page.fwas("frameEnabled") !== undefined && !!page.fval("frameEnabled", true) !== !!page.fwas("frameEnabled")
-                    desc: I18n.tr("Draw the bounded frame around the desktop at all.")
+                    desc: I18n.tr("The bounded band drawn around the desktop.")
                     source: "shell.json"
                     Sw {
                         objectName: "frame-enabled"
@@ -485,12 +631,12 @@ Item {
                     anchors.right: parent.right
                     divider: true
                     controlWidth: 58
-                    label: I18n.tr("Frame thickness")
+                    label: I18n.tr("Thickness")
                     unit: "px"
                     value: String(page.fnum("frameThickness", 2))
                     def: page.fwas("frameThickness") === undefined ? "" : String(page.fwas("frameThickness"))
                     changed: page.fwas("frameThickness") !== undefined && page.fnum("frameThickness", 2) !== Number(page.fwas("frameThickness"))
-                    desc: I18n.tr("How thick the frame band around the desktop is drawn.")
+                    desc: I18n.tr("How far the band stands into the screen.")
                     source: "shell.json"
                     Step {
                         objectName: "frame-thickness"
@@ -527,7 +673,7 @@ Item {
             // ── RAILS: pick an edge, then its own switches ───────────────────
             SettingCard {
                 id: railSect
-                width: col.width
+                width: col.colWidth
                 title: I18n.tr("RAILS")
                 visible: page.sumiActive
 
@@ -637,7 +783,7 @@ Item {
             // ── WIDGETS: the selected rail's three zones and its add drawers ──
             SettingCard {
                 id: zoneSect
-                width: col.width
+                width: col.colWidth
                 title: I18n.tr("WIDGETS ON THE %1 RAIL").arg(labels.edge(page.edge).toUpperCase())
                 visible: page.sumiActive
 

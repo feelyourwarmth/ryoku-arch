@@ -31,6 +31,35 @@ func TestCatalogRevisionIgnoresOrderAndVolatileState(t *testing.T) {
 	}
 }
 
+// A pause or resume is catalogue state the user acts on -- it blocks installs and
+// shows as Under construction -- so it must move the revision. Otherwise a store
+// that cached the paused catalogue keeps serving it: no refresh dot, and no way
+// to reach the resume.
+func TestCatalogRevisionTracksDownloadPause(t *testing.T) {
+	active := catalogRevision(Catalog{Items: []Item{
+		{Category: "barstyles", ID: "ricelin", Version: "1.0.0", ManifestSHA256: "x"},
+	}})
+	paused := catalogRevision(Catalog{Items: []Item{
+		{Category: "barstyles", ID: "ricelin", Version: "1.0.0", ManifestSHA256: "x",
+			DownloadPaused: true, DownloadPauseReason: "Has known issues. The developer is working on fixes."},
+	}})
+	if paused == active {
+		t.Fatal("pausing an item must change the revision")
+	}
+	if catalogRevision(Catalog{Items: []Item{
+		{Category: "barstyles", ID: "ricelin", Version: "1.0.0", ManifestSHA256: "x", DownloadPaused: true},
+	}}) == paused {
+		t.Fatal("a changed pause reason must change the revision")
+	}
+	// The reason alone, without the gate, is not part of what the catalogue offers.
+	if catalogRevision(Catalog{Items: []Item{
+		{Category: "barstyles", ID: "ricelin", Version: "1.0.0", ManifestSHA256: "x",
+			DownloadPauseReason: "Has known issues. The developer is working on fixes."},
+	}}) != active {
+		t.Fatal("a reason without the pause flag must not change the revision")
+	}
+}
+
 func TestCatalogRevisionChangesOnRealContentChange(t *testing.T) {
 	base := catalogRevision(Catalog{Items: []Item{
 		{Category: "rices", ID: "a", Version: "1", ManifestSHA256: "x"},
@@ -47,6 +76,35 @@ func TestCatalogRevisionChangesOnRealContentChange(t *testing.T) {
 		if catalogRevision(cat) == base {
 			t.Fatalf("%s must change the revision", name)
 		}
+	}
+}
+
+// Provenance links are display-only, but they are the whole point of a catalogue
+// update that changes nothing else: an item that gains (or renames) its upstream,
+// or adds a community invite, must move the revision so a warm cache offers the
+// refresh instead of serving a snapshot with no links to show.
+func TestCatalogRevisionTracksProvenance(t *testing.T) {
+	const home = "https://github.com/neur0map/MJ-widgets"
+	bare := catalogRevision(Catalog{Items: []Item{
+		{Category: "plugins", ID: "awe-clock", Version: "1.0.0", ManifestSHA256: "x"},
+	}})
+	upstream := catalogRevision(Catalog{Items: []Item{
+		{Category: "plugins", ID: "awe-clock", Version: "1.0.0", ManifestSHA256: "x", Upstream: home},
+	}})
+	if upstream == bare {
+		t.Fatal("an item gaining an upstream must change the revision")
+	}
+	if catalogRevision(Catalog{Items: []Item{
+		{Category: "plugins", ID: "awe-clock", Version: "1.0.0", ManifestSHA256: "x",
+			Upstream: "https://github.com/other/MJ-widgets"},
+	}}) == upstream {
+		t.Fatal("a changed upstream must change the revision")
+	}
+	if catalogRevision(Catalog{Items: []Item{
+		{Category: "plugins", ID: "awe-clock", Version: "1.0.0", ManifestSHA256: "x", Upstream: home,
+			Discord: "https://discord.gg/8KjBmUEyKA"},
+	}}) == upstream {
+		t.Fatal("an item gaining a discord invite must change the revision")
 	}
 }
 

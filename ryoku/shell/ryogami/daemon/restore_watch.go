@@ -1,12 +1,13 @@
 package main
 
 import (
-	"bufio"
-	"net"
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
+
+	wm "ryoku-wm"
 )
 
 // At login the wallpaper file (a late mount) or the outputs (a late monitor)
@@ -26,6 +27,36 @@ func (d *daemon) retryRestore() {
 			return
 		}
 	}
+	// The window covers a late mount or a finishing download; a choice still
+	// missing after it is a dead path, and grey for the session is worse than
+	// the default.
+	d.restoreFallback()
+}
+
+// restoreFallback repaints the stored outputs against the default wallpaper and
+// records it, so a dead choice heals at login instead of greying every time.
+func (d *daemon) restoreFallback() {
+	if want, applied := d.restoreOutputs(); want == 0 || applied > 0 {
+		return // it landed as the window closed, or nothing was ever recorded
+	}
+	src := d.defaultWallpaper()
+	if src == "" {
+		return // nothing installed to fall back to
+	}
+	path := filepath.Join(d.config().cacheDir(), "outputs.json")
+	state := map[string]map[string]interface{}{}
+	loadJSON(path, &state)
+	if len(state) == 0 {
+		return
+	}
+	for _, e := range state {
+		e["path"] = src
+	}
+	saveJSON(path, state)
+	if _, applied := d.restoreOutputs(); applied > 0 {
+		fmt.Fprintf(os.Stderr, "ryogami: recorded wallpaper never arrived; painted %s\n",
+			filepath.Base(src))
+	}
 }
 
 // Only the external live-wall player is spawned per output; a static frame
@@ -44,64 +75,30 @@ func (d *daemon) externalLiveStored() bool {
 	return false
 }
 
+// watchOutputs restores the wallpaper onto outputs that appear after startup: a
+// monitor plugged in, or a panel that probes late at login. The seam's watch
+// carries the full output list on every change, so a frame whose set grew since
+// the last is the signal the old monitoradded event was. It also feeds the
+// shared output cache the video/upscale sizing reads. watch returns on a
+// compositor exit, so it reconnects with the same backoff.
 func (d *daemon) watchOutputs() {
 	for {
-		sock := hyprEventSocket()
-		if sock == "" {
-			time.Sleep(restoreRetryInterval)
-			continue
-		}
-		conn, err := net.Dial("unix", sock)
-		if err != nil {
-			time.Sleep(restoreRetryInterval)
-			continue
-		}
-		r := bufio.NewReader(conn)
-		for {
-			line, err := r.ReadString('\n')
-			if err != nil {
-				break
+		prev := -1
+		// Outputs only: the provider then skips the window and workspace reads
+		// it would otherwise do on every window event.
+		_ = wmClient.WatchKinds(context.Background(), []wm.FrameKind{wm.FrameOutputs}, func(f wm.Frame) {
+			if f.Kind != wm.FrameOutputs {
+				return
 			}
-			if strings.HasPrefix(line, "monitoradded") && d.config().restoreEnabled() && d.externalLiveStored() {
+			outputs.set(f.Outputs)
+			n := len(f.Outputs)
+			grew := prev >= 0 && n > prev
+			prev = n
+			if grew && d.config().restoreEnabled() && d.externalLiveStored() {
 				d.restoreOutputs()
 			}
-		}
-		_ = conn.Close()
+		})
 		time.Sleep(restoreRetryInterval)
 	}
 }
 
-// hyprEventSocket picks the newest instance directory: a daemon restarted
-// from a lagging user-manager environment can inherit a stale signature.
-func hyprEventSocket() string {
-	best, bestMod := "", time.Time{}
-	for _, base := range hyprRunDirs() {
-		entries, err := os.ReadDir(base)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			sock := filepath.Join(base, e.Name(), ".socket2.sock")
-			fi, err := os.Stat(sock)
-			if err != nil {
-				continue
-			}
-			if best == "" || fi.ModTime().After(bestMod) {
-				best, bestMod = sock, fi.ModTime()
-			}
-		}
-	}
-	return best
-}
-
-func hyprRunDirs() []string {
-	var dirs []string
-	if rt := os.Getenv("XDG_RUNTIME_DIR"); rt != "" {
-		dirs = append(dirs, filepath.Join(rt, "hypr"))
-	}
-	dirs = append(dirs, filepath.Join("/tmp", "hypr"))
-	return dirs
-}

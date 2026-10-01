@@ -25,6 +25,7 @@ import (
 
 	"ryoku-i18n"
 	"ryoku-i18n/catalog"
+	wm "ryoku-wm"
 )
 
 // The failure screen renders this as a scannable QR code so the user can reach
@@ -526,6 +527,8 @@ func steps() []step {
 			desc: []string{i18n.T("Confirm or change the suggested profile."), i18n.T("Press 1-4 or pick below.")}},
 		{key: "gpu", title: i18n.T("Graphics mode"), kind: kSelect, items: gpuModes(), numbered: true,
 			desc: []string{i18n.T("Hybrid GPU (iGPU + NVIDIA) detected."), i18n.T("How should displays & apps use them?")}},
+		{key: "compositor", title: i18n.T("Window manager"), kind: kSelect, items: compositors(), numbered: true,
+			desc: []string{i18n.T("The Wayland compositor to run.")}},
 		{key: "diskpick", title: i18n.T("Target disk"), kind: kSelect, items: disks(), numbered: true,
 			desc: []string{i18n.T("Pick the disk to install onto."), i18n.T("Everything after this applies to it.")}},
 		{key: "disk", title: i18n.T("Disk strategy"), kind: kSelect, items: diskStrategies(), numbered: true,
@@ -672,6 +675,15 @@ func gpuModes() []item {
 		{"offload", i18n.T("Hybrid (recommended)"), i18n.T("iGPU display · dGPU on-demand")},
 		{"sync", i18n.T("dGPU performance"), i18n.T("NVIDIA drives everything")},
 		{"vfio", i18n.T("iGPU + dGPU for VM"), i18n.T("reserve dGPU for passthrough")},
+	}
+}
+
+// compositors lists the window managers with a shipped variant package, in
+// wm.Providers order. The step auto-skips while the list has one entry.
+func compositors() []item {
+	return []item{
+		{wm.ProviderHyprland, "Hyprland", i18n.T("dynamic tiling, the Ryoku default")},
+		{wm.ProviderNiri, "niri", i18n.T("scrollable tiling")},
 	}
 }
 
@@ -898,6 +910,8 @@ func newModel() model {
 	} else {
 		m.diskHint = diskHint()
 	}
+	// default the compositor so RYOKU_COMPOSITOR flows even when the step auto-skips.
+	m.picks["compositor"] = wm.Providers()[0]
 	m.netOnline = netOnline()
 	m.loadStep()
 	return m
@@ -1505,6 +1519,9 @@ func (m model) stepActive(i int) bool {
 	if m.flow[i].key == "gpu" {
 		p := m.picks["profile"]
 		return m.hwHybrid && (p == "amd-nvidia" || p == "intel-nvidia")
+	}
+	if m.flow[i].key == "compositor" {
+		return len(compositors()) > 1 // one provider: nothing to choose, skip
 	}
 	return true
 }

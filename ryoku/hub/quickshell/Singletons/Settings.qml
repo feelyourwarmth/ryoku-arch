@@ -23,6 +23,27 @@ Singleton {
     property bool ready: false
     property int revision: 0
 
+    // Compositor gating, carried on the `settings` frame with the values it
+    // gates. caps is behavioural (supports() -> a gated row is hidden, not
+    // disabled); deadKeys are provider store leaves the active compositor does
+    // not model, so modelsKey() drops a row nothing would write. provider and
+    // its config files still ride the `wm` topic below.
+    property var caps: ({})
+    property var deadKeys: []
+    // The active provider's window-rule action ids, in display order, carried on
+    // the same frame beside caps/deadKeys. Empty until the frame lands or when a
+    // probe fails, so a consumer falls back to its own static list.
+    property var windowRuleActions: []
+    property var configFiles: []
+    property string provider: ""
+    property var windows: []
+    function supports(cap) { return !cap || root.caps[cap] !== false; }
+    // A schema row's key names a provider store leaf. When some installed
+    // provider models it but the active one does not, nothing writes it, so the
+    // row is dropped; a keyless row, or a leaf no provider models (Hub-owned),
+    // is kept.
+    function modelsKey(key) { return !key || root.deadKeys.indexOf(key) < 0; }
+
     readonly property string sockPath: (Quickshell.env("XDG_RUNTIME_DIR") || "/tmp") + "/ryoku-shell.sock"
 
     // Nested read by dotted path; undefined for any missing segment.
@@ -55,6 +76,9 @@ Singleton {
         try {
             var frame = JSON.parse(line);
             if (frame && typeof frame === "object" && !Array.isArray(frame)) {
+                root.caps = frame.caps || ({});
+                root.deadKeys = frame.deadKeys || [];
+                root.windowRuleActions = frame.windowRuleActions || [];
                 root.data = frame;
                 root.ready = true;
                 root.revision++;
@@ -104,5 +128,37 @@ Singleton {
         }
 
         onConnectionStateChanged: if (connected) flushQueued()
+    }
+
+    function applyWm(line) {
+        try {
+            var f = JSON.parse(line);
+            if (f && typeof f === "object" && !Array.isArray(f)) {
+                root.configFiles = f.configFiles || [];
+                root.provider = f.provider || "";
+                root.windows = f.windows || [];
+            }
+        } catch (e) {
+        }
+    }
+
+    Socket {
+        id: wmSub
+        path: root.sockPath
+        parser: SplitParser { onRead: line => root.applyWm(line) }
+        Component.onCompleted: connected = true
+        onConnectionStateChanged: {
+            if (connected) {
+                write("subscribe wm\n");
+                flush();
+            } else {
+                wmRetry.restart();
+            }
+        }
+    }
+    Timer {
+        id: wmRetry
+        interval: 2000
+        onTriggered: if (!wmSub.connected) wmSub.connected = true
     }
 }

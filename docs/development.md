@@ -7,7 +7,7 @@ The loop, the gates, and how to add things without breaking the rules.
 Edit the repo, deploy, test on the running system.
 
 - **Shell (QML + daemon):** `ryoku/shell/dev-run.sh` builds `ryoku-shell` and
-  runs it from the checkout (`qs -p`, hot-reload). `dev-binds.sh on` binds the
+  runs it from the checkout (`qs -p`, hot-reload). `ryoku/hyprland/dev-binds.sh on` binds the
   shell keys for the session; `dev-stop.sh` stops it. Your own `~/.config` is not
   touched.
 - **Configs:** `ryoku deploy` builds the binaries and lays the repo into
@@ -85,6 +85,14 @@ Where a change lives decides whether, and how, it reaches an installed machine.
   signed `[ryoku]` repo. They reach the testing channel on every push to
   `unstable-dev` and stable when a release is tagged (`docs/updates.md`,
   "Publishing: releases and channels").
+- **Push, or work on a branch that is not the channel.** `ryoku update` on a
+  checkout reconciles the branch it is ON onto `origin/<channel>`: a clean
+  fast-forward when it can, and a `git reset --hard` when the branch has diverged
+  (`ryoku/cli/internal/updater/channel.go`, `syncChannel`). The channel branch is
+  meant to mirror upstream, so **commits sitting unpushed on `unstable-dev` are
+  dropped by the next `ryoku update`** (they survive only in the reflog). Push
+  them, or keep them on any other branch. Local edits to tracked files are never
+  touched: the deploy runs on what is checked out.
 - **The installer (`installation/`)** runs once from the ISO. Fixes here reach
   only new installs from a new ISO, never an existing machine.
 - **Package-set additions (`system/packages/`)** are pacstrapped at install.

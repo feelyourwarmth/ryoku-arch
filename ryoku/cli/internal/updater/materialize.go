@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"ryoku-cli/internal/sys"
 	i18n "ryoku-i18n"
+	wm "ryoku-wm"
 	"sort"
 	"strings"
 )
@@ -35,15 +36,24 @@ var ryokuDropIn = regexp.MustCompile(`^[0-9]+-ryoku-[^/]*\.conf$`)
 // sys.LiveOwnedConfig so the overlay never re-lays a frozen copy over a file
 // edited in place; ghostty/config is the exception -- it is a seed the user may
 // instead fork through the overlay, so it stays overlay-able (not live-owned).
-var generatedSeed = map[string]bool{
-	"hypr/monitors.lua":        true,
-	"hypr/gpu.lua":             true,
-	"hypr/keyboard.lua":        true,
-	"hypr/user.lua":            true,
-	"fastfetch/config.jsonc":   true,
-	"kitty/current-theme.conf": true,
-	"ghostty/config":           true,
-	"ghostty/ryoku-colors":     true,
+var generatedSeed = generatedSeedSet()
+
+func generatedSeedSet() map[string]bool {
+	seed := map[string]bool{
+		"fastfetch/config.jsonc":   true,
+		"kitty/current-theme.conf": true,
+		"ghostty/config":           true,
+		"ghostty/ryoku-colors":     true,
+	}
+	// Every provider's per-machine files are seeded and kept regardless of which
+	// compositor is running, so an update under one never prunes another's. The
+	// names come from the provider because they are its own config format.
+	for _, name := range wm.Providers() {
+		for _, rel := range wm.ConfigSeeds(name) {
+			seed[rel] = true
+		}
+	}
+	return seed
 }
 
 // nvim is seeded like ghostty: Ryoku lays its LazyVim starting point once, then
@@ -52,6 +62,80 @@ var generatedSeed = map[string]bool{
 // isSeed folds the per-path seeds and the whole nvim tree into one test.
 func isSeed(rel string) bool {
 	return generatedSeed[rel] || strings.HasPrefix(rel, "nvim/")
+}
+
+// providerConfigDirs is the set of ~/.config subdirs the window-manager
+// providers own, asked of the seam so no compositor is named here.
+func providerConfigDirs() map[string]bool {
+	out := map[string]bool{}
+	for _, name := range wm.Providers() {
+		if dir := wm.ConfigDir(name); dir != "" {
+			out[dir] = true
+		}
+	}
+	return out
+}
+
+func isProviderConfigDir(dir string) bool { return providerConfigDirs()[dir] }
+
+// keepsSwitchedAwayTree reports whether rel belongs to a provider config dir this
+// base ships nothing under: that compositor is switched away from, and its tree
+// is kept whole so switching back restores the desktop instead of a default one.
+func keepsSwitchedAwayTree(rel string, shipped map[string]bool) bool {
+	dir, _, ok := strings.Cut(rel, "/")
+	if !ok || !isProviderConfigDir(dir) {
+		return false
+	}
+	return !shipped[dir]
+}
+
+// applyProvider renders one provider's generated config from the neutral
+// store; a var so tests stub the provider binary away.
+var applyProvider = func(name, store string) error {
+	_, err := wm.OpenNamed(name).Apply(store)
+	return err
+}
+
+// applyGenerated completes every laid-down compositor tree: the packages ship
+// only the static seeds, while the compositor hard-includes the files its
+// provider generates (niri's settings.kdl and rebinds.kdl, Hyprland's
+// settings.lua and rebinds.lua). A tree without them is a compositor that
+// refuses its own config at the next login, which is exactly what a
+// hyprland-to-niri switch produced: nothing between the switch and that login
+// ran the TARGET's apply, because every apply call elsewhere follows the
+// active provider. Materialize is the one call the login bootstrap, the
+// switch, and the update all share, so it renders each laid-down tree's
+// generated half here. The user_edits mirrors of those files are forks, not
+// generated state, so their absence means nothing. Best-effort per provider:
+// a tree whose provider binary is absent stays as it was, never a failed
+// materialize.
+func applyGenerated(configHome string) {
+	store := filepath.Join(configHome, "ryoku", "desktop.json")
+	if !sys.Exists(store) {
+		return // no neutral store to render from: the seeds are the right config
+	}
+	for _, name := range wm.Providers() {
+		dir := wm.ConfigDir(name)
+		if dir == "" || !sys.Exists(filepath.Join(configHome, dir)) {
+			continue // tree not laid down: nothing to complete
+		}
+		missing := false
+		for _, rel := range wm.GeneratedConfig(name) {
+			if d, _, ok := strings.Cut(rel, "/"); !ok || d != dir {
+				continue // a user_edits fork mirror, not generated state
+			}
+			if !sys.Exists(filepath.Join(configHome, rel)) {
+				missing = true
+				break
+			}
+		}
+		if !missing {
+			continue
+		}
+		if err := applyProvider(name, store); err != nil {
+			fmt.Printf(i18n.T("note: could not render %s's generated config (%v); run `ryoku doctor` inside a %s session\n"), name, err, name)
+		}
+	}
 }
 
 // Materialize lays the Ryoku-owned base configs into the user's ~/.config,
@@ -116,7 +200,12 @@ func Materialize() error {
 	for _, rel := range current {
 		dst := filepath.Join(dest, rel)
 		if isSeed(rel) {
-			if !sys.Exists(dst) {
+			// PathPresent, not Exists: a seed slot the user filled with a symlink
+			// into their dotfiles is theirs, so never lay the shipped default over
+			// it -- not even when the link dangles because its repo is not mounted
+			// yet at this point in boot. Exists follows the link and would see the
+			// missing target as an empty slot, clobbering the symlink.
+			if !sys.PathPresent(dst) {
 				if err := sys.CopyFile(filepath.Join(base, rel), dst); err != nil {
 					return fmt.Errorf(i18n.T("seed %s: %w"), rel, err)
 				}
@@ -193,8 +282,21 @@ func Materialize() error {
 	// (/usr/share/applications/mimeapps.list) exists to stop. `ryoku doctor`
 	// strips the stale Ryoku lines out of it instead.
 	retiredKeep := map[string]bool{"mimeapps.list": true}
+
+	// A compositor the machine switched away from still owns its config tree. Its
+	// variant package is gone, so its files leave the base and the manifest prune
+	// would delete them, and a switch back then boots an autogenerated config with
+	// no keybinds and no shell autostart. Delivery reads EVERY provider's tree, so
+	// keep whole any provider config dir this base does not ship; a file dropped
+	// within a tree the box still ships prunes as before.
+	shippedProvider := map[string]bool{}
+	for _, rel := range current {
+		if dir, _, ok := strings.Cut(rel, "/"); ok && isProviderConfigDir(dir) {
+			shippedProvider[dir] = true
+		}
+	}
 	for _, rel := range previous {
-		if curSet[rel] || retiredKeep[rel] {
+		if curSet[rel] || retiredKeep[rel] || keepsSwitchedAwayTree(rel, shippedProvider) {
 			continue
 		}
 		if strings.HasPrefix(rel, "wireplumber/") {
@@ -226,6 +328,7 @@ func Materialize() error {
 			fmt.Printf("  %s\n", rel)
 		}
 	}
+	applyGenerated(dest)
 	return nil
 }
 

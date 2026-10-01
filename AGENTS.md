@@ -1,14 +1,18 @@
-# Ryoku Arch
+# Ryoku
 
-A hand-built Arch Linux distribution: a Hyprland desktop (the Ryoku shell), a
-guided installer, and the system definition that produces both. This repository
-is the single source of truth. It deploys one way, into a live system; live
-machines are never the source.
+A hand-built Linux distribution built on Arch Linux: a Hyprland or niri desktop
+(the Ryoku shell), a guided installer, and the system definition that produces
+both. This repository is the single source of truth. It deploys one way, into a
+live system; live machines are never the source.
 
 New here? Read these in order, then keep them open while you work:
 
 - `docs/ryoku.md` what Ryoku is, who it is for, and how the parts fit.
 - `docs/structure.md` the repo map: where everything lives and the one job it has.
+- `docs/compositors.md` the window-manager seam: the provider contract, what
+  each compositor can do, and how to add another.
+- `docs/adding-a-window-manager.md` the walkthrough for putting Ryoku on a
+  compositor it has never met.
 - `docs/conventions.md` how code and configuration are written here.
 - `docs/ui-ux.md` the desktop's look and motion, and how to build or replicate it.
 - `docs/development.md` the workflow: deploy, test, the commit gates, and research.
@@ -22,11 +26,14 @@ These are not negotiable. Most are enforced by the git hooks in `.githooks/`.
    purpose. Before adding anything, search the repo first; if it already exists,
    reuse it. Never keep two copies of the same thing. See `docs/structure.md`.
 
-2. **The Hyprland config is Lua.** It is authored as Lua modules under
-   `ryoku/hyprland/`, one concern per file. Never hand-write a raw
-   `hyprland.conf`. A standalone daemon or app that cannot read Lua keeps its own
-   native config under its own directory (for example `hypridle.conf`,
-   `matugen/config.toml`, `kitty.conf`); that is the only reason a non-Lua config exists.
+2. **A compositor's config is authored in that compositor's own language.**
+   Hyprland is Lua modules under `ryoku/hyprland/`; niri is KDL under
+   `ryoku/niri/`. One concern per file, and never a hand-written
+   `hyprland.conf`. A standalone daemon or app that cannot read either keeps its
+   own native config under its own directory (for example `hypridle.conf`,
+   `matugen/config.toml`, `kitty.conf`); that is the only reason another config
+   format exists. Nothing outside `ryoku/wm/` may name a compositor at all:
+   ask capabilities, see `docs/compositors.md`.
 
 3. **One concern per file.** A Lua module does one thing. A QML component is one
    component in one file. Split things out; do not pile unrelated logic together.
@@ -67,7 +74,7 @@ These are not negotiable. Most are enforced by the git hooks in `.githooks/`.
 
 | Path | Purpose |
 |---|---|
-| `ryoku/` | The desktop: app configs, the Hyprland (Lua) config, the shell UI, the lockscreen, brand assets. |
+| `ryoku/` | The desktop: app configs, the window-manager seam and its per-compositor configs (Hyprland in Lua, niri in KDL), the shell UI, the lockscreen, brand assets. |
 | `system/` | The machine definition: boot chain, hardware policy, package sets. |
 | `installation/` | How a machine is built: the TUI, the backend installer, the ISO profile. |
 | `release/` | Packaging: the desktop PKGBUILDs, the `[ryoku]` repo, the signing keyring. |
@@ -109,11 +116,11 @@ there; the CLI needs no server and is the first choice.
 
 Auto-generated from the Prowl index, refreshed on each `overview`/`init`. Prefer retrieving from Prowl (and reading the cited files) over grepping or relying on training memory; this is the current shape of the repo.
 
-- size: 2917 files, 77639 symbols, 8224 edges (resolved 2913, external deps 4011, unresolved 1300)
-- languages: go:1382 qml:753 bash:217 javascript:175 markdown:91 rust:70 yaml:53 lua:42
-- subsystems: ryoku/shell(519,qml) · ryoku/shell(65,rust) · ryoku/apps(62,qml) · ryoku/hub(61,qml) · ryoku/ui(52,qml) · ryoku/shell(21,css) · ryoku/rashin(16,javascript) · ryoku/hyprland(15,lua)
-- entrypoints: ryoku/shell/quickshell/shell/shell.qml · ryoku/hub/quickshell/pages/InputPage.qml · ryoku/hub/quickshell/pages/AppearancePage.qml · ryoku/shell/quickshell/shell/modules/bar/MenuWidgetHost.qml · ryoku/hub/quickshell/pages/RecordingPage.qml · ryoku/hub/quickshell/pages/AddonsPage.qml · ryoku/hub/quickshell/pages/DisplaysPage.qml · ryoku/hyprland/hyprland.lua · (+140 more)
-- central files (most depended-on): ryoku/ui/Singletons/Tokens.qml · ryoku/shell/quickshell/shell/services/Perf.qml · ryoku/shell/quickshell/shell/modules/bar/barstyles/qsbar/Theme.qml · ryoku/ui/Singletons/I18n.qml · ryoku/shell/quickshell/shell/modules/depth/Singletons/Config.qml
+- size: 3349 files, 313749 symbols, 10246 edges (resolved 3303, external deps 5241, unresolved 1702)
+- languages: go:1660 qml:865 bash:245 javascript:177 markdown:108 json:77 yaml:58 lua:43
+- subsystems: ryoku/shell(631,qml) · ryoku/hub(65,qml) · ryoku/ui(52,qml) · ryoku/apps(50,qml) · ryoku/rashin(16,javascript) · ryoku/hyprland(15,lua) · ryoku/shell(15,css) · ryoku/lockscreen(12,qml)
+- entrypoints: ryoku/shell/quickshell/shell/shell.qml · ryoku/shell/ryogami/wall-ui/qml/wallpaper/WallpaperSelector.qml · ryoku/hub/quickshell/pages/InputPage.qml · ryoku/hub/quickshell/pages/AnimationsPage.qml · ryoku/shell/quickshell/shell/modules/bar/MenuWidgetHost.qml · ryoku/hub/quickshell/pages/RecordingPage.qml · ryoku/hub/quickshell/pages/AddonsPage.qml · ryoku/hub/quickshell/pages/DisplaysPage.qml · (+191 more)
+- central files (most depended-on): ryoku/lockscreen/qylock/themes/clockwork/orbital/i18n/I18n.qml · ryoku/ui/Singletons/Tokens.qml · ryoku/shell/quickshell/shell/modules/bar/barstyles/qsbar/Theme.qml · ryoku/shell/quickshell/shell/services/Perf.qml · ryoku/shell/ryogami/wall-ui/qml/Config.qml
 - read these guides first: README.md · AGENTS.md · CONTRIBUTING.md · docs/development.md · docs/structure.md
 
 Depth on demand: `prowl-agent find|def|outline|references <name>`, `search <text>`, `context search "<question>"`, `sketch <ui>`.

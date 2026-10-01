@@ -1,6 +1,84 @@
 # Changelog: ryoku/hub/
 
-## Unreleased
+
+### Added
+- **The Machine page owns the two switches it used to describe.** The
+  hardware display-routing knob (GPU Mode / MUX / Optimus) and the live CPU
+  power profile were CLI-only, and both the render card's Hybrid and the
+  firmware's Hybrid read as one setting with two names. The render card now
+  carries a "Display wired to" segment (a pkexec grant makes the firmware
+  write terminal-free; a reboot-pending flag says when it lands) and the CPU
+  card a "Live profile" segment that switches through the shell daemon, the
+  one owner of the pick. Each row names its layer: a software choice applied
+  at next login, versus a hardware switch applied at next reboot
+  (`quickshell/pages/GpuPage.qml`, `backend/gpumux.go`, `backend/daemonclient.go`).
+
+- **Keybinds, rebuilt around use.** A search field that fuzzy-matches labels,
+  hints, categories and key tokens ("clw" finds Close window, "num 3" the
+  number-pad workspaces), a category rail with counts, and one calm column of
+  36px rows: a short label, the key caps, a hint only for the row under the
+  pointer. A shortcut the running compositor cannot do stays listed, greyed,
+  with the reason a hover away. Rebinding clicks the caps and captures the
+  chord through a shortcut inhibitor, so the compositor hands the keys to the
+  Hub instead of running them, on niri as on Hyprland; the number pad records
+  as `Num 1` whatever NumLock says (`pages/KeybindsPage.qml`, `Combos.js`).
+- **The legend comes from the provider.** `ryoku-hub keybinds` asks the running
+  window-manager provider for the full effective bind list from the neutral
+  catalogue, so the page and the cheatsheet show what is actually bound rather
+  than a parse of one compositor's config (`backend/keybinds.go`).
+- **Night light, on the Displays page.** A switch and a colour temperature that
+  read and drive the daemon's `nightlight` topic, shown only where the running
+  compositor's provider offers a night light (`pages/DisplaysPage.qml`).
+- **Idle timeouts, on the Machine page.** Dim, lock, screen off and suspend, on
+  battery and plugged in, plus a master switch and an opt-in for desktops; they
+  persist as the idle policy in `power.json` and re-render the idle daemon's
+  config on every change (`pages/GpuPage.qml`, `schema/GpuPage.js`,
+  `backend/cputune.go`).
+- **A touchpad switch, on the Input page.** Reads and flips the pad through the
+  `input.touchpad` seam action, shown where the provider reports the
+  `touchpadToggle` capability (`pages/InputPage.qml`).
+- **The compositor pages follow the running provider.** The Animations page
+  renders a provider's own animation rows (niri's per-animation springs and
+  curves) beside the shell motion controls and keeps the Hyprland curve editor
+  only where that store is live; the Layer Rules page renders a provider's
+  layer-rule list through a shared list control built from the row's declared
+  fields; the Window Rules action picker takes its vocabulary from the actions
+  the provider honours (`pages/AnimationsPage.qml`, `pages/LayerRulesPage.qml`,
+  `pages/WindowRulesPage.qml`, `SettingsSheet.qml`, `Singletons/Settings.qml`).
+
+### Fixed
+- **No Hyprland wording or dead compositor toggles on niri.** The search
+  vocabulary derives from the active provider's rows and name, the import
+  wizard names the desktop you run and stands down where it cannot read its
+  config, and the Performance page hides the blur, shadow and low-power
+  switches where nothing reads them (`Hub.qml`, `pages/ImportPage.qml`,
+  `pages/PerformancePage.qml`).
+
+### Changed
+- **Ryoku Settings is a full-page window.** It opens at 99% of the screen (the
+  Hyprland rule floats it at the same 99% and centres it; niri sizes the column),
+  so the settings get the room the layout is designed for instead of a 1200px
+  strip (`quickshell/shell.qml`, `hyprland/modules/window_rules.lua`).
+- **One measure, and two columns of cards where they fit.** A framed page reads
+  on a centred column capped at `Tokens.pageMax`, and the schema sheet lays its
+  groups into two columns of cards when the measure holds them, balanced by how
+  tall each group renders. The result is a page that fills its width from the top
+  rather than one long column beside an empty half, with a row's control still a
+  glance from its label (`quickshell/SettingsSheet.qml`, `SchemaPage.qml`).
+- **Less text.** Every page description is one sentence now, and the longest row
+  descriptions were cut to a line (`quickshell/pages/*`, `quickshell/schema/*`).
+- **The rail breathes.** Taller nav rows, a gap between groups, and `Advanced`
+  pinned under a hairline as the only rail-foot control (`quickshell/Hub.qml`).
+
+### Removed
+- **The rich decor tier, and its code.** The rail's Calm|Rich switch turned on a
+  second skin: a register backdrop, a barcode rail foot with the build edition, a
+  film-grain plate, an oversized title, and chapter plates filling dead grid
+  cells with art. Calm was the default and the right answer, so the switch, the
+  tokens behind it (`decorRich`, `showPosters`, `showGrid`, `showGrain`,
+  `monoHeads`), the components (`Decor`, `Placard`, `DitherField`, `DecorStore`)
+  and every call site are gone; a page has one voice now (`Ryoku.Ui`,
+  `docs/ui-ux.md`, "The retired poster layer").
 
 ### Added
 - **"Bar drifts when silent" on the Performance page.** Opts the bar's gap
@@ -43,6 +121,12 @@
   off (a reload only unloads what it loaded itself). See `docs/hyprland-plugins.md`.
 
 ### Fixed
+- **Connections lists Bluetooth devices by name, not MAC address.** The
+  Bluetooth tab read a device's name from its BlueZ alias, which BlueZ leaves
+  equal to the device's own address until it learns a name, so an unnamed
+  device showed a MAC even when the device-reported name was available. It now
+  resolves through the shared helper, which skips an address-shaped alias
+  (`quickshell/pages/ConnectionsPage.qml`).
 - **A rice carries its custom reload cover (#146).** The brand layer bundled
   the mark image but left `reloadCover.path` as the author's absolute path, so
   applying a rice on another box (or after the source asset moved) wrote a path

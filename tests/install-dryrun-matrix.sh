@@ -8,6 +8,12 @@ here="$(cd "$(dirname "$0")" && pwd)"
 root="$here/.."
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
+# The installer refuses to run without a compositor choice and the config dir
+# the TUI derives from the seam for it; the matrix asserts the Hyprland tree's
+# paths, so that is the one it installs.
+export RYOKU_COMPOSITOR="${RYOKU_COMPOSITOR:-hyprland}"
+export RYOKU_COMPOSITOR_CONFIG_DIR="${RYOKU_COMPOSITOR_CONFIG_DIR:-hypr}"
+
 canonical="partition filesystems mount pacstrap configure bootloader"
 
 # run_backend <strategy> <encrypt> <swap> [esp-mode] [variant]

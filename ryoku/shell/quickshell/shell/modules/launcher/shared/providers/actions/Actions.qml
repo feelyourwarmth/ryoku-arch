@@ -2,7 +2,7 @@ import QtQuick
 import Quickshell
 import Ryoku.Ui.Singletons
 import "../../Singletons"
-import "../../lib/fuzzy.js" as Fuzzy
+import "../../../../../utils/fuzzy.js" as Fuzzy
 import "catalog.js" as Catalog
 import ".."
 
@@ -41,6 +41,10 @@ Provider {
 
     function query(text) {
         var pool = Catalog.CATALOG.filter(function (a) {
+            // an action gated on a window-manager capability is dropped on a
+            // compositor that lacks it (its helper is not even installed there).
+            if (a.caps && Wm.caps[a.caps] !== true)
+                return false;
             return actions.activeCategory === "All" || a.category === actions.activeCategory;
         });
         var q = (text || "").trim().toLowerCase();

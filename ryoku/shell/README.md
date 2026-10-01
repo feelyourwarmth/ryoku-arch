@@ -8,8 +8,9 @@ package as the base config under `/usr/share/ryoku/config`, which
 ## Layout
 
 - `ipc/` The control plane: one Go program, `ryoku-shell`. As `ryoku-shell daemon`
-  it supervises the Quickshell components, starts the clipboard and wallpaper
-  helpers, and listens on a single Unix socket. As `ryoku-shell <command>` it is a
+  it supervises the Quickshell components, starts the clipboard helpers (the
+  selection watcher and the selection keeper) and the wallpaper helpers, and
+  listens on a single Unix socket. As `ryoku-shell <command>` it is a
   thin client that forwards a command to that socket; Hyprland keybinds use it.
 - `quickshell/` The hand-written QML UI: `pill` (the four-edge frame bars,
   screen frame, bounded menu manager, power menu, and preserved frame
@@ -32,10 +33,10 @@ package as the base config under `/usr/share/ryoku/config`, which
   Hyprland autostart (`gsettings color-scheme`), not a shipped file.
 - `systemd/` The user session target.
 
-The Hyprland config that hosts this shell lives at `ryoku/hyprland`; its
-`scripts/` holds the clipboard and wallpaper thumbnailers the UI calls directly.
-Its autostart also runs `ryoku-idle start`, which enables dim/lock/display-off/
-suspend timeouts only on detected laptops.
+Both compositor session entries run `ryoku-power-cutover session-start`. It
+binds the shared user services to the foreground login1 session under a sleep
+guard, then starts the shell, idle timers, lid owner and wallpaper in that
+order. An inactive session is secured and observed instead of taking ownership.
 
 ## The IPC
 
@@ -49,6 +50,8 @@ socket and one place that knows how to talk to the components:
 | `bar <id>` | open a finite frame-bar menu or surface on the active monitor |
 | `overview` | open the workspace overview on the active monitor |
 | `lock` | lock the screen with qylock |
+| `suspend` | from the active login1 session, require compositor-secure qylock, release its sleep block, then ask login1 to suspend |
+| `unlock-prepare session <id>` | internal qylock handoff: require this daemon to own the named active session, acquire the hard block, and reject unlock while login1 is entering sleep |
 | `wallpaper [next\|init\|set <path>]` | change the wallpaper and retheme |
 | `voice` | toggle Voxtype transcription and its live mic surface |
 | `visualizer`, `visualizer-overlay` | toggle the desktop audio visualizer or its overlay mode |
@@ -62,7 +65,8 @@ dumb. Build it with `go build` in `ipc/`; the binary belongs on `PATH` as
 
 Beyond Hyprland, quickshell, `go` (to build `ryoku-shell`), and cmake + ninja +
 qt6-shadertools (to build the `Ryoku.Blobs` plugin), the shell calls at
-LED color), `wl-clipboard` (clipboard history and capture copy), `imagemagick`
+LED color), `wl-clipboard` (clipboard history and capture copy), `wl-clip-persist`
+(keeps the selection when the app that copied closes), `imagemagick`
 (wallpaper thumbnails), `hyprpicker`, `hypridle` and `brightnessctl` (laptop
 idle/dim), `upower` (battery state), `wireplumber` (`wpctl`), `pipewire-pulse`
 (`pactl` voice-call state and mic source), `cava` (music, mic, and desktop visualizers), `playerctl` (media keys),
@@ -82,8 +86,8 @@ Run the shell straight from this checkout on a running Hyprland session, no
 install required:
 
     ryoku/shell/dev-run.sh       # build ryoku-shell, then run it with RYOKU_SHELL_DIR set
-    ryoku/shell/dev-binds.sh on  # optional: bind the shell keys for this session
-    ryoku/shell/dev-stop.sh      # stop it (restore your keys with: hyprctl reload)
+    ryoku/hyprland/dev-binds.sh on  # optional: bind the shell keys for this session
+    ryoku/shell/dev-stop.sh      # stop it (restore your keys with: ryoku wm act config.reload)
     ryoku deploy                # build + materialize this checkout into ~/.config, then reload
 
 The daemon launches each component with `qs -p`, so your own `~/.config` is never

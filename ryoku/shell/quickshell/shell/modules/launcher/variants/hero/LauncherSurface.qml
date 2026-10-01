@@ -3,7 +3,7 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Effects
 import Quickshell
-import Quickshell.Hyprland
+import "../../../../components"
 import Quickshell.Wayland
 import Quickshell.Widgets
 import Ryoku.Ui
@@ -66,18 +66,16 @@ PanelWindow {
     readonly property real maxDrawerHeight: surfaceBudget.maxDrawerHeight
     readonly property real actualCardCapacity: Math.max(
         0, height - shadowPadTop - shadowPadBottom)
-    readonly property bool frostActive: frostLoader.status === Loader.Ready
-        && frostLoader.item
-        && frostLoader.item.frozenReady
+    readonly property bool frostActive: localFrost.frozenReady
         && lifecycleState.capture === Lifecycle.CAPTURE.READY
     readonly property var frostPlan: Lifecycle.frostPresentation({
         frostActive: frostActive,
         drawerHeight: launcher.drawerPresentedHeight,
         drawerOpacity: launcher.drawerPresentedOpacity,
         maxDrawerHeight: maxDrawerHeight,
-        sourceHeight: frostLoader.item ? frostLoader.item.sampledHeight : 0,
-        bleedTop: frostLoader.item ? frostLoader.item.bleedTop : 0,
-        bleedBottom: frostLoader.item ? frostLoader.item.bleedBottom : 0
+        sourceHeight: localFrost.sampledHeight,
+        bleedTop: localFrost.bleedTop,
+        bleedBottom: localFrost.bleedBottom
     })
 
     property real visualOpacity: 0
@@ -418,47 +416,34 @@ PanelWindow {
     // Capture lives outside the zero-opacity visual subtree so the scheduled
     // texture update can finish during Prelude. It produces no scene pixels;
     // only FrostLayer presents the accepted texture inside the card clip.
-    Loader {
-        id: frostLoader
-        property int loadGeneration: -1
-        active: win.frostTreeNeeded
-        asynchronous: false
-
-        sourceComponent: Component {
-            HeroVariant.LocalFrost {
-                captureScreen: win.modelData
-                generation: win.lifecycleState.generation
-                screenWidth: win.modelData.width
-                screenHeight: win.modelData.height
-                cropX: (win.modelData.width - win.cardWidth) / 2
-                cropY: win.stableTopMargin + win.shadowPadTop
-                    + 126 * win.s
-                cropWidth: win.cardWidth
-                cropHeight: win.maxDrawerHeight
-                blurRadius: Math.max(
-                    1, Math.min(64, LauncherConfig.bgBlur | 0))
-                captureEnabled: win.capturePending
-                    && win.backingWindowVisible
-                onReady: generation => win.lifecycleEvent({
-                    type: "captureReady",
-                    generation: generation
-                })
-                onFailed: generation => win.lifecycleEvent({
-                    type: "captureFailed",
-                    generation: generation
-                })
-            }
-        }
-
-        onStatusChanged: {
-            if (status === Loader.Error && win.capturePending)
-                win.emitLifecycle(
-                    "captureUnavailable", {}, loadGeneration);
-        }
-        onActiveChanged: {
-            if (active)
-                loadGeneration = win.lifecycleState.generation;
-        }
+    // The object is persistent for the surface's life. Recreating it per open
+    // tears a ScreencopyView down while the compositor still delivers output
+    // enter/leave, which segfaults the client where there is no focus-grab
+    // protocol; open and close ride captureSource and a per-generation reset.
+    HeroVariant.LocalFrost {
+        id: localFrost
+        captureScreen: win.modelData
+        generation: win.lifecycleState.generation
+        screenWidth: win.modelData.width
+        screenHeight: win.modelData.height
+        cropX: (win.modelData.width - win.cardWidth) / 2
+        cropY: win.stableTopMargin + win.shadowPadTop
+            + 126 * win.s
+        cropWidth: win.cardWidth
+        cropHeight: win.maxDrawerHeight
+        blurRadius: Math.max(
+            1, Math.min(64, LauncherConfig.bgBlur | 0))
+        captureWanted: win.frostTreeNeeded
+        captureEnabled: win.capturePending
+            && win.backingWindowVisible
+        onReady: generation => win.lifecycleEvent({
+            type: "captureReady",
+            generation: generation
+        })
+        onFailed: generation => win.lifecycleEvent({
+            type: "captureFailed",
+            generation: generation
+        })
     }
 
     Item {
@@ -510,20 +495,13 @@ PanelWindow {
 
                 sourceComponent: Component {
                     HeroVariant.FrostLayer {
-                        sourceItem: frostLoader.item
-                            ? frostLoader.item.textureItem : null
-                        sourceRect: frostLoader.item
-                            ? frostLoader.item.sampleRect
-                            : Qt.rect(0, 0, 0, 0)
+                        sourceItem: localFrost.textureItem
+                        sourceRect: localFrost.sampleRect
                         active: true
-                        bleedLeft: frostLoader.item
-                            ? frostLoader.item.bleedLeft : 0
-                        bleedTop: frostLoader.item
-                            ? frostLoader.item.bleedTop : 0
-                        bleedRight: frostLoader.item
-                            ? frostLoader.item.bleedRight : 0
-                        bleedBottom: frostLoader.item
-                            ? frostLoader.item.bleedBottom : 0
+                        bleedLeft: localFrost.bleedLeft
+                        bleedTop: localFrost.bleedTop
+                        bleedRight: localFrost.bleedRight
+                        bleedBottom: localFrost.bleedBottom
                         textureHeight: win.frostPlan.textureHeight
                         blurRadius: Math.max(
                             1, Math.min(64, LauncherConfig.bgBlur | 0))
@@ -566,7 +544,7 @@ PanelWindow {
         }
     }
 
-    HyprlandFocusGrab {
+    FocusGrab {
         id: focusGrab
         property int generation: -1
         active: win.invocationSurface
@@ -582,10 +560,17 @@ PanelWindow {
             if (!win.invocationSurface
                     || win.lifecycleState.phase === Lifecycle.PHASES.CLOSING)
                 return;
-            win.requestClose(
-                generation, win.surfaceMonitor);
+            win.requestClose(generation, win.surfaceMonitor);
         }
     }
+
+    // The dismiss scrim lives as a top-level sibling surface (DismissScrim,
+    // driven from Main.qml): a layer surface nested inside this one is the
+    // lifecycle quickshell faults on under a compositor with no focus-grab
+    // protocol. This surface only exposes when it wants the scrim and the
+    // generation an outside press must close.
+    readonly property bool dismissWanted: !focusGrab.available && focusGrab.active
+    readonly property int dismissGeneration: focusGrab.generation
 
     FrameAnimation {
         id: lifecycleFrame

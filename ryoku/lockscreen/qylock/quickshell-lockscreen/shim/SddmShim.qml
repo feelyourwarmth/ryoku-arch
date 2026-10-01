@@ -4,14 +4,20 @@
 // suspend, userModel, sessionModel, keyboard) so themes work unchanged,
 // plus fingerprint state properties the theme reads for the sensor hint.
 //
-// Fingerprint flow:
-//   1. lock_shell.qml sets armWhenReady = true once WlSessionLock.secure
-//   2. The shim probes fprintd-list + ~/.config/qylock/fingerprint
-//   3. Stale fprintd-verify processes are cleared, then a PAM conversation
-//      starts against the ryoku-lock service (grosshack pair)
-//   4. grosshack forks fprintd-verify at conversation start: the sensor
-//      scans while pam_unix waits for a password; first success wins
-//   5. A failed scan re-arms after 1s
+// Auth flow — TWO parallel PAM conversations (pam_fprintd's man page is
+// explicit: PAM stacks are serialised by design, so parallel methods need
+// separate conversations — "the way multiple authentication methods are
+// made available to users of gdm"):
+//   1. lock_shell.qml publishes proof after WlSessionLock becomes secure
+//   2. Both PAM conversations are armed only while this login1 session is active
+//   3. The shim probes fprintd-list + ~/.config/qylock/fingerprint
+//   4. Stale fprintd-verify processes are cleared, then pamFp (fingerprint)
+//      runs beside pamPw (typed password)
+//   5. First conversation to succeed asks the root lock state machine to unlock
+//   6. Leaving the foreground aborts both conversations and cancels any pending
+//      authenticated reveal
+//   7. A failed scan re-arms after 1s; a wrong password re-prompts immediately
+//      without starving the other method
 
 import QtQuick
 import Quickshell
@@ -34,17 +40,83 @@ Item {
     // hint and play the reveal flourish.
     property bool fpEnabled: true            // from ~/.config/qylock/fingerprint
     property bool fpHasFingers: false        // fprintd-list reports >= 1 finger
-    readonly property bool fingerprintReady: fpEnabled && fpHasFingers
-    property string fingerprintState: "idle" // idle | scanning | success | fail
+    property bool loginSessionActive: false  // only the foreground VT may authenticate
+    readonly property bool fingerprintReady: fpEnabled && fpHasFingers && loginSessionActive
+    property string fingerprintState: "idle" // idle | scanning | success | fail | unavailable
     property bool fingerprintUnlock: false   // true if sensor won (not typed)
-    property bool armWhenReady: false        // lock surface is secured, arm now
+    property bool armWhenReady: false        // secure proof is published; active session may arm
     property bool armPending: false          // an armPrep run is in flight
     property bool fpTyped: false             // a key was fed to the conversation
+    property bool unlocked: false            // a conversation already unlocked; guards double-fire
+
+    // Held-sensor backoff (#243). A scan that dies almost as soon as it started
+    // cannot be a misread — three real touches take seconds — it is fprintd
+    // refusing the Claim (a ghost claim after suspend/resume). Timing the
+    // failure is the only signal available without root, so it is the one used:
+    // instant failures accumulate toward an "unavailable" state that stops the
+    // per-second red loop and lets a backing-off probe wait for recovery.
+    property real fpArmTs: 0                 // ms epoch the last scan was armed
+    property int fpFastFails: 0              // consecutive instant (claim-held) failures
+    property bool fpUnavailable: false       // sensor paused: held/busy, password still works
+    property int fpBackoffMs: 5000           // re-probe gap while unavailable, doubling to a cap
+    readonly property real fpInstantFailMs: 1500  // a failure faster than this cannot be a touch
 
     // arm the moment the lock secures; probes alone race and lose it.
     onArmWhenReadyChanged: {
         if (shim.armWhenReady)
             shim.maybeArm();
+    }
+
+    function applySessionActivity(value) {
+        var active = String(value).trim() === "yes";
+        if (shim.loginSessionActive === active)
+            return;
+        shim.loginSessionActive = active;
+        if (active) {
+            shim.maybeArm();
+            return;
+        }
+        shim.armPending = false;
+        armPrepProc.running = false;
+        rearmTimer.stop();
+        fpProbeTimer.stop();
+        pamFp.abort();
+        pamPw.pendingPassword = "";
+        pamPw.abort();
+        shim.unlocked = false;
+        shim.fingerprintState = "idle";
+    }
+
+    Process {
+        id: sessionActivityProc
+        running: true
+        command: [
+            "bash", "-c",
+            "emit_active() { " +
+            "v=$(loginctl show-session \"$XDG_SESSION_ID\" -p Active --value 2>/dev/null) || return 1; " +
+            "case \"$v\" in yes|no) printf '%s\\n' \"$v\";; *) return 1;; esac; }; " +
+            "probe() { emit_active || printf 'unknown\\n'; }; " +
+            "(dbus-monitor --system \"type='signal',sender='org.freedesktop.login1'," +
+            "path_namespace='/org/freedesktop/login1/session'," +
+            "interface='org.freedesktop.DBus.Properties',member='PropertiesChanged'," +
+            "arg0='org.freedesktop.login1.Session'\" 2>/dev/null | " +
+            "while IFS= read -r line; do case \"$line\" in *PropertiesChanged*) probe;; esac; done) & " +
+            "monitor=$!; trap 'kill \"$monitor\" 2>/dev/null || true' EXIT; " +
+            "while kill -0 \"$monitor\" 2>/dev/null; do probe; sleep 0.5; done; wait \"$monitor\"; exit 1"
+        ]
+        stdout: SplitParser {
+            onRead: (line) => shim.applySessionActivity(line)
+        }
+        onExited: () => {
+            shim.applySessionActivity("no");
+            sessionActivityRestart.restart();
+        }
+    }
+
+    Timer {
+        id: sessionActivityRestart
+        interval: 1000
+        onTriggered: sessionActivityProc.running = true
     }
 
     // orphaned verifiers hold the sensor claim; clear them before arming.
@@ -55,7 +127,8 @@ Item {
             if (!shim.armPending)
                 return;
             shim.armPending = false;
-            shim.armFingerprintNow();
+            if (shim.loginSessionActive)
+                shim.armFingerprintNow();
         }
     }
 
@@ -131,6 +204,11 @@ Item {
     property var sessionModel: ListModel {
         id: internalSessionModel
         property int lastIndex: 0
+        // Running compositor's session id from the environment; the theme
+        // prefers the installed session that matches this, by data not by name.
+        property string desktopName: (Quickshell.env("XDG_SESSION_DESKTOP")
+            || Quickshell.env("DESKTOP_SESSION")
+            || Quickshell.env("XDG_CURRENT_DESKTOP") || "").split(":")[0].toLowerCase()
         function rowCount() { return count; }
         function index(row, col) { return row; }
         function data(row, role) {
@@ -216,35 +294,37 @@ Item {
         property bool fingerprintUnlock: shim.fingerprintUnlock
 
         // login() is called by the theme when the user submits a password.
-        // If a grosshack conversation is already active (the sensor is live),
-        // the typed key is fed into it instead of starting a new conversation.
+        // The key always goes to the dedicated password conversation
+        // (pamPw): respond at once if its prompt is up, stash it if the
+        // prompt has not arrived yet (onResponseRequiredChanged feeds it),
+        // or start the conversation if it died.
         function login(user, password, sessionIndex) {
-            pam.user = user;
-            if (pam.active) {
-                // Already inside an armed grosshack conversation: feed this
-                // key instead of restarting the scan. The open prompt may
-                // already be waiting, so respond immediately; otherwise stash
-                // it and onResponseRequiredChanged sends it on arrival.
-                if (pam.responseRequired) {
+            if (!shim.armWhenReady || !shim.loginSessionActive || shim.unlocked) {
+                pamPw.pendingPassword = "";
+                shim.sddm.loginFailed();
+                return;
+            }
+            pamPw.user = user;
+            if (pamPw.active) {
+                if (pamPw.responseRequired) {
                     shim.fpTyped = true;
-                    pam.respond(password);
-                    pam.pendingPassword = "";
+                    pamPw.respond(password);
+                    pamPw.pendingPassword = "";
                 } else {
-                    pam.pendingPassword = password;
+                    pamPw.pendingPassword = password;
                 }
                 return;
             }
             shim.fpTyped = false;
-            shim.fingerprintState = "idle";
-            pam.pendingPassword = password;
+            pamPw.pendingPassword = password;
             if (password === "" && !shim.fingerprintReady)
                 return;
-            pam.start();
+            shim.startPw();
         }
 
         function reboot() { Quickshell.execDetached(["bash", "-c", "if [ -d /run/systemd/system ]; then systemctl reboot; else loginctl reboot; fi"]); }
         function powerOff() { Quickshell.execDetached(["bash", "-c", "if [ -d /run/systemd/system ]; then systemctl poweroff; else loginctl poweroff; fi"]); }
-        function suspend() { Quickshell.execDetached(["bash", "-c", "if [ -d /run/systemd/system ]; then systemctl suspend; else loginctl suspend; fi"]); }
+        function suspend() { Quickshell.execDetached(["ryoku-shell", "suspend"]); }
     }
 
     // SDDM exposes a writable `keyboard` carrying the lock-key state; skins
@@ -336,27 +416,56 @@ Item {
         }
     }
 
-    // ── PAM conversation ────────────────────────────────────────────────────
-    // The core of the fingerprint unlock: a single PamContext using the
-    // ryoku-lock PAM service. This service contains the grosshack pair:
-    //   - pam_fprintd_grosshack.so forks fprintd-verify at conversation start
-    //   - pam_unix.so waits for a typed password
-    //   - Either success unlocks within the SAME conversation
-    //
-    // The config is a relative path ("ryoku-lock"), resolved against
-    // configDirectory which points to <lock_dir>/assets/pam/. This means
-    // no root edit of /etc/pam.d is needed -- the PAM service ships with
-    // the lock screen itself.
+    // ── PAM conversations ────────────────────────────────────────────────────
+    // TWO independent conversations race for the unlock — pam_fprintd's man
+    // page: serialised stacks ⇒ separate conversations for parallel methods.
+    // configDirectory is the lock's own assets/pam/, so no root edit of
+    // /etc/pam.d is needed — both services ship with the lock screen itself.
     PamContext {
-        id: pam
-        property string pendingPassword: ""
-
+        id: pamFp
         config: "ryoku-lock"
         configDirectory: Quickshell.shellDir + "/assets/pam"
 
-        // When PAM asks for a password (the pam_unix prompt), feed it the
-        // stashed password if we have one, or mark it as required so the
-        // theme's login() handler sends it on the next keypress.
+        // Fingerprint conversation. timeout=-1 (in the service file) keeps
+        // it scanning for the whole lock; only 3 misreads or an error end it.
+        // A genuine misread re-arms after 1s; a scan that dies instantly is a
+        // held claim (#243) and backs off instead of looping. It never prompts,
+        // so it can never leave a pending response blocking the result.
+        onCompleted: (result) => {
+            if (shim.unlocked)
+                return;
+            if (result === PamResult.Success && shim.armWhenReady && shim.loginSessionActive) {
+                shim.unlocked = true;
+                // This conversation never prompts, so a key can never reach
+                // it: a success here is the sensor winning, whatever the
+                // password field holds.
+                shim.fingerprintUnlock = true;
+                shim.fingerprintState = "success";
+                pamPw.abort();
+                shim.sddm.loginSucceeded();
+            } else if (result === PamResult.Success) {
+                shim.unlocked = false;
+                shim.fingerprintState = "idle";
+            } else {
+                shim.noteFpFailure();
+            }
+        }
+        onError: (error) => {
+            if (!shim.armWhenReady || shim.unlocked)
+                return;
+            shim.noteFpFailure();
+        }
+    }
+
+    PamContext {
+        id: pamPw
+        property string pendingPassword: ""
+        config: "ryoku-lock-pw"
+        configDirectory: Quickshell.shellDir + "/assets/pam"
+
+        // Once the secure proof starts this conversation, feed a stashed key
+        // the moment PAM asks. Usually PAM is already asking by the time
+        // login() stashes it, so the response goes out on the same tick.
         onResponseRequiredChanged: {
             if (responseRequired && pendingPassword !== "") {
                 shim.fpTyped = true;
@@ -365,36 +474,65 @@ Item {
             }
         }
 
-        // PAM conversation completed. Success = unlock; failure = re-arm.
         onCompleted: (result) => {
-            if (result === PamResult.Success) {
-                // A scan that ended without a typed key means the sensor won.
-                shim.fingerprintUnlock = (shim.fingerprintState === "scanning" && !shim.fpTyped);
+            if (shim.unlocked)
+                return;
+            if (result === PamResult.Success && shim.armWhenReady && shim.loginSessionActive) {
+                shim.unlocked = true;
+                shim.fingerprintUnlock = false;
                 shim.fingerprintState = "success";
+                pamFp.abort();
                 shim.sddm.loginSucceeded();
-                Quickshell.execDetached(["loginctl", "unlock-session"]);
+            } else if (result === PamResult.Success) {
+                shim.unlocked = false;
+                shim.fingerprintState = "idle";
             } else {
-                shim.fingerprintState = "fail";
+                // Wrong password: shake the field — the sensor conversation
+                // is untouched and keeps scanning — then re-prompt right
+                // away so the retry answers instantly.
                 shim.fpTyped = false;
                 shim.sddm.loginFailed();
-                // Conversation is over; re-arm so the next touch scans again.
-                rearmTimer.restart();
+                if (shim.armWhenReady)
+                    shim.startPw();
             }
         }
-
-        // A conversation can also die without completing -- config missing,
-        // internal PAM error, subprocess killed. Left unhandled, the theme
-        // would keep claiming the sensor is listening while no scan exists.
         onError: (error) => {
-            if (!shim.armWhenReady)
+            if (!shim.armWhenReady || shim.unlocked)
                 return;
-            shim.fingerprintState = "fail";
-            // A typed conversation that died must clear the theme's unlock flash.
-            if (shim.fpTyped || pam.pendingPassword !== "")
+            if (shim.fpTyped || pamPw.pendingPassword !== "")
                 shim.sddm.loginFailed();
             shim.fpTyped = false;
-            rearmTimer.restart();
+            shim.startPw();
         }
+    }
+
+    // A genuine misread (three touches) is re-armed after a short settle; a
+    // scan that dies almost instantly is fprintd refusing the Claim, so it is
+    // counted and, after three, the sensor is parked as "unavailable" with an
+    // exponential re-probe. While this session owns the foreground, the
+    // independent password conversation remains available.
+    function noteFpFailure() {
+        if (!shim.armWhenReady || shim.unlocked)
+            return;
+        var instant = shim.fpArmTs > 0 && (Date.now() - shim.fpArmTs) < shim.fpInstantFailMs;
+        if (!instant) {
+            shim.fpFastFails = 0;
+            shim.fingerprintState = "fail";
+            rearmTimer.restart();
+            return;
+        }
+        shim.fpFastFails++;
+        if (shim.fpFastFails < 3) {
+            // A couple of instant refusals can be a device still settling after
+            // resume; give it the normal 1s before concluding it is held.
+            shim.fingerprintState = "fail";
+            rearmTimer.restart();
+            return;
+        }
+        shim.fpUnavailable = true;
+        shim.fingerprintState = "unavailable";
+        console.warn("[fp] sensor claim held; parking fingerprint, backing off", shim.fpBackoffMs, "ms");
+        fpProbeTimer.restart();
     }
 
     // settle before rescanning so the old verifier releases the claim.
@@ -402,8 +540,28 @@ Item {
         id: rearmTimer
         interval: 1000
         onTriggered: {
-            if (!shim.armWhenReady || pam.active)
+            if (!shim.armWhenReady || !shim.loginSessionActive || pamFp.active)
                 return;
+            shim.startPw();
+            if (shim.fingerprintReady)
+                shim.armFingerprint();
+        }
+    }
+
+    // While the sensor is parked, re-probe on a doubling backoff (5s → 10s →
+    // 20s, capped at 60s) so a device that recovers on its own comes back
+    // without a per-second D-Bus/journal storm.
+    Timer {
+        id: fpProbeTimer
+        interval: shim.fpBackoffMs
+        onTriggered: {
+            if (!shim.armWhenReady || !shim.loginSessionActive || shim.unlocked || pamFp.active)
+                return;
+            shim.fpBackoffMs = Math.min(60000, shim.fpBackoffMs * 2);
+            // One instant failure re-parks (threshold is 3); a real touch resets
+            // the count in noteFpFailure, so a recovered device is not punished.
+            shim.fpFastFails = 2;
+            shim.fingerprintState = "idle";
             if (shim.fingerprintReady)
                 shim.armFingerprint();
         }
@@ -411,42 +569,67 @@ Item {
 
     // ── fingerprint control functions ───────────────────────────────────────
 
+    // Clear any orphaned verifier first (armPrepProc), then arm on its exit.
     function armFingerprint() {
-        if (!shim.fingerprintReady || pam.active || shim.armPending)
+        if (!shim.fingerprintReady || !shim.loginSessionActive || pamFp.active || shim.armPending)
             return;
         shim.armPending = true;
         armPrepProc.running = true;
     }
 
     function armFingerprintNow() {
-        if (!shim.fingerprintReady || pam.active)
+        if (!shim.fingerprintReady || !shim.loginSessionActive || pamFp.active)
             return;
-        pam.user = Quickshell.env("USER") || "traveler";
-        pam.pendingPassword = "";
-        shim.fpTyped = false;
+        pamFp.user = Quickshell.env("USER") || "traveler";
         shim.fingerprintUnlock = false;
         shim.fingerprintState = "scanning";
+        shim.fpArmTs = Date.now();
         // start() returns false when the config dir/file or user cannot be
         // resolved; surface that instead of failing silently.
-        var started = pam.start();
+        var started = pamFp.start();
         if (!started)
-            console.warn("[fp] pam.start() failed: config=", pam.config,
-                "dir=", pam.configDirectory, "user=", pam.user);
+            console.warn("[fp] pamFp.start() failed: config=", pamFp.config,
+                "dir=", pamFp.configDirectory, "user=", pamFp.user);
+        shim.startPw();
     }
 
     // resetAuth: aborts any active PAM conversation and resets state.
     // Called when the lock surface is unlocked.
     function resetAuth() {
+        shim.unlocked = false;
         shim.fingerprintUnlock = false;
         shim.fpTyped = false;
-        pam.abort();
+        shim.fpFastFails = 0;
+        shim.fpUnavailable = false;
+        shim.fpBackoffMs = 5000;
+        shim.fpArmTs = 0;
+        fpProbeTimer.stop();
+        rearmTimer.stop();
+        pamFp.abort();
+        pamPw.abort();
         if (shim.fingerprintState !== "idle")
             shim.fingerprintState = "idle";
     }
 
     function maybeArm() {
-        if (shim.armWhenReady && shim.fingerprintReady && !pam.active)
+        if (!shim.armWhenReady || !shim.loginSessionActive)
+            return;
+        shim.startPw();
+        if (shim.fingerprintReady && !pamFp.active)
             shim.armFingerprint();
+    }
+
+    // Once the secure proof is published and this login1 session owns the
+    // foreground, keep the password conversation alive so a typed key is
+    // answered instantly. Idempotent: safe from every probe and re-arm.
+    function startPw() {
+        if (!shim.armWhenReady || !shim.loginSessionActive || shim.unlocked || pamPw.active)
+            return;
+        pamPw.user = Quickshell.env("USER") || "traveler";
+        var started = pamPw.start();
+        if (!started)
+            console.warn("[fp] pamPw.start() failed: config=", pamPw.config,
+                "dir=", pamPw.configDirectory, "user=", pamPw.user);
     }
 
     // ── initialization ──────────────────────────────────────────────────────

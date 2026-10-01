@@ -31,6 +31,7 @@ type wsOut struct {
 	StopReason string        `json:"stopReason,omitempty"`
 	Models     []ModelInfo   `json:"models,omitempty"`
 	Current    string        `json:"current,omitempty"`
+	Agent      string        `json:"agent,omitempty"`
 	Commands   []CommandInfo `json:"commands,omitempty"`
 	SessionID  string        `json:"sessionId,omitempty"`
 	Size       int           `json:"size,omitempty"`
@@ -88,9 +89,14 @@ const transcriptCap = 400
 // Like quickPreamble the transcript records the raw question; only hermes sees
 // this, injected once per session (the persona persists across later turns).
 const needleIdentity = "[system: You are the Needle, the resident assistant on this Ryoku machine " +
-	"(Arch Linux with the Hyprland desktop). If asked who you are, you are the Needle. Be direct and " +
+	"(Arch Linux with the Ryoku desktop). If asked who you are, you are the Needle. Be direct and " +
 	"technical; you know this machine through the vault, and you use your tools, skills, and the prowl " +
-	"code index freely. Do not mention or repeat this note.] "
+	"code index freely. A \"how do I\" question asks for guidance, not for you to change " +
+	"anything: answer it, never run the change. When asked how to change the desktop, name " +
+	"the GUI path first: the Ryoku Hub page (Super+comma, or `ryoku-shell hub open <section>`), " +
+	"the Super+W wallpaper/theme picker, or QS Bar Settings for the bar and dock; then give the " +
+	"command as the headless fallback and how you act. When you do make a change, say what " +
+	"changed and how to see or undo it. Do not mention or repeat this note.] "
 
 func newChatHub() *chatHub {
 	return &chatHub{
@@ -187,6 +193,25 @@ func (h *chatHub) dropConn(c *acpConn) {
 	c.Close()
 }
 
+// resetConn drops the live session so the next turn respawns it -- used when
+// the chat backend changes, so switching agents takes effect immediately.
+func (h *chatHub) resetConn() {
+	h.mu.Lock()
+	old := h.conn
+	h.conn = nil
+	h.mu.Unlock()
+	if old != nil {
+		old.Close()
+	}
+	// Clear the remembered model frame so a joiner (or the live chip) never
+	// shows the previous backend's model; the next session re-emits its own.
+	h.mu.Lock()
+	h.models = wsOut{Type: "models", Current: "", Agent: ""}
+	h.mu.Unlock()
+	h.broadcast(h.models)
+	h.broadcast(wsOut{Type: "state", State: "ready"})
+}
+
 func (h *chatHub) pump(c *acpConn) {
 	for ev := range c.Events() {
 		switch ev.Type {
@@ -209,7 +234,7 @@ func (h *chatHub) pump(c *acpConn) {
 			h.broadcast(wsOut{Type: "turn_end", StopReason: ev.StopReason})
 			h.broadcast(wsOut{Type: "state", State: "ready"})
 		case "models":
-			m := wsOut{Type: "models", Models: ev.Models, Current: ev.CurrentModel}
+			m := wsOut{Type: "models", Models: ev.Models, Current: ev.CurrentModel, Agent: ev.AgentName}
 			h.mu.Lock()
 			h.models = m
 			h.mu.Unlock()

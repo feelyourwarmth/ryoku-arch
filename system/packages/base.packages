@@ -87,13 +87,12 @@ rtkit
 mesa
 vulkan-icd-loader
 
-# Desktop: plain Hyprland, Xwayland, portals, polkit agent, Qt/GTK runtime.
+# Desktop runtime: Xwayland, the GTK portal, and the Qt/GTK stack. The
+# compositor, its portal backend, and its polkit agent are compositor-specific
+# and ship with the compositor meta-package.
 # SDDM may still be built with Qt5; the greeter's native Wayland QPA plugin is
 # version-specific, so qt6-wayland alone cannot start it.
-hyprland
 xorg-xwayland
-hyprpolkitagent
-xdg-desktop-portal-hyprland
 xdg-desktop-portal-gtk
 xdg-user-dirs
 qt6-wayland
@@ -154,12 +153,13 @@ grim
 playerctl
 slurp
 wl-clipboard
+wl-clip-persist
 
 # Applications
 chromium
 # firefox: the second browser, shipped so a Gecko engine is always on hand for a
 # site Chromium renders badly. It does not become the default: the `browser` role
-# in ryoku/hyprland/scripts/ryoku-app stays chromium, and Ryoku Settings ->
+# in ryoku/shell/scripts/ryoku-app stays chromium, and Ryoku Settings ->
 # App Overrides is where a user repoints the launcher key.
 firefox
 kitty
@@ -296,10 +296,6 @@ zbar
 # wf-recorder fallback for multi-GPU machines, driven by ryoku-cmd-screenrecord.
 gpu-screen-recorder
 wf-recorder
-
-# Night light (pill Super+U utilities): warm color temperature toggle, driven by
-# ryoku-cmd-nightlight.
-hyprsunset
 
 # Voice dictation (pill Super+`, Voxtype from voxtype-bin): wtype types the
 # transcription into the focused app on Wayland.

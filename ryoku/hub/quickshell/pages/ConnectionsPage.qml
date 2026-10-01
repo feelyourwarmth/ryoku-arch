@@ -50,7 +50,7 @@ Item {
     property string killState: "checking"
     property string killError: ""
     property bool killBusy: false
-    readonly property bool killActive: killState === "on"
+    readonly property bool killActive: killState === "on" || killState === "armed" || killState === "blocked"
 
     function refreshKillState() {
         if (!killStatus.running)
@@ -60,7 +60,7 @@ Item {
     function toggleKillSwitch() {
         killBusy = true;
         killError = "";
-        killSetProc.target = killActive ? "off" : "on";
+        killSetProc.target = killState === "off" ? "on" : "off";
         killSetProc.running = true;
     }
 
@@ -452,6 +452,13 @@ Item {
         property var securityMap: ({})
         property var knownProfiles: ({})
 
+        // per-saved-network autoconnect, read live from `nmcli`. a profile
+        // rejoins on its own by default; turning it off stops the machine
+        // associating with that SSID unprompted. autoBusy gates the toggle
+        // while nmcli rewrites the profile.
+        property var autoconnectMap: ({})
+        property bool autoBusy: false
+
         // dual and tri-band SSIDs expose one BSSID per band. bandMap keys each
         // SSID to its per-band BSSIDs so a join can pin a band; selectedBands is
         // the user's per-SSID pick ("" means let NM choose, which favours the
@@ -488,6 +495,17 @@ Item {
         function refresh() {
             secProc.running = true;
             profProc.running = true;
+        }
+
+        // flip a saved profile's autoconnect. the profile name equals the SSID
+        // for a network the row reads as saved (nmcli names it after the SSID),
+        // so the same key targets it. refresh re-reads the map on completion.
+        function setAutoconnect(ssid, enabled) {
+            if (wifi.autoBusy || !ssid.length)
+                return;
+            wifi.autoBusy = true;
+            autoProc.command = ["nmcli", "connection", "modify", ssid, "connection.autoconnect", enabled ? "yes" : "no"];
+            autoProc.running = true;
         }
 
         // flip the NM backend. no-op if unchanged or already switching; the
@@ -711,17 +729,21 @@ Item {
 
         Process {
             id: profProc
-            command: ["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show"]
+            command: ["nmcli", "-t", "-f", "NAME,TYPE,AUTOCONNECT", "connection", "show"]
             stdout: StdioCollector {
                 onStreamFinished: {
                     var set = {};
+                    var auto = {};
                     var lines = this.text.split("\n");
                     for (var i = 0; i < lines.length; i++) {
                         var f = wifi.terseFields(lines[i]);
-                        if (f.length >= 2 && f[0].length && f[1] === "802-11-wireless")
+                        if (f.length >= 3 && f[0].length && f[1] === "802-11-wireless") {
                             set[f[0]] = true;
+                            auto[f[0]] = f[2] === "yes";
+                        }
                     }
                     wifi.knownProfiles = set;
+                    wifi.autoconnectMap = auto;
                 }
             }
         }
@@ -759,6 +781,18 @@ Item {
         Process {
             id: cleanupProc
             onExited: wifi.refresh()
+        }
+
+        // apply an autoconnect flip, then re-read the profiles so the toggle
+        // reflects the stored state rather than the click.
+        Process {
+            id: autoProc
+            stdout: StdioCollector {}
+            stderr: StdioCollector {}
+            onExited: {
+                wifi.autoBusy = false;
+                wifi.refresh();
+            }
         }
 
         onNetsChanged: if (wifi.active) secRefresh.restart()
@@ -807,9 +841,11 @@ Item {
 
         Item {
             id: wifiContent
+            // the list reads as one column; with the poster that used to fill the
+            // right side gone, that column is centred rather than pinned left.
             anchors.top: parent.top
-            anchors.left: parent.left
             anchors.bottom: parent.bottom
+            anchors.horizontalCenter: parent.horizontalCenter
             width: Math.min(parent.width, wifi.colMax)
 
             // header row: "WI-FI" label + hairline + scan button.
@@ -933,6 +969,7 @@ Item {
                 clip: true
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+                WheelScroll { }
 
                 Column {
                     id: netCol
@@ -1085,6 +1122,44 @@ Item {
                                             onAct: wifi.selectBand(netItem.ssid,
                                                 wifi.selectedBands[netItem.ssid] === modelData.band ? "" : modelData.band)
                                         }
+                                    }
+                                }
+                            }
+
+                            // autoconnect toggle. a saved profile rejoins on its
+                            // own by default; turning it off stops the machine
+                            // associating with this SSID unprompted, so a spoofed
+                            // AP can no longer pull the device in. saved rows only.
+                            Item {
+                                id: autoRow
+                                readonly property bool on: wifi.autoconnectMap[netItem.ssid] !== false
+                                width: parent.width
+                                height: netItem.known ? 30 : 0
+                                clip: true
+                                visible: height > 0.5
+
+                                Row {
+                                    anchors.left: parent.left
+                                    anchors.leftMargin: Tokens.s4
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    spacing: Tokens.s2
+
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: I18n.tr("Auto-reconnect")
+                                        color: Tokens.inkMuted
+                                        font.family: Tokens.ui
+                                        font.pixelSize: Tokens.fMicro
+                                        font.weight: Font.Medium
+                                    }
+
+                                    Btn {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        compact: true
+                                        text: autoRow.on ? I18n.tr("On") : I18n.tr("Off")
+                                        primary: autoRow.on
+                                        armed: !wifi.autoBusy
+                                        onAct: wifi.setAutoconnect(netItem.ssid, !autoRow.on)
                                     }
                                 }
                             }
@@ -1607,6 +1682,7 @@ Item {
                     clip: true
                     boundsBehavior: Flickable.StopAtBounds
                     ScrollBar.vertical: ScrollRail { policy: ScrollBar.AsNeeded }
+                    WheelScroll { }
 
                     Column {
                         id: devCol
@@ -1677,12 +1753,7 @@ Item {
 
                                         Text {
                                             width: parent.width
-                                            text: dev.modelData
-                                                ? (dev.modelData.deviceName
-                                                    || dev.modelData.name
-                                                    || dev.addr
-                                                    || I18n.tr("Unknown"))
-                                                : I18n.tr("Unknown")
+                                            text: BtName.label(dev.modelData) || I18n.tr("Unknown")
                                             color: Tokens.ink
                                             font.family: Tokens.ui
                                             font.pixelSize: Tokens.fBody
@@ -2043,10 +2114,15 @@ Item {
         // head: eyebrow, Fraunces title, blurb (matches every page).
         Column {
             id: head
-            anchors { left: parent.left; right: heroDecor.left; rightMargin: Tokens.s5; top: parent.top }
-            spacing: Tokens.s2
+            anchors { left: parent.left; right: parent.right; top: parent.top }
+            // the register row sits off the title: a rule over a 32px
+            // title needs more than the gap between two lines of body text
+            spacing: Tokens.s3
 
             Row {
+                // the register row holds a fixed box, so the rule and the seal keep
+                // their distance from the title on every page
+                height: Tokens.s5
                 spacing: Tokens.s2
                 Rectangle {
                     width: 16; height: 1; color: Tokens.ink
@@ -2068,7 +2144,7 @@ Item {
             }
             Text {
                 width: Math.min(parent.width, 720)
-                text: I18n.tr("Wi-Fi, Bluetooth and this machine's own hotspot, all live. Scan for networks and devices, connect, disconnect or forget, and share your connection. Every change applies immediately.")
+                text: I18n.tr("Wi-Fi, Bluetooth and this machine's hotspot, applied live.")
                 color: Tokens.inkMuted; font.family: Tokens.ui
                 font.pixelSize: Tokens.fBody; wrapMode: Text.WordWrap
             }
@@ -2078,7 +2154,7 @@ Item {
         // copy names SSH because an activated switch severs remote sessions too.
         Rectangle {
             id: killSwitch
-            anchors { left: parent.left; right: heroDecor.left; rightMargin: Tokens.s5; top: head.bottom; topMargin: Tokens.s4 }
+            anchors { left: parent.left; right: parent.right; rightMargin: Tokens.s5; top: head.bottom; topMargin: Tokens.s4 }
             implicitHeight: killCopy.implicitHeight + Tokens.s4
             radius: Tokens.radius
             color: pg.killActive ? Tokens.bone : "transparent"
@@ -2120,7 +2196,7 @@ Item {
             MiniPill {
                 id: killAction
                 anchors { right: parent.right; rightMargin: Tokens.s3; verticalCenter: parent.verticalCenter }
-                text: pg.killBusy ? I18n.tr("WORKING") : (pg.killActive ? I18n.tr("RESTORE") : I18n.tr("ISOLATE"))
+                text: pg.killBusy ? I18n.tr("WORKING") : (pg.killState === "off" ? I18n.tr("ISOLATE") : I18n.tr("RESTORE"))
                 armed: !pg.killBusy && pg.killState !== "checking"
                 onAct: pg.toggleKillSwitch()
             }
@@ -2129,7 +2205,7 @@ Item {
         Text {
             id: killWarning
             anchors { left: killSwitch.left; right: killSwitch.right; top: killSwitch.bottom; topMargin: Tokens.s1 }
-            visible: !pg.killActive
+            visible: pg.killState === "off"
             text: I18n.tr("Use ISOLATE from the physical machine; every remote connection is cut immediately.")
             color: Tokens.inkFaint
             font.family: Tokens.ui
@@ -2137,17 +2213,6 @@ Item {
             wrapMode: Text.WordWrap
         }
 
-        // a decorative hero in the head's dead right, shared across every subtab
-        Decor {
-            id: heroDecor
-            anchors { right: parent.right; top: head.top; bottom: tabStrip.bottom }
-            width: Math.round(content.width * 0.42)
-            boxId: "connections.hero"
-            title: "\u63a5\u7d9a"; sub: "\u30cd\u30c3\u30c8\u30ef\u30fc\u30af"
-            tate: "\u898b\u3048\u306a\u3044\u7cf8"
-            caption: I18n.tr("Wi-Fi, Bluetooth, and this machine's own hotspot -- every link it can make, live.")
-            code: "LINK-02"; seal: "\u63a5"; seed: 6; ditherFreq: 1.1
-        }
 
         // the shared Tabs plate: selection is the // lead on bone, no slider.
         Tabs {
@@ -2172,8 +2237,8 @@ Item {
             id: body
             anchors {
                 left: parent.left
-                right: heroPlacard.visible ? heroPlacard.left : parent.right
-                rightMargin: heroPlacard.visible ? Tokens.s6 : 0
+                right: parent.right
+                rightMargin: 0
                 top: tabStrip.bottom; bottom: parent.bottom
                 topMargin: Tokens.s5
             }
@@ -2181,24 +2246,5 @@ Item {
                 : (pg.sub === "bluetooth" ? btComp : hsComp)
         }
 
-        // the head's dead right, below the hero card: a slim katana specimen
-        // poster, right-aligned and shared across every subtab. The body above
-        // is held to the poster's left edge so the lists never run under it; it
-        // hides only when the window is too narrow to spare a slim column.
-        Placard {
-            id: heroPlacard
-            anchors { right: parent.right; top: tabStrip.bottom; topMargin: Tokens.s5; bottom: parent.bottom }
-            width: 224
-            visible: Tokens.showPosters && (content.width - width - Tokens.s6 >= 320)
-            code: "BLADE-07"
-            title: "\u7cf8\u3092\u65ad\u3064"
-            sub: I18n.tr("SEVER THE THREAD")
-            chapter: "07"
-            label: I18n.tr("SEVERED LINK")
-            quote: I18n.tr("EVERY THREAD ENDS AT A BLADE.")
-            seal: "\u65ad"
-            art: "katana.png"
-            seed: 3
-        }
     }
 }

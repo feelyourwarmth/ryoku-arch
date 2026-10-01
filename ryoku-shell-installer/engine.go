@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"ryoku-i18n"
+	wm "ryoku-wm"
 )
 
 // line-anchored so a commented-out "#[ryoku]" stanza does not count.
@@ -84,20 +85,21 @@ var sparsePaths = []string{
 }
 
 type plan struct {
-	nvidia    bool // proprietary NVIDIA driver setup
-	switchDM  bool // disable current DM, enable SDDM
-	switchNet bool // disable other network stacks, enable NetworkManager
-	rivals    bool // remove rival shell packages
-	softOff   bool // disable conflicting user daemons
-	aur       bool // AUR extras
-	fish      bool // fish as login shell
-	devtools  bool // dev.packages toolchains (go/rust/node/python; recovery needs go)
-	omarchy   bool // retire the [omarchy] repo and mirror pin
-	monPins   bool // pin the salvaged monitor layout in monitors_user.lua
-	greeter   bool // point SDDM at the Ryoku greeter theme
-	resume    bool // skip steps a previous interrupted run already finished
-	azertyFR  bool // force the French AZERTY layout (fr) on desktop, console, greeter
-	azertyBE  bool // force the Belgian AZERTY layout (be) on desktop, console, greeter
+	nvidia     bool   // proprietary NVIDIA driver setup
+	switchDM   bool   // disable current DM, enable SDDM
+	switchNet  bool   // disable other network stacks, enable NetworkManager
+	rivals     bool   // remove rival shell packages
+	softOff    bool   // disable conflicting user daemons
+	aur        bool   // AUR extras
+	fish       bool   // fish as login shell
+	devtools   bool   // dev.packages toolchains (go/rust/node/python; recovery needs go)
+	omarchy    bool   // retire the [omarchy] repo and mirror pin
+	monPins    bool   // pin the salvaged monitor layout in monitors_user.lua
+	greeter    bool   // point SDDM at the Ryoku greeter theme
+	resume     bool   // skip steps a previous interrupted run already finished
+	azertyFR   bool   // force the French AZERTY layout (fr) on desktop, console, greeter
+	azertyBE   bool   // force the Belgian AZERTY layout (be) on desktop, console, greeter
+	compositor string // window manager to install (selects ryoku-desktop-<name>)
 }
 
 func defaultPlan(f *facts) *plan {
@@ -116,11 +118,31 @@ func defaultPlan(f *facts) *plan {
 		monPins:   len(f.monOutputs) > 0,
 		// when KDE's sddm-kcm owns sddm.conf.d the user chose that greeter
 		// look; keep it unless they opt in.
-		greeter: !f.kdeSddmConf,
-		resume:  f.prevRun != nil,
+		greeter:    !f.kdeSddmConf,
+		resume:     f.prevRun != nil,
+		compositor: compositors()[0],
 		// the AZERTY overrides are opt-in only; a salvaged layout already
 		// covers anyone who had one configured.
 	}
+}
+
+// compositors lists the window managers with a shipped variant package, in
+// wm.Providers order. --compositor picks one; the default is the first. The
+// verify and package steps read plan.compositor, so a pick flows end to end.
+func compositors() []string {
+	return wm.Providers()
+}
+
+// monitorPinFile is the hand-pinned display file for a compositor, relative to
+// ~/.config, taken from the seam's own user-owned list so the installer never
+// spells a compositor's file name or its config directory.
+func monitorPinFile(provider string) string {
+	for _, rel := range wm.ConfigUserOwned(provider) {
+		if strings.Contains(filepath.Base(rel), "monitors_user") {
+			return rel
+		}
+	}
+	return ""
 }
 
 // azertyExclusive keeps the two AZERTY toggles mutually exclusive: switching
@@ -715,6 +737,21 @@ func stepConflicts(e *engine) error {
 			}
 		}
 	}
+	if len(e.f.zshFrameworkPkgs) > 0 {
+		// ryoku-oh-my-zsh provides and replaces both upstream frameworks, but a
+		// plain -R under --noconfirm refuses while an installed plugin package
+		// depends on oh-my-zsh-git, and the dependency conflict then aborts the
+		// whole desktop transaction. -Rdd drops the framework alone; its plugins
+		// re-resolve against ryoku-oh-my-zsh's provides in the install step.
+		e.say(i18n.Tf("replacing %s with the Ryoku zsh framework", strings.Join(e.f.zshFrameworkPkgs, " ")))
+		if err := e.sudo(append([]string{"pacman", "-Rdd", "--noconfirm"}, e.f.zshFrameworkPkgs...)...); err != nil {
+			e.say(i18n.Tf("warning: could not remove %s; the package step may abort on a dependency conflict", strings.Join(e.f.zshFrameworkPkgs, " ")))
+		} else {
+			for _, p := range e.f.zshFrameworkPkgs {
+				e.recordRestore("sudo pacman -S --asdeps " + p)
+			}
+		}
+	}
 	if len(e.f.blockerPkgs) > 0 {
 		// pacman --noconfirm answers conflict prompts with No and aborts, so
 		// packages that conflict with the desktop set (pulseaudio vs
@@ -811,6 +848,13 @@ func (e *engine) asusAura() bool {
 	return exec.Command(detector).Run() == nil
 }
 
+// providerAnswers probes the installed window-manager provider. caps, not state:
+// verification runs before the new session exists, and caps answers without a
+// live compositor.
+func (e *engine) providerAnswers() bool {
+	return exec.Command("ryoku-wm-"+e.p.compositor, "caps").Run() == nil
+}
+
 func stepPackages(e *engine) error {
 	d := e.d()
 	base, err := e.readBasePackages()
@@ -827,6 +871,9 @@ func stepPackages(e *engine) error {
 		pkgs = append(d.localAll(base), d.build...)
 	} else {
 		pkgs = append(append([]string{}, ryokuPkgs...), base...)
+		// name the chosen variant so pacman installs it directly instead of
+		// prompting when more than one provides ryoku-desktop-compositor.
+		pkgs = append(pkgs, "ryoku-desktop-"+e.p.compositor)
 		if e.asusAura() {
 			if d.installedPkg("tlp") {
 				e.say(i18n.T("ASUS Aura lighting skipped because TLP is installed"))
@@ -1012,8 +1059,10 @@ func stepSession(e *engine) error {
 	if err := e.sudo("cp", "-r", filepath.Join(e.payload, "ryoku/lockscreen/qylock"), "/usr/share/ryoku/qylock"); err != nil {
 		return err
 	}
-	if err := e.cmd("", []string{"RYOKU_QYLOCK_BUNDLE=/usr/share/ryoku/qylock"},
-		"bash", filepath.Join(e.payload, "ryoku/lockscreen/install-qylock")); err != nil {
+	if err := e.cmd("", []string{
+		"RYOKU_QYLOCK_BUNDLE=/usr/share/ryoku/qylock",
+		"RYOKU_QYLOCK_MODE=live",
+	}, "bash", filepath.Join(e.payload, "ryoku/lockscreen/install-qylock")); err != nil {
 		return err
 	}
 
@@ -1102,20 +1151,33 @@ func stepConfigs(e *engine) error {
 
 	// salvaged monitor pins go in before the stub pass, real pins beat a
 	// comment stub. only the hyprland dialect supports desc: names.
-	if e.p.monPins && len(e.f.monOutputs) > 0 {
-		pins, skipped := renderPins(e.f.monOutputs, e.f.monSource == "hyprland", e.f.monSource)
+	//
+	// The file and the dialect both follow the compositor being installed: the
+	// seam names the hand-pin file, and its extension picks the emitter. A
+	// hardcoded Lua path would drop a file niri never reads, and the salvaged
+	// layout would vanish with no error.
+	if rel := monitorPinFile(e.p.compositor); e.p.monPins && len(e.f.monOutputs) > 0 && rel != "" {
+		render := renderPins
+		if filepath.Ext(rel) == ".kdl" {
+			render = renderKdlPins
+		}
+		pins, skipped := render(e.f.monOutputs, e.f.monSource == "hyprland", e.f.monSource)
+		leaf := filepath.Base(rel)
 		for _, name := range skipped {
-			e.sayf(i18n.T("note: %s output %q is matched by description; pin it by connector in monitors_user.lua"), e.f.monSource, name)
+			e.sayf(i18n.T("note: %s output %q is matched by description; pin it by connector in %s"), e.f.monSource, name, leaf)
 		}
 		if pins != "" {
-			mu := filepath.Join(e.f.homeDir, ".config/hypr/monitors_user.lua")
+			mu := filepath.Join(e.f.homeDir, ".config", rel)
 			if e.dry {
-				e.sayf(i18n.T("DRYRUN: write %s monitor pins to ~/.config/hypr/monitors_user.lua"), e.f.monSource)
+				e.sayf(i18n.T("DRYRUN: write %s monitor pins to ~/.config/%s"), e.f.monSource, rel)
 			} else if _, err := os.Lstat(mu); err != nil {
+				if err := os.MkdirAll(filepath.Dir(mu), 0o755); err != nil {
+					return err
+				}
 				if err := os.WriteFile(mu, []byte(pins), 0o644); err != nil {
 					return err
 				}
-				e.sayf(i18n.T("carried the %s monitor layout into hypr/monitors_user.lua"), e.f.monSource)
+				e.sayf(i18n.T("carried the %s monitor layout into %s"), e.f.monSource, rel)
 			}
 		}
 	}
@@ -1183,7 +1245,10 @@ EOF`); err != nil {
 	}
 
 	// the published loader still flags missing optional drop-ins in the
-	// config-error overlay, so stub them until the searchpath fix ships.
+	// config-error overlay, so stub them until the searchpath fix ships. These
+	// are that loader's own drop-ins, so they are skipped entirely for a
+	// compositor whose config tree is not theirs: a niri install would
+	// otherwise grow a stray hypr tree nothing ever reads.
 	stubs := []struct{ rel, content string }{
 		{".config/hypr/monitors_user.lua", "-- hand-pinned displays, see monitors_user.lua.example. pins here win.\n"},
 		{".config/hypr/user.lua", "-- your hyprland overrides. loaded last, never touched by updates.\n"},
@@ -1192,7 +1257,11 @@ EOF`); err != nil {
 		{".config/hypr/modules/private.lua", "-- optional private module, yours to fill in.\n"},
 		{".config/hypr/ghosttype.lua", "-- owned by ghosttype when installed.\n"},
 	}
+	own := ".config/" + wm.ConfigDir(e.p.compositor) + "/"
 	for _, s := range stubs {
+		if !strings.HasPrefix(s.rel, own) {
+			continue
+		}
 		if e.dry {
 			e.say(i18n.Tf("DRYRUN: stub ~/%s if absent", s.rel))
 			continue
@@ -1339,10 +1408,14 @@ func stepVerify(e *engine) error {
 		check(err == nil && st.IsDir(), i18n.T("base config tree at /usr/share/ryoku/config"))
 	}
 	var err error
-	_, err = os.Stat(filepath.Join(e.f.homeDir, ".config/hypr/hyprland.lua"))
-	check(err == nil, i18n.T("hyprland.lua materialized in ~/.config/hypr"))
-	_, err = os.Stat("/usr/share/wayland-sessions/hyprland.desktop")
-	check(err == nil, i18n.T("Hyprland wayland session registered"))
+	cdir := wm.ConfigDir(e.p.compositor)
+	_, err = os.Stat(filepath.Join(e.f.homeDir, ".config", cdir))
+	check(err == nil, i18n.Tf("%s config materialized in ~/.config/%s", e.p.compositor, cdir))
+	_, err = os.Stat(filepath.Join("/usr/share/wayland-sessions", e.p.compositor+".desktop"))
+	check(err == nil, i18n.Tf("%s wayland session registered", e.p.compositor))
+	// caps, not state: this runs before the new session is up, and caps answers
+	// without a live compositor (state would falsely fail here).
+	check(e.providerAnswers(), i18n.T("window-manager provider responds"))
 	if e.p.switchDM {
 		check(unitEnabled("system", "sddm.service"), i18n.T("sddm.service enabled"))
 	}

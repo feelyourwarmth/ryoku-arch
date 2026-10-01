@@ -192,48 +192,21 @@ jobs:
           fi
 
       - name: Verify hard dependencies exist in the official repos or [ryoku]
-        run: |
-          set -euo pipefail
-          # build-repo.sh builds with --nodeps, so a typo'd or AUR-only entry in
-          # a depends array publishes cleanly and then bricks every user's next
-          # pacman -Syu with an unresolvable target. One -Si per dependency
-          # here turns that into a failed publish instead.
-          # bash reads the array the same way makepkg does; hand-parsing the
-          # file trips over single-line arrays and comments.
-          # internal deps resolve inside [ryoku] itself, so they are exempt from
-          # the -Si check; the exempt list is derived from the PKGBUILDs rather
-          # than hand-kept, so a typo'd internal name (say ryoku-cursor) is
-          # caught here instead of skipped into a broken publish.
-          internal=$(for p in release/packages/*/PKGBUILD; do
-            bash -c 'source "$1" >/dev/null 2>&1; printf "%s\n" "${pkgname[@]}"' _ "$p"
-          done)
-          # Ryotunes is imported as an official binary, not built from a local PKGBUILD.
-          internal+=$'\n'ryotunes
-          missing=0
-          for p in release/packages/*/PKGBUILD; do
-            mapfile -t deps < <(bash -c 'source "$1" >/dev/null 2>&1; printf "%s\n" "${depends[@]:-}"' _ "$p")
-            for d in "${deps[@]}"; do
-              d="${d%%[<>=]*}"
-              [[ -z $d ]] && continue
-              grep -qxF "$d" <<<"$internal" && continue
-              # -Si matches a real package name. It does NOT resolve a virtual
-              # provide, so a perfectly valid depend like `udev` (provided by
-              # systemd) read as missing and failed the publish. -Sp resolves
-              # provides against the same sync dbs, so try the cheap exact-name
-              # path first and fall back to it.
-              if ! pacman -Si "$d" >/dev/null 2>&1 && ! pacman -Sp "$d" >/dev/null 2>&1; then
-                echo "::error::$p: dependency '$d' not found in the official repos or [ryoku]"
-                missing=1
-              fi
-            done
-          done
-          exit "$missing"
+        # Shared with the pre-push hook (bin/ryoku-dev-verify-pkgbuild-deps), so
+        # the local gate and this one can never drift. A broken depends/provides
+        # is caught before publish instead of after users' next `pacman -Syu`.
+        run: bin/ryoku-dev-verify-pkgbuild-deps
 
       - name: Build and sign the [ryoku] repo
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           RYOKU_RELEASE: ${{ steps.channel.outputs.release }}
           RYOKU_CHANNEL: ${{ steps.channel.outputs.channel }}
+          # import-ryotunes.sh resolves the latest ryotunes release through the
+          # GitHub API; unauthenticated it shares a runner IP and hits the 60/h
+          # limit (a 403 that aborts the whole build). The workflow token lifts
+          # it, the same way refresh-ryotunes.yml already authenticates.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -302,7 +275,28 @@ jobs:
       image: ${{ matrix.base == 'cachyos' && 'cachyos/cachyos:latest' || 'archlinux:latest' }}
     steps:
       - name: Install git
-        run: pacman -Sy --noconfirm --needed git
+        # A fresh base container ships an unpopulated pacman keyring, so the
+        # very first -Sy fails on the image's OWN repo signature ("signature
+        # from ... is invalid") before any Ryoku package is involved. Initialize
+        # and populate the base keyring first -- the same recovery the installer
+        # uses for CachyOS (ryoku_cachyos_keyring) -- then sync. SigLevel is
+        # never lowered, so a genuinely unsigned package still fails the gate.
+        run: |
+          set -euo pipefail
+          pacman-key --init
+          pacman-key --populate archlinux
+          if [ "${{ matrix.base }}" = cachyos ]; then pacman-key --populate cachyos || true; fi
+          if ! pacman -Sy --noconfirm --needed git; then
+            # A mutable base image can also ship a keyring older than its own
+            # repo's rotated signing key ("signature ... is invalid", not
+            # unknown). Refresh that key from the upstream keyserver -- the
+            # recovery the installer documents for exactly this case -- and
+            # retry once. SigLevel is never lowered, so a genuinely unsigned
+            # Ryoku package still fails the gate.
+            pacman-key --recv-keys F3B607488DB35A47 --keyserver keyserver.ubuntu.com || true
+            pacman-key --lsign-key F3B607488DB35A47 || true
+            pacman -Sy --noconfirm --needed git
+          fi
       - name: Checkout
         uses: actions/checkout@v4
         with:
@@ -454,3 +448,35 @@ jobs:
               -f repo_url="https://repo.ryoku.dev/stable/$PREFIX/x86_64"
             echo "::notice::Dispatched $wf on $RELEASE from $PREFIX"
           done
+
+  # A failed publish strands a whole set of commits on the channel: testers keep
+  # running the last good build with no sign anything broke (a wm/niri release sat
+  # unpublished for days behind a dependency-gate failure exactly this alert would
+  # have surfaced). Fires on a genuine failure, never on a run the next push
+  # superseded (that reports cancelled, not failed). Best-effort: a missing
+  # webhook downgrades to a workflow error annotation, never masks the failure.
+  notify-failure:
+    name: Announce a failed publish
+    needs: [build, container-install, publish]
+    if: ${{ failure() && github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+    steps:
+      - name: Report the failure
+        shell: bash
+        run: |
+          set -euo pipefail
+          channel="${{ needs.build.outputs.channel }}"
+          [[ -n $channel ]] || channel="unknown (build stage did not resolve it)"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          msg="Ryoku [ryoku] repo publish FAILED on the ${channel} channel (${GITHUB_REF#refs/heads/}, ${GITHUB_SHA:0:9}). These commits are NOT on the channel; boxes stay on the last good build until this is fixed and re-run. ${run_url}"
+          echo "::error::${msg}"
+          if [[ -z ${DISCORD_WEBHOOK_URL:-} ]]; then
+            echo "::notice::DISCORD_WEBHOOK_URL not configured; failure reported as an annotation only."
+            exit 0
+          fi
+          jq -nc --arg content "$msg" '{content: $content}' \
+            | curl -fsS -X POST -H 'Content-Type: application/json' -d @- "$DISCORD_WEBHOOK_URL" \
+            || echo "::warning::could not post the failure notice to Discord"

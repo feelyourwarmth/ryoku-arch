@@ -2,7 +2,109 @@
 
 ## Unreleased
 
+### Added
+- **`ryoku doctor` names the reverse-PRIME first-commit hazard.** On a laptop
+  whose connected panel is driven by the iGPU while the render pin puts NVIDIA
+  first, the session's very first cross-GPU commit fails once on some kernels
+  and the panel stays black until reboot (#270). The pin is deliberate Ryoku
+  policy, so this is a note, never a change: it names the combination and both
+  ways out (`ryoku-gpu disable` clears the pin, `ryoku-gpu persist` restores
+  it), so a black-panel report carries its own suspect
+  (`internal/doctor/reconcile_gpu_pin_panel.go`).
+- **`ryoku wm caps` prints the active provider's capabilities as JSON**, the
+  same payload the daemon and the Hub gate on, so a script can read the night
+  light backend or a capability without spelling a compositor. `ryoku wm act`
+  now forwards the provider's stdout, which is how `input.touchpad status`
+  answers (`wm.go`).
+- **`ryoku update` re-authors the compositor settings.** The generated config
+  is a pure function of the store and the provider that wrote it, so after the
+  new config tree lands the live provider applies the store again; a provider
+  fix that changes what it emits (niri's border needing an explicit on) reaches
+  a box on the update instead of waiting for the next Hub edit
+  (`internal/updater/update.go`).
+- **`ryoku doctor` repairs a read-only boot volume.** /boot, and /efi on an
+  alongside install, are FAT volumes, and one the firmware or a neighbouring OS
+  left dirty can come up read-only: every boot-path write then fails in ways
+  that look unrelated (mkinitcpio copies nothing, limine-update writes nothing,
+  an update ends in "rollback now"). The new reconciler remounts it read-write,
+  and if the kernel refuses, unmounts, runs `fsck.fat -a` and mounts again; a
+  busy mount is left alone with the exact manual command instead of being
+  forced. The btrfs root's read-only flip stays `reconcileBtrfsHealth`'s
+  (`internal/doctor/reconcile_boot_rw.go`).
+
+### Fixed
+- **`ryoku update` no longer dies where taking a sleep inhibitor is denied.**
+  The transaction runs under `systemd-inhibit --mode=block`, which is
+  polkit-gated in sessions with no agent (SSH, a headless run): there it exits
+  "Access denied" BEFORE the wrapped command starts, so pacman never ran and
+  the update reported a failure that had nothing to do with packages. The
+  inhibitor is now probed once per run and dropped on a denial, keeping the
+  lid-close guard wherever the session allows it (`internal/updater/upgradelog.go`).
+- **The update view is curated for pipes, not only terminals.** The Hub's
+  update island and `ryoku update > log` read stdout through a pipe, which used
+  to get the raw pacman firehose: database chatter, per-file progress redraws
+  and long conflict lists that read as a broken install. A piped run now gets
+  the same collapsed view a terminal sees (phase, one-line package summary,
+  warnings, errors), animated only on a TTY; the full firehose still lands in
+  `~/.local/state/ryoku/update-log.txt` and `--verbose` keeps the raw passthrough
+  (`internal/updater/upgradelog.go`).
+- **A switched-to desktop no longer boots without its generated config.**
+  niri's config.kdl hard-includes settings.kdl and rebinds.kdl, and a missing
+  include is a hard niri config error, yet the packages ship only the static
+  seeds and every apply followed the ACTIVE provider: nothing between
+  `ryoku wm use niri` and the first niri login rendered the target's generated
+  half, so the switch laid a tree niri refuses to parse. Materialize, the one
+  call the login bootstrap, the switch and the update all share, now completes
+  every laid-down tree from the neutral store through the seam; a missing
+  user_edits mirror or a missing store triggers nothing, and an absent
+  provider binary notes instead of failing (`internal/updater/materialize.go`).
+- **Colours follow the wallpaper again on boxes the mono era left behind.**
+  A theme.json with followWallpaper false and no locked palette is incoherent
+  legacy state (the desktop sits on a static ramp while every surface claims
+  to follow the wallpaper), most visible on niri where no Hyprland decoration
+  regen masks it. A one-time reconciler restores the follow default; a locked
+  palette, or follow turned off afterwards, is a choice and stands
+  (`internal/doctor/reconcile_theme_follow.go`).
+
 ### Changed
+- **`ryoku update` adopts the sleep policy as a guarded transaction.** Stage
+  two takes a durable login1 sleep block, activates logind's sessionless
+  fallback, and refuses to quiesce the shell unless the old `ryoku-idle` and
+  `ryoku-clamshell` services are verifiably stopped. The canonical
+  `ryoku-power-cutover` helper binds the replacement target to the exact active
+  login1 session, reloads the compositor's power bindings, waits for the new
+  shell's inhibitor state, and verifies both service owners before protection
+  is released; Ryogami is then restarted onto the installed binary. Any earlier
+  failure leaves the durable block active until retry or reboot. Package hooks
+  use the same all-session helper for every logged-in Ryoku user, while later
+  managed updates hand their already-protected active session to it instead of
+  racing a second transaction. Stale compositor variables in a lingering user
+  manager no longer make an SSH/TTY update own desktop power policy. The stop
+  path also adopts releases that had no daemon PID state
+  (`internal/updater/update.go`).
+- **`ryoku doctor` keeps your login shell honest.** Changing your shell in the
+  Hub writes it in two places: your account shell, and a session override the
+  compositor exports so everything it launches agrees. Nothing noticed when the
+  two drifted, so a box could run fish while `$SHELL` said zsh, and fastfetch,
+  terminals and scripts all believed the wrong one. Doctor now names both values
+  and points the override back at your real account shell, refreshing the
+  running session so it takes effect without a logout
+  (`internal/doctor/reconcile_login_shell.go`).
+- **The Rashin AI assistant is on by default now.** The needle (Super+S) and its
+  dashboard used to sit dormant until you found the switch in the Hub; a fresh
+  box now brings the daemon up at boot. `ryoku-rashin disable` turns it off for
+  good (recorded as `optedOut`, so an update never flips it back on), `enable`
+  turns it back on. A new `ryoku-rashin ensure` is the quiet default-on
+  convergence the installer, `ryoku materialize`, and `ryoku doctor` run.
+- **`ryoku doctor` keeps the assistant healthy.** It brings Rashin up at boot
+  unless you opted out, and enables the AI usage collector timer that feeds the
+  bar pill (`internal/doctor/reconcile_rashin_daemon.go`).
+- **`ryoku doctor` installs the fingerprint unlock module on a box with a
+  reader.** The lock and greeter PAM stacks load `pam_fprintd_grosshack.so`, but
+  it was never shipped, so touch-to-unlock did nothing (fprintd enroll/verify in
+  Settings still worked). A new reconciler installs `pam-fprint-grosshack` (AUR)
+  when a fingerprint reader is present and the module is missing, and is silent
+  on a machine without a reader (`internal/doctor/reconcile_fingerprint.go`).
 - **`ryoku update` reaps the Hub so a new settings page appears without a
   relogin.** Ryoku Settings is a session-resident quickshell instance the shell
   daemon does not own, so an update left it running on the old QML and a
@@ -153,6 +255,51 @@
   (`internal/updater/materialize.go`).
 
 ### Fixed
+- **`ryoku doctor` re-enables the NVIDIA sleep units the installer sets up.**
+  Boxes installed before nvidia.sh grew its enable step, or converted from
+  another distro, carry nvidia-suspend/hibernate/resume disabled, so VRAM is
+  not preserved across suspend the way the shipped contract arranges; the
+  reconciler repairs exactly that drift and stays silent on mesa-only boxes
+  and healthy installs (`internal/doctor/reconcile_hardware.go`).
+
+- **"Apply system-wide" for the keyboard layout no longer just says FAILED.**
+  Setting the login screen, TTYs, and disk-passphrase keymap rebuilds the boot
+  image, which needs root; run from the Hub there is no terminal for the sudo
+  password prompt, so it failed every time. It now escalates once through the
+  desktop's password prompt (pkexec) instead, so the whole apply goes through in
+  one go (`internal/keyboard`).
+- **Hybrid-GPU laptops no longer boot to a black screen through the login
+  screen.** On a machine with two GPUs (an AMD/Intel iGPU plus an NVIDIA dGPU),
+  SDDM could start your session on one virtual terminal while the Wayland login
+  greeter was still shutting down on another and still holding a GPU. The
+  compositor then found that card busy, dropped it -- usually the very iGPU the
+  displays hang off -- and came up headless on the other: a black, blank screen.
+  A tiny wait for the greeter to finish letting go of the GPU before the session
+  starts fixes it, wired in as SDDM's session command so it covers every Wayland
+  session; `ryoku doctor` adds it to existing machines and it is a no-op on a
+  single-GPU box (`ryoku/lockscreen/sddm/ryoku-wayland-session`, doctor's SDDM
+  greeter reconciler).
+- **`ryoku status` no longer reports `snapshots: 0` on a machine that has them.**
+  The count came from a `sudo` call that fails whenever no credential is cached
+  (every GUI poll, and any cold terminal), and the empty result parsed as a real
+  `0` -- "no safety net" when the safety net was fine. The count now runs snapper
+  unprivileged first (working with no sudo at all once access is granted), falls
+  back to a cached-credential `sudo -n` that never prompts, and treats snapper's
+  exit-0 "No permissions." as the failure it is. A read it genuinely cannot make
+  now prints `snapshots: unavailable`, never a misleading `0`; `--json` carries a
+  `snapshotsKnown` flag so the Hub and the bar island can tell the two apart
+  (`internal/updater/update.go`). `ryoku doctor` grants the primary user snapper
+  read access (`ALLOW_USERS` + `SYNC_ACL`), so the count shows without any sudo
+  (`internal/doctor` snapshot read access reconciler).
+- **A symlinked config file (dotfiles) is no longer overwritten with Ryoku's
+  default.** If you symlink a seeded file like `hypr/user.lua` or
+  `hypr/keyboard.lua` from a dotfiles repo, `ryoku materialize` kept the link --
+  unless its target was momentarily unavailable (the repo not mounted yet at
+  that point), in which case the existence check followed the dead link, read
+  the slot as empty, and laid the shipped default over your symlink, losing it.
+  It now tests the link itself, so a symlinked seed is always left alone; a fresh
+  install with nothing there still seeds normally (`internal/updater/materialize.go`,
+  `sys.PathPresent`). `ryoku deploy` carries symlinked user files the same way.
 - **`ryotunes` opened the old Tauri app after the package update.** The launcher
   defers to the native client only while `ryotunesd.socket` exists, and nothing
   enabled that user unit on a fresh install. The doctor now enables it

@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- **Lock, wake and lid each have one owner, and suspend now fails closed.** The
+  shell daemon bound to the foreground graphical session owns login1's delay
+  inhibitor and long-lived hard block. Before ownership moves, the outgoing
+  session is qylock-secured; every other online same-user session has its own
+  session-scoped qylock and foreground observer. Only the foreground session may
+  request suspend or unlock. Every shipped suspend path uses
+  `ryoku-shell suspend`, which refuses to sleep until qylock is
+  compositor-secure. Resume starts output and lighting recovery immediately,
+  bounds every provider attempt, and retries protection in order. `hypridle`
+  owns only timers. `ryoku-clamshell` owns lid events only for the active
+  session, follows login1 activity and owner restarts, and treats matching
+  close/open compositor edges as authoritative. AC plus an external display
+  stays live without an unnecessary lock; every other close uses the secure
+  transaction. Logind supplies the safe fallback when no session owns the
+  switch. Hyprland alone performs the panel handoff; niri keeps native topology.
+  Login, updates, package hooks and live checkout deploys use one guarded
+  session-lifecycle helper while they replace shell, idle, clamshell and
+  wallpaper owners; doctor stages qylock repairs under its generation guard for
+  the next managed activation. Lockscreen generations are leased end to end;
+  unlock substitutes a durable sleep block while a daemon generation restarts.
+  Failure leaves protection held until retry or reboot. See
+  `docs/compositors.md` and `system/hardware/README.md`.
+
+- **The GPU MUX knob is GUI-reachable without a terminal.** `ryoku-gpu-mux
+  set` escalates through pkexec under a scoped polkit grant
+  (`hardware/gpu/45-ryoku-gpu-mux.rules`, wheel, the one program), so the
+  Hub's Machine page can flip display routing; the change still only takes
+  effect at a reboot the user performs.
+
+
 - **The base set no longer installs Spotify.** `spotify-launcher`,
   `spicetify-cli` and `spicetify-marketplace` are out of
   `system/packages/base.packages`; Ryotunes is the music app a fresh install
@@ -23,12 +53,17 @@
   Wayland greeter starts on fresh ISO installs, script conversions, and
   existing systems after an update.
 
-- **ryoku-gpu grows `check-pin` and marks forced pins.** `check-pin` audits the
-  written gpu.lua against today's policy in one verdict line (`ok` | `forced` |
-  `stale-pin SLOT`), living beside the policy it audits so the ryoku doctor
-  never re-implements laptop or GPU detection. A `RYOKU_GPU_FORCE=1 persist`
-  now writes a `-- ryoku-gpu-forced` marker so a deliberate laptop pin is never
-  reverted by tooling (`system/hardware/gpu/ryoku-gpu`).
+- **The render pin now covers laptops.** `ryoku-gpu` pinned the strongest GPU
+  only on desktops, so a hybrid laptop composited, blurred and decoded video on
+  its iGPU -- the same die as the CPU -- and the package cooked while a discrete
+  GPU sat parked. The default policy now pins the discrete GPU everywhere; the
+  graphics mode the user chose is stamped into gpu.lua
+  (`-- ryoku-gpu-mode: hybrid|performance|passthrough`) and login-time
+  `persist` honours it, so Hybrid stays an explicit opt-out for battery.
+  `check-pin` grew a `missing-pin` verdict so the ryoku doctor writes the pin
+  on machines the old policy left unpinned, and `mode performance` names the
+  reboot-gated `ryoku-gpu-mux set discrete` step on MUX laptops
+  (`system/hardware/gpu/ryoku-gpu`, `tests/gpu-pin-policy.sh`).
 
 ### Added
 - `ttf-maple-mono-nf` (release/packages + base.packages): Maple Mono, Nerd Font
@@ -63,14 +98,19 @@
   package.
 
 ### Fixed
+- `hardware/power/ryoku-power-cutover`: a killed generation guard releases
+  its locks. The hold's keep-alive coprocess inherited the launch and
+  generation flock fds, so a holder killed mid-swap left the locks pinned by
+  an orphan and every later cutover waited on the guard forever
+  (`tests/power-cutover.sh`).
 - `hardware/power/logind-ryoku-lid.conf`: raise `InhibitDelayMaxSec` to 15s.
-  `hypridle` holds a `sleep` delay inhibitor while it runs `ryoku-shell lock`,
-  and logind's 5s default expired first on a Quickshell lock that also had to
-  wait out a display reconfigure (undocking as the lid shuts), so the machine
-  suspended with the session unlocked. logind logged it and went ahead anyway:
-  "Delay lock is active (hypridle) but inhibitor timeout is reached". The
-  inhibitor is released the moment the lock is up, so a normal lid close still
-  suspends immediately.
+  The always-on shell daemon holds a `sleep` delay inhibitor across suspend while
+  it puts a secure lock up, and logind's 5s default expired first on a Quickshell
+  lock that also had to wait out a display reconfigure (undocking as the lid
+  shuts), so the machine suspended with the session unlocked. logind logged it
+  and went ahead anyway: "Delay lock is active ... but inhibitor timeout is
+  reached". The inhibitor is released the moment the lock is up, so a normal lid
+  close still suspends immediately.
 - `boot/limine/limine.conf`: ship `default_entry: 1` (the bootable flat
   placeholder) plus `remember_last_entry: yes`, not the bare `2`. Limine's
   numeric `default_entry` counts top-level entries, so once

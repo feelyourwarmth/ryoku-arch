@@ -238,5 +238,19 @@ printf '{"schema":1,"release":"%s","name":"%s","channel":"%s","version":"%s","co
   "$RYOKU_RELEASE" "$RYOKU_NAME" "$RYOKU_CHANNEL" "$RYOKU_PKGVER" "$commit" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   > "$ARCH_DIR/release.json"
 
+# 8. manifest.json beside release.json: every package this release is made of,
+#    by lane, generated from this checkout (never hand-edited). A box's
+#    `ryoku update` diff converges against it, which is what makes a package
+#    added to a set reach every box on the next update, and `ryoku verify`
+#    compare two boxes. The publish step's rclone sync carries it with the db.
+log "Generating the control manifest"
+manifest_src="$RELEASE_DIR/../ryoku/cli"
+manifest_bin="$(mktemp -d)/ryoku-manifest"
+( cd "$manifest_src" && go build -mod=vendor -o "$manifest_bin" ./cmd/ryoku-manifest ) \
+  || die "could not build cmd/ryoku-manifest"
+"$manifest_bin" -repo "$RELEASE_DIR/.." -release "$RYOKU_RELEASE" -version "$RYOKU_PKGVER" \
+  -commit "$commit" -channel "$RYOKU_CHANNEL" -out "$ARCH_DIR/manifest.json" \
+  || die "could not generate manifest.json"
+
 log "Repo ready at $ARCH_DIR"
 log "Serves as stable at https://repo.ryoku.dev/stable/$REPO_ARCH/, as testing under channels/testing/, or frozen under releases/<tag>/ (publish-repo.yml)"

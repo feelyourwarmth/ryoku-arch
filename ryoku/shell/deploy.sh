@@ -3,7 +3,7 @@
 # is the source, the shell configs replace the matching ones under ~/.config,
 # including the Hyprland config. Builds ryoku-shell and puts it on PATH.
 #
-#   deploy.sh              build + install, then apply live (hyprctl reload).
+#   deploy.sh              build + install, then apply live (provider config.reload).
 #   deploy.sh --no-reload  build + install + stage the files, but DO NOT touch
 #                          the running session. The new config takes effect on
 #                          the next login. Useful so a live swap can't disrupt
@@ -23,6 +23,65 @@ here="$(cd "$(dirname "$0")" && pwd)"
 cfg="${XDG_CONFIG_HOME:-$HOME/.config}"
 bindir="$HOME/.local/bin"
 say() { printf '  %s\n' "$*"; }
+
+power_cutover_lock_held=0
+acquire_power_cutover_lock() {
+  command -v flock >/dev/null 2>&1 || {
+    say "cannot cut over lid policy: flock is unavailable" >&2
+    return 1
+  }
+  exec 8>"${XDG_RUNTIME_DIR:-/tmp}/ryoku-power-cutover.lock"
+  flock 8
+  power_cutover_lock_held=1
+}
+
+release_power_cutover_lock() {
+  (( power_cutover_lock_held == 1 )) || return 0
+  flock -u 8
+  exec 8>&-
+  power_cutover_lock_held=0
+}
+
+power_cutover_unit=ryoku-power-cutover-guard.service
+stop_power_cutover_guard() {
+  if systemctl --user is-active --quiet "$power_cutover_unit"; then
+    systemctl --user stop "$power_cutover_unit"
+  fi
+}
+trap 'exit 130' INT TERM
+
+start_power_cutover_guard() {
+  local json uid
+  for command in systemd-inhibit jq systemctl systemd-run; do
+    command -v "$command" >/dev/null 2>&1 || {
+      say "cannot cut over lid policy: $command is unavailable" >&2
+      return 1
+    }
+  done
+  if ! systemctl --user is-active --quiet "$power_cutover_unit"; then
+    systemctl --user reset-failed "$power_cutover_unit" >/dev/null 2>&1 || true
+    systemd-run --user --quiet --collect --unit="$power_cutover_unit" \
+      --property=Type=exec --property=TimeoutStopSec=5s \
+      /usr/bin/systemd-inhibit --what=sleep --mode=block \
+      --who=ryoku-session-cutover \
+      --why="keep the desktop awake while suspend owners are replaced" \
+      /usr/bin/sleep infinity
+  fi
+  uid="$(id -u)"
+  for _ in {1..60}; do
+    json="$(systemd-inhibit --list --json=short 2>/dev/null || true)"
+    if jq -e --argjson uid "$uid" \
+      'any(.[]; .uid == $uid and .who == "ryoku-session-cutover"
+        and .mode == "block" and ((.what | split(":")) | index("sleep")))' \
+      >/dev/null <<<"$json"; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  systemctl --user stop "$power_cutover_unit" >/dev/null 2>&1 || true
+  say "could not acquire the durable lid-policy cutover inhibitor" >&2
+  return 1
+}
 
 # Lay the user's overrides over the freshly-deployed base: a regular file under
 # ~/.config/ryoku/user_edits wins at the mirrored ~/.config path (a fork), the
@@ -67,16 +126,24 @@ EOF
 restart_shell() {
   local shell=$bindir/ryoku-shell
   local log="${XDG_STATE_HOME:-$HOME/.local/state}/ryoku-shell.log"
+  local stopped=0
 
   [[ -x $shell ]] || return 0
-  check_renderer || return 0
+  check_renderer || return 1
   "$bindir/ryoku-reload-cover" begin >/dev/null 2>&1 || true
   systemctl --user stop ryoku-shell 2>/dev/null || true
   "$shell" quit >/dev/null 2>&1 || true
-  for _ in {1..20}; do
-    "$shell" ping >/dev/null 2>&1 || break
+  for _ in {1..50}; do
+    if ! "$shell" ping >/dev/null 2>&1; then
+      stopped=1
+      break
+    fi
     sleep 0.1
   done
+  if (( stopped == 0 )); then
+    say "pre-deploy ryoku-shell did not stop" >&2
+    return 1
+  fi
 
   # quit should stop the surfaces, but a crashed daemon orphans them and the
   # leftover qs keeps its single-instance lock, so the fresh pill cant come up and
@@ -100,31 +167,58 @@ restart_shell() {
     say "restarted ryoku-shell daemon (systemd unit)"
   else
     if command -v setsid >/dev/null 2>&1; then
-      setsid "$shell" daemon >"$log" 2>&1 < /dev/null &
+      setsid "$shell" daemon >"$log" 2>&1 < /dev/null 8>&- &
     else
-      nohup "$shell" daemon >"$log" 2>&1 < /dev/null &
+      nohup "$shell" daemon >"$log" 2>&1 < /dev/null 8>&- &
     fi
     say "restarted ryoku-shell daemon -> $log"
   fi
+  for _ in {1..150}; do
+    "$shell" sleep-ready >/dev/null 2>&1 && return 0
+    sleep 0.1
+  done
+  say "new ryoku-shell sleep guard did not become ready after restart" >&2
+  return 1
 }
 
-hypr_live=0
-if command -v hyprctl >/dev/null 2>&1; then
-  # When deploy runs outside the Hyprland session (ssh, an agent, the curl
-  # recovery), HYPRLAND_INSTANCE_SIGNATURE is unset and hyprctl cannot find the
-  # compositor, so the autoreload pause below would be skipped and the rm+cp
-  # config swap could trip the live session into emergency mode. Recover the
-  # signature from the runtime dir so the pause still happens when a session is up.
-  if [ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" ]; then
-    for _inst in "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"/hypr/*/; do
-      [ -d "$_inst" ] || continue
-      _sig="$(basename "$_inst")"
-      export HYPRLAND_INSTANCE_SIGNATURE="$_sig"
+start_session_power_units() {
+  local status
+  systemctl --user reset-failed ryoku-idle.service ryoku-clamshell.service >/dev/null 2>&1 || true
+  systemctl --user restart ryoku-idle.service
+  for _ in {1..40}; do
+    status="$("$bindir/ryoku-idle" status 2>/dev/null || true)"
+    if grep -qxF 'idle=inactive' <<<"$status"; then
       break
-    done
+    fi
+    if grep -qxF 'idle=active' <<<"$status" &&
+       grep -qxF 'running=yes' <<<"$status" &&
+       systemctl --user is-active --quiet ryoku-idle.service; then
+      break
+    fi
+    sleep 0.05
+  done
+  status="$("$bindir/ryoku-idle" status 2>/dev/null || true)"
+  if ! grep -qxF 'idle=inactive' <<<"$status" &&
+     ! { grep -qxF 'idle=active' <<<"$status" &&
+         grep -qxF 'running=yes' <<<"$status" &&
+         systemctl --user is-active --quiet ryoku-idle.service; }; then
+    say "new idle policy did not acquire its session service" >&2
+    return 1
   fi
-  if hyprctl version >/dev/null 2>&1; then hypr_live=1; fi
-fi
+
+  systemctl --user restart ryoku-clamshell.service
+  "$bindir/ryoku-clamshell" is-laptop || return 0
+  for _ in {1..40}; do
+    status="$("$bindir/ryoku-clamshell" status 2>/dev/null || true)"
+    if systemctl --user is-active --quiet ryoku-clamshell.service &&
+       grep -qxF 'inhibitor=held' <<<"$status"; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  say "new clamshell policy did not acquire its session inhibitor" >&2
+  return 1
+}
 
 # Building the desktop from a checkout needs the Go toolchain (cmake/ninja and
 # makepkg below self-gate; go is the one hard requirement). A packaged box that
@@ -143,21 +237,69 @@ say "building ryoku-shell"
 mkdir -p "$bindir"
 install -m755 "$here/ipc/ryoku-shell" "$bindir/ryoku-shell"
 say "installed $bindir/ryoku-shell"
-install -m755 "$here/scripts/ryoku-reload-cover" "$bindir/ryoku-reload-cover"
-install -m755 "$here/scripts/ryostage" "$bindir/ryostage"
-install -m755 "$here/scripts/ryoku-eq" "$bindir/ryoku-eq"
-# Depth and Parallax merged into ryostage; a checkout box that installed the old
-# helpers keeps them on PATH forever otherwise (pacman drops them on packaged boxes).
-rm -f "$bindir"/ryoku-{depth,parallax-engine}
-
-# Every hyprland leaf script the config calls by bare name (ryoku-app, the
-# ryoku-cmd-*, ...). The package ships them to /usr/bin; a checkout must put the
-# current copies on PATH too, else a new one like ryoku-app is simply missing.
-for s in "$here/../hyprland/scripts"/ryoku-*; do
+# Build every window-manager provider the repo carries, not just the running
+# one: a checkout must be able to deploy, then switch compositors and find the
+# other provider already on PATH. deploy routes the config-swap pause and reload
+# below through whichever one is live.
+for p in "$here/../wm"/*/; do
+  [[ -f "$p/main.go" ]] || continue
+  name=${p%/}; name=${name##*/}
+  say "building ryoku-wm-$name"
+  (cd "$p" && go build -o "ryoku-wm-$name" .)
+  install -m755 "$p/ryoku-wm-$name" "$bindir/ryoku-wm-$name"
+  say "installed $bindir/ryoku-wm-$name"
+done
+# Every shell leaf script the bar, launcher, Hub, keybinds, recorder and the
+# daemon call by bare name (ryoku-app, ryoku-cmd-*, ryoku-sysinfo, the recorder
+# helpers, ...). They ride the shell to PATH with no compositor config tree, so
+# a niri box that ships no compositor scripts still gets every one. One glob,
+# mirroring the ryoku-shell package.
+for s in "$here/scripts"/ryoku-*; do
   [[ -f $s ]] || continue
   install -m755 "$s" "$bindir/${s##*/}"
 done
-say "installed the hyprland leaf scripts to $bindir"
+install -m755 "$here/../lockscreen/ryoku-qylock-activate" "$bindir/ryoku-qylock-activate"
+install -m755 "$here/../lockscreen/ryoku-qylock-lock" "$bindir/ryoku-qylock-lock"
+install -m755 \
+  "$here/../lockscreen/qylock/quickshell-lockscreen/ryoku-qylock-unlock-prepare" \
+  "$bindir/ryoku-qylock-unlock-prepare"
+qylock_installer_root="$HOME/.local/share/ryoku"
+qylock_installer_revision="$(
+  {
+    sha256sum "$here/../lockscreen/install-qylock"
+    "$here/../lockscreen/install-qylock" --print-generation
+  } | sha256sum | cut -d' ' -f1
+)"
+qylock_installer_dir="$qylock_installer_root/lockscreen-generations/$qylock_installer_revision"
+if [[ ! -x $qylock_installer_dir/install-qylock ]]; then
+  qylock_installer_tmp="$qylock_installer_dir.staging.$$"
+  rm -rf "$qylock_installer_tmp"
+  install -d -m755 "$qylock_installer_tmp"
+  install -m755 "$here/../lockscreen/install-qylock" \
+    "$qylock_installer_tmp/install-qylock"
+  cp -a "$here/../lockscreen/qylock" "$qylock_installer_tmp/qylock"
+  mv "$qylock_installer_tmp" "$qylock_installer_dir"
+fi
+if [[ -d $qylock_installer_root/lockscreen &&
+      ! -L $qylock_installer_root/lockscreen ]]; then
+  rm -rf "$qylock_installer_root/lockscreen"
+fi
+ln -sfn "lockscreen-generations/$qylock_installer_revision" \
+  "$qylock_installer_root/lockscreen.next"
+mv -Tf "$qylock_installer_root/lockscreen.next" \
+  "$qylock_installer_root/lockscreen"
+# ryostage: the wallpaper engine's launcher, not a ryoku-* name.
+install -m755 "$here/scripts/ryostage" "$bindir/ryostage"
+# The .sh helpers the shell drives by bare name: the Stash sidebar's cobalt queue
+# and its compress/install/download backends, the LocalSend LAN transfer, the
+# clipboard-thumbnail generator. Shell scripts, so they ride the shell to PATH.
+for s in "$here/scripts"/*.sh; do
+  [[ -f $s ]] || continue
+  install -m755 "$s" "$bindir/${s##*/}"
+done
+# Depth and Parallax merged into ryostage; a checkout box that installed the old
+# helpers keeps them on PATH forever otherwise (pacman drops them on packaged boxes).
+rm -f "$bindir"/ryoku-{depth,parallax-engine}
 
 # Build ryogami-live, the software-decode video-wallpaper daemon the shell drives
 # for live wallpapers. Needs wayland-scanner + a C toolchain + ffmpeg/wayland dev
@@ -223,6 +365,8 @@ sed "s|^ExecStart=.*|ExecStart=$bindir/ryoku-rashin serve --if-enabled|" \
   "$here/../rashin/systemd/ryoku-rashin.service" > "$cfg/systemd/user/ryoku-rashin.service"
 systemctl --user daemon-reload 2>/dev/null || true
 say "installed rashin systemd user unit"
+# Rashin is on by default: bring it up at boot now unless the user opted out.
+"$bindir/ryoku-rashin" ensure 2>/dev/null || true
 say "building ryoku CLI"
 (cd "$here/../cli" && go build -o ryoku .)
 install -m755 "$here/../cli/ryoku" "$bindir/ryoku"
@@ -267,6 +411,15 @@ if command -v sudo >/dev/null 2>&1; then
   _priv_install "$netdir/55-ryoku-network-kill.rules" /usr/share/polkit-1/rules.d/55-ryoku-network-kill.rules 644
   _priv_install "$netdir/ryoku-network-kill-guard.service" /usr/lib/systemd/system/ryoku-network-kill-guard.service 644
   _priv_install "$netdir/ryoku-network-kill-disconnect.service" /usr/lib/systemd/system/ryoku-network-kill-disconnect.service 644
+  # The Machine page flips the hardware GPU MUX through ryoku-gpu-mux (a
+  # root-owned firmware knob); this grant lets the one-click path work on a dev
+  # box too, mirroring the packaged rule.
+  _priv_install "$here/../../system/hardware/gpu/45-ryoku-gpu-mux.rules" /usr/share/polkit-1/rules.d/45-ryoku-gpu-mux.rules 644
+  # Lid-switch policy. logind supplies the sessionless fallback; under either
+  # compositor, ryoku-clamshell's verified session inhibitor takes ownership
+  # and routes every non-docked close through the secure shell transaction.
+  _priv_install "$here/../../system/hardware/power/logind-ryoku-lid.conf" \
+    /etc/systemd/logind.conf.d/10-ryoku-lid.conf 644
   sudo systemctl daemon-reload || true
   sudo systemctl enable --quiet ryoku-network-kill-guard.service ryoku-network-kill-disconnect.service || true
   say "installed privileged network helpers + polkit rules"
@@ -336,8 +489,8 @@ fi
 
 # Build the optional Hyprland compositor plugins (dynamic-cursors, hyprbars,
 # hyprfocus, hyprglass, imgborders, and this repo's keysounds) through the one
-# builder the Hub's Plugins page and the doctor use, `ryoku-hub hypr plugins
-# rebuild` (built above): it clones each upstream into
+# builder the Hub's Plugins page and the doctor use, `ryoku-hub desktop plugins
+# rebuild` (built above, which forwards to the provider): it clones each upstream into
 # ~/.cache/ryoku/hypr-plugins-src, checks out the commit its hyprpm.toml pins
 # for the installed Hyprland, runs the manifest's build steps against the
 # installed headers, and lays the .so with its .abi receipt under the user
@@ -353,7 +506,7 @@ rm -f "$HOME/.local/lib/hyprland/plugins/.hyprland-version"   # the pre-receipt 
 if pkg-config --exists hyprland 2>/dev/null; then
   mkdir -p "$HOME/.cache/ryoku"
   say "building Hyprland compositor plugins that are missing or stale"
-  if _out="$("$bindir/ryoku-hub" hypr plugins rebuild --stale --checkout "$here/../.." 2>"$HOME/.cache/ryoku/hypr-plugins-build.log")"; then
+  if _out="$("$bindir/ryoku-hub" desktop plugins rebuild --stale --checkout "$here/../.." 2>"$HOME/.cache/ryoku/hypr-plugins-build.log")"; then
     say "  $(jq -r '"built: " + (.built|join(", ")|if .=="" then "none" else . end) + "  skipped: " + (.skipped|length|tostring) + "  failed: " + ((.failed|keys)|join(", ")|if .=="" then "none" else . end)' <<<"$_out")"
     say "  log: ~/.cache/ryoku/hypr-plugins-build.log"
   else
@@ -371,6 +524,14 @@ fi
 # instead, which Qt finds unaided.
 say "installing Ryoku.Ui module"
 "$here/../ui/install.sh" "$qmldir"
+
+# Install the translation catalog + langs.json where every surface's I18n looks
+# first on a dev box (~/.local/share/ryoku/i18n). Without this the shell and Hub
+# fall back to an empty language table -- the Hub's language and regional-format
+# pickers then show only Auto and the two English locales. A packaged system
+# gets the same files at /usr/share/ryoku/i18n from the ryoku-desktop PKGBUILD.
+say "installing Ryoku i18n catalog"
+"$here/../i18n/tools/install.sh"
 
 # Seed the decor art the Decor/Placard components render into ~/Pictures/ryodecors
 # (beside Wallpapers and livewalls): the dev-loop equivalent of the installer seed
@@ -396,6 +557,14 @@ say "installing Ryoku.FrameBars module"
 "$here/framebars/install.sh" "$qmldir"
 say "installed Ryoku.FrameBars -> $qmldir/Ryoku/FrameBars"
 
+# Install the Ryoku.Wm.Hyprland QML module (the provider's global-shortcut and
+# focus-grab bridges the shell imports instead of Quickshell.Hyprland). Pure QML.
+say "installing Ryoku.Wm.Hyprland module"
+rm -rf "$qmldir/Ryoku/Wm/Hyprland"
+mkdir -p "$qmldir/Ryoku/Wm/Hyprland"
+cp -a "$here/../wm/hyprland/qml/." "$qmldir/Ryoku/Wm/Hyprland/"
+say "installed Ryoku.Wm.Hyprland -> $qmldir/Ryoku/Wm/Hyprland"
+
 # Quickshell components: a deployed daemon runs `qs -c <name>`, reading
 # ~/.config/quickshell/<name>.
 say "installing quickshell components -> $cfg/quickshell"
@@ -403,8 +572,12 @@ rm -rf "$cfg/quickshell"
 mkdir -p "$cfg/quickshell"
 cp -a "$here/quickshell/." "$cfg/quickshell/"
 
-# xdg-desktop-portal: route ScreenCast/Screenshot to hyprland so screen sharing works.
-install -Dm644 "$here/portals/hyprland-portals.conf" "$cfg/xdg-desktop-portal/hyprland-portals.conf"
+# xdg-desktop-portal: route each compositor's portals. hyprland owns its own
+# ScreenCast/Screenshot; niri has no backend, so screen sharing rides gnome and
+# only FileChooser is pinned to gtk (the gnome one hangs off a GNOME session).
+# Both files land; the portal reads the one named for the running desktop.
+install -Dm644 "$here/../hyprland/hyprland-portals.conf" "$cfg/xdg-desktop-portal/hyprland-portals.conf"
+install -Dm644 "$here/../niri/niri-portals.conf" "$cfg/xdg-desktop-portal/niri-portals.conf"
 # The single-instance shell ships as ryoku/shell/quickshell/shell and lands at
 # $cfg/quickshell/shell via the copy above; the ryoku-shell daemon launches it as
 # `qs -c shell`, the live desktop.
@@ -444,15 +617,20 @@ install -Dm644 "$here/../hub/ryoku-hub.desktop" "$appshare/applications/ryoku-hu
 install -Dm644 "$here/../assets/brand/logo.svg" "$appshare/icons/hicolor/scalable/apps/ryoku-hub.svg"
 say "installed ryoku-hub launcher entry"
 
-# In-session lockscreen (qylock): deploy otherwise never lays it down, so the
-# lock button and lock-on-sleep no-op. User-only half, mirroring ryoku doctor.
-if [[ -x "$here/../lockscreen/install-qylock" ]]; then
-  if RYOKU_QYLOCK_USER_ONLY=1 "$here/../lockscreen/install-qylock" >/dev/null 2>&1; then
-    say "installed in-session lockscreen"
-  else
-    say "lockscreen install skipped"
-  fi
-fi
+# In-session lockscreen (qylock). Every deploy stages the complete replacement
+# beside the running client. ryoku-shell.service promotes it only after the old
+# daemon has stopped and before the matching daemon starts.
+stage_qylock_user() {
+  local guarded=${1:-0}
+  local installer="$here/../lockscreen/install-qylock"
+  [[ -x $installer ]] || {
+    say "cannot stage the in-session lockscreen: installer is missing" >&2
+    return 1
+  }
+  RYOKU_QYLOCK_USER_ONLY=1 RYOKU_QYLOCK_MODE=stage \
+    RYOKU_QYLOCK_GENERATION_GUARDED="$guarded" "$installer"
+  say "staged in-session lockscreen for the next daemon start"
+}
 
 # Packaged externals on a checkout box. ryotunes (and every other package
 # release/packages pins to an upstream commit) is a [ryoku] package users get
@@ -505,7 +683,7 @@ if command -v sudo >/dev/null 2>&1 && command -v pacman >/dev/null 2>&1; then
   # the boot configs); once ryoku-desktop packages them an unowned copy otherwise
   # aborts the whole -Syu with "exists in filesystem" and nothing upgrades.
   # Mirrors updater.ryokuOverwriteGlob / the doctor's ryokuSystemGlobs.
-  _rovw='/usr/bin/ryoku-*,/usr/lib/systemd/system/ryoku-*,/usr/lib/initcpio/install/ryoku-*,/usr/share/polkit-1/rules.d/*ryoku*.rules,/usr/share/plymouth/themes/ryoku/*,/usr/share/ryoku/boot/*'
+  _rovw='/usr/bin/ryoku-*,/usr/lib/systemd/system/ryoku-*,/usr/lib/initcpio/install/ryoku-*,/usr/share/polkit-1/rules.d/*ryoku*.rules,/usr/share/plymouth/themes/ryoku/*,/usr/share/ryoku/boot/*,/etc/systemd/logind.conf.d/10-ryoku-lid.conf'
   _pac_ryotunes() { sudo pacman -Syu --needed --noconfirm --overwrite "$_rovw" ryotunes; }
   # shellcheck disable=SC2024
   if _pac_ryotunes >"$_plog" 2>&1; then
@@ -538,55 +716,144 @@ install -Dm644 "$here/../apps/nautilus/ryoku-stash-menu.py" \
   "$appshare/nautilus-python/extensions/ryoku-stash-menu.py"
 say "installed nautilus stash menu -> $appshare/nautilus-python/extensions"
 
-# Pause Hyprland's config auto-reload so the hypr swap below never exposes a
-# missing hyprland.lua (which would trip emergency mode).
-if (( hypr_live )); then
-  hyprctl keyword misc:disable_autoreload true >/dev/null 2>&1 || true
+# The compositor config comes from the ACTIVE provider's payload, so a checkout
+# on niri deploys ryoku/niri exactly the way one on Hyprland deploys
+# ryoku/hyprland. `ryoku wm config` is the single source for the config dir name
+# and the seed list: a second copy of that table here would drift from
+# ryoku/wm/detect.go, which is the one place allowed to know it.
+wm_conf=$("$bindir/ryoku" wm config 2>/dev/null || true)
+wm_name=$(jq -r '.name // empty' <<<"$wm_conf" 2>/dev/null)
+wm_dir=$(jq -r '.dir // empty' <<<"$wm_conf" 2>/dev/null)
+mapfile -t seeds < <(jq -r '.seeds[]? | sub("^[^/]+/"; "")' <<<"$wm_conf" 2>/dev/null)
+wm_bin="$bindir/ryoku-wm-$wm_name"
+
+# Only the LIVE compositor's leaf scripts (ryoku-monitor and friends) land here,
+# its own payload the way the package ships it: a niri box gets none, a Hyprland
+# box gets Hyprland's. Laying every provider's regardless of the live one is what
+# let a niri checkout look fine while a packaged niri box had them all missing,
+# so the other providers' copies from an earlier deploy are dropped as well.
+for d in "$here/../wm"/*/; do
+  other=${d%/}; other=${other##*/}
+  [[ $other != "$wm_name" ]] || continue
+  for s in "$here/../$other/scripts"/ryoku-*; do
+    [[ -f $s ]] || continue
+    rm -f "$bindir/${s##*/}"
+  done
+done
+if [[ -n $wm_name && -d "$here/../$wm_name/scripts" ]]; then
+  for s in "$here/../$wm_name/scripts"/ryoku-*; do
+    [[ -f $s ]] || continue
+    install -m755 "$s" "$bindir/${s##*/}"
+  done
+  say "installed the $wm_name leaf scripts to $bindir"
 fi
 
-# Hyprland config replaces the base, but the user's own files and the per-machine
+# Liveness comes from the provider, not from the pause below: a compositor that
+# watches its own config has no auto-reload to pause and would read as dead.
+wm_live=0
+if [[ -n $wm_name && -x $wm_bin ]] && "$wm_bin" state >/dev/null 2>&1; then
+  wm_live=1
+fi
+# Pause auto-reload where the compositor has one, so the swap below never
+# exposes a missing config mid-rename. Unsupported is fine: the swap is a
+# rename, so a config-watching compositor never sees a partial tree.
+if [[ -x $wm_bin ]]; then
+  "$wm_bin" act config.autoreload off >/dev/null 2>&1 || true
+fi
+
+if [[ -z $wm_dir || ! -d "$here/../$wm_name" ]]; then
+  say "no compositor payload for ${wm_name:-none}; skipped the config swap"
+else
+# The repo tree replaces the base, but the user's own files and the per-machine
 # generated drop-ins must survive a redeploy, exactly the way a packaged
 # `ryoku materialize` preserves every unshipped file (docs/updates.md). Two
-# classes survive: (1) anything the repo tree does NOT ship (monitors_user.lua,
-# settings.lua, theme.lua, and anything else the user dropped
-# in) is user-owned and carried across untouched; (2) the seed drop-ins the repo
-# ships a default for but the machine owns after first boot (ryoku-monitor writes
-# monitors.lua, ryoku-gpu writes gpu.lua, the user owns keyboard.lua and user.lua) keep their
-# live copy over the shipped default. Shipped files (modules/*, scripts/*, ...)
-# stay Ryoku-owned: the repo copy wins, matching materialize clobbering them.
-seeds=(monitors.lua gpu.lua keyboard.lua user.lua)
+# classes survive: (1) anything the repo tree does NOT ship (the hand-edit
+# display file, the generated settings, and anything else the user dropped in)
+# is user-owned and carried across untouched; (2) the seed drop-ins the repo
+# ships a default for but the machine owns after first boot (the display and GPU
+# pins the runtime rewrites, the keyboard and user files) keep their live copy
+# over the shipped default. Shipped files stay Ryoku-owned: the repo copy wins,
+# matching materialize clobbering them.
+#
 # Build the new config in a staging dir on the same filesystem, then rename it
-# into place. A slow rm+cp of ~/.config/hypr leaves a long window where
-# hyprland.lua is missing; anything that reloads then (a manual reload or a fresh
-# login both bypass the autoreload pause) trips Hyprland into emergency mode and a
-# stale "cannot open hyprland.lua". A rename swap closes that window.
-rm -rf "$cfg"/hypr.staging.*
-staging="$cfg/hypr.staging.$$"
+# into place. A slow rm+cp of the config dir leaves a long window where the
+# entry file is missing; anything that reloads then (a manual reload or a fresh
+# login both bypass the autoreload pause) trips the compositor into its error
+# path, and on niri a missing include is fatal. A rename swap closes that window.
+rm -rf "$cfg/$wm_dir".staging.*
+staging="$cfg/$wm_dir.staging.$$"
 mkdir -p "$staging"
-cp -a "$here/../hyprland/." "$staging/"
+cp -a "$here/../$wm_name/." "$staging/"
 # Carry the user's own files and the per-machine seeds across, mirroring
 # materialize: any file the freshly-staged repo tree does not contain is
 # user-owned and kept; the seeds keep their live copy over the shipped default.
-if [[ -d $cfg/hypr ]]; then
+if [[ -d $cfg/$wm_dir ]]; then
   while IFS= read -r -d '' f; do
-    rel=${f#"$cfg/hypr/"}
+    rel=${f#"$cfg/$wm_dir/"}
     [[ -e "$staging/$rel" ]] && continue   # shipped -> Ryoku-owned, repo copy wins
     mkdir -p "$staging/$(dirname "$rel")"
     cp -a "$f" "$staging/$rel"
-  done < <(find "$cfg/hypr" -type f -print0)
+    # -type l too: a user who symlinks a user-owned file from a dotfiles repo
+    # owns it; -type f alone would drop the link and the redeploy would lose
+    # their file. cp -a carries the symlink itself.
+  done < <(find "$cfg/$wm_dir" \( -type f -o -type l \) -print0)
   for f in "${seeds[@]}"; do
-    [[ -e "$cfg/hypr/$f" ]] && cp -a "$cfg/hypr/$f" "$staging/$f"
+    # -e follows the link and misses a dangling one (repo not mounted yet), so
+    # test -L as well; without it a symlinked seed is replaced by the default.
+    { [[ -e "$cfg/$wm_dir/$f" || -L "$cfg/$wm_dir/$f" ]]; } && cp -a "$cfg/$wm_dir/$f" "$staging/$f"
   done
 fi
-# cp -a carries the repo's older mtimes; bump the entry so an mtime-watching
-# autoreload still registers the swapped-in config as new.
-touch "$staging/hyprland.lua"
-if [[ -d $cfg/hypr ]]; then
-  bak="$cfg/hypr.bak-$(date +%Y%m%d%H%M%S)"
-  mv "$cfg/hypr" "$bak"
-  say "backed up existing hypr -> $bak"
+# cp -a carries the repo's older mtimes; bump the top level so an mtime-watching
+# autoreload still registers the swapped-in config as new, whichever file the
+# compositor treats as its entry.
+touch "$staging"/* 2>/dev/null || true
+if [[ -d $cfg/$wm_dir ]]; then
+  bak="$cfg/$wm_dir.bak-$(date +%Y%m%d%H%M%S)"
+  mv "$cfg/$wm_dir" "$bak"
+  say "backed up existing $wm_dir -> $bak"
+  # Keep the newest only: a deploy per session otherwise fills ~/.config with
+  # trees, and an older backup recovers nothing the newest does not.
+  shopt -s nullglob
+  for old in "$cfg/$wm_dir".bak-*; do
+    [[ $old == "$bak" ]] && continue
+    rm -rf -- "$old"
+  done
+  shopt -u nullglob
 fi
-mv "$staging" "$cfg/hypr"
+mv "$staging" "$cfg/$wm_dir"
+fi
+
+# A checkout box has every provider's binary on PATH, so lay every provider's
+# payload too: without its config tree an inactive compositor cannot be logged
+# into, and the greeter would offer a session that starts a bare desktop.
+#
+# Same ownership rule as the active swap above, so an inactive tree does not go
+# stale as the repo gains files: shipped files are Ryoku-owned and the repo copy
+# wins, while a seed or a hand-edited file that already exists is kept. Each
+# provider then authors its own generated config, because a missing include is
+# fatal on a compositor with no optional-include escape.
+for d in "$here/../wm"/*/; do
+  other=${d%/}; other=${other##*/}
+  [[ $other == "$wm_name" ]] && continue
+  [[ -d "$here/../$other" ]] || continue
+  other_conf=$("$bindir/ryoku" wm config "$other" 2>/dev/null || true)
+  other_dir=$(jq -r '.dir // empty' <<<"$other_conf" 2>/dev/null)
+  [[ -n $other_dir ]] || continue
+  mapfile -t other_seeds < <(jq -r '.seeds[]? | sub("^[^/]+/"; "")' <<<"$other_conf" 2>/dev/null)
+  mkdir -p "$cfg/$other_dir"
+  for f in "${other_seeds[@]}"; do
+    # Keep a seed the machine already owns; cp below would overwrite it.
+    { [[ -e "$cfg/$other_dir/$f" || -L "$cfg/$other_dir/$f" ]]; } && cp -a "$cfg/$other_dir/$f" "$cfg/$other_dir/$f.keep"
+  done
+  cp -a "$here/../$other/." "$cfg/$other_dir/"
+  for f in "${other_seeds[@]}"; do
+    [[ -e "$cfg/$other_dir/$f.keep" ]] && mv "$cfg/$other_dir/$f.keep" "$cfg/$other_dir/$f"
+  done
+  if [[ -x "$bindir/ryoku-wm-$other" ]]; then
+    "$bindir/ryoku-wm-$other" apply "$cfg/ryoku/desktop.json" >/dev/null 2>&1 || true
+  fi
+  say "laid the $other config tree -> $cfg/$other_dir"
+done
 
 wireplumber_policy="$cfg/wireplumber/wireplumber.conf.d/51-ryoku-bluetooth.conf"
 wireplumber_before=
@@ -625,9 +892,20 @@ seed_once "$here/../apps/ghostty/config" "$cfg/ghostty/config"
 seed_once "$here/../apps/ghostty/ryoku-colors" "$cfg/ghostty/ryoku-colors"
 mkdir -p "$cfg/wireplumber"; cp -a "$here/../apps/wireplumber/." "$cfg/wireplumber/"
 mkdir -p "$cfg/systemd/user"; cp -a "$here/systemd/user/." "$cfg/systemd/user/"
+# session environment: read at the next login, so niri and its spawns carry what
+# env.lua gives a Hyprland session
+mkdir -p "$cfg/environment.d"; cp -a "$here/environment.d/." "$cfg/environment.d/"
 # dev deploy runs the daemon from ~/.local/bin; the package ships /usr/bin.
 sed -i -e "s|^ExecStart=.*|ExecStart=$bindir/ryoku-shell daemon|" \
-  -e "s|^ExecStartPre=.*|ExecStartPre=-$bindir/ryoku-shell quit|" "$cfg/systemd/user/ryoku-shell.service"
+  -e "s|^ExecStartPre=/usr/bin/ryoku-qylock-activate$|ExecStartPre=$bindir/ryoku-qylock-activate|" \
+  -e "s|^ExecStartPre=-/usr/bin/ryoku-shell quit$|ExecStartPre=-$bindir/ryoku-shell quit|" \
+  -e "s|^ExecStop=/usr/bin/ryoku-qylock-activate --prepare-stop$|ExecStop=$bindir/ryoku-qylock-activate --prepare-stop|" \
+  -e "s|^ExecStartPost=-/usr/bin/ryoku-power-cutover qylock-guards-stop$|ExecStartPost=-$bindir/ryoku-power-cutover qylock-guards-stop|" \
+  "$cfg/systemd/user/ryoku-shell.service"
+sed -i "s|^ExecStart=.*|ExecStart=$bindir/ryoku-idle start|" \
+  "$cfg/systemd/user/ryoku-idle.service"
+sed -i "s|^ExecStart=.*|ExecStart=$bindir/ryoku-clamshell daemon|" \
+  "$cfg/systemd/user/ryoku-clamshell.service"
 # ryogami.service ships ExecStart=/usr/bin/ryogami (the package path); point the
 # dev-deployed unit at ~/.local/bin, mirroring the ryoku-shell rewrite above,
 # and at the staged wall-ui QML (the unit file is re-copied every deploy, so the
@@ -686,7 +964,7 @@ command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload 2>/dev/nu
 # box on `ryoku update` with no manual Hub save. Derived from hypr.json (the
 # editable truth), so idempotent; guarded, since a box may have no overrides yet.
 # Runs before overlay_user_edits so a user_edits/hypr/settings.lua still wins.
-"$bindir/ryoku-hub" hypr get >/dev/null 2>&1 || true
+"$bindir/ryoku-hub" desktop get >/dev/null 2>&1 || true
 
 # User overrides win over the base just laid, for hypr and every other surface.
 overlay_user_edits
@@ -699,14 +977,53 @@ if (( reload )) && [[ $wireplumber_before != "$wireplumber_after" ]]; then
 fi
 
 
-if (( hypr_live && reload )); then
-  # Apply now in one clean reload (this also restores auto-reload), then restart
-  # the shell daemon so a changed binary and changed QML both take effect.
-  hyprctl reload >/dev/null 2>&1 || true
-  restart_shell
-  say "deployed and reloaded Hyprland."
+if (( wm_live && reload )); then
+  acquire_power_cutover_lock
+  if ! check_renderer; then
+    say "installed. next login stages and activates qylock with the new shell."
+    release_power_cutover_lock
+  else
+    # Hold a durable login1 block and the qylock generation writer gate before
+    # stopping the old daemon. Existing locks can finish first; new launches
+    # cannot cross into a half-replaced generation.
+    if [[ ! -x $bindir/ryoku-idle || ! -x $bindir/ryoku-clamshell ]]; then
+      say "cannot cut over lid policy: installed power helpers are missing" >&2
+      exit 1
+    fi
+    if ! command -v sudo >/dev/null 2>&1 ||
+       ! cmp -s "$here/../../system/hardware/power/logind-ryoku-lid.conf" \
+         /etc/systemd/logind.conf.d/10-ryoku-lid.conf; then
+      say "cannot activate the guarded lid policy: the logind drop-in is not installed" >&2
+      exit 1
+    fi
+    start_power_cutover_guard
+    "$bindir/ryoku-power-cutover" generation-guard-start
+    "$bindir/ryoku-power-cutover" shell-quiesce
+    stage_qylock_user 1
+    if ! sudo systemctl reload systemd-logind; then
+      say "could not activate logind's guarded lid policy" >&2
+      exit 1
+    fi
+    "$bindir/ryoku-clamshell" stop
+    "$bindir/ryoku-idle" stop
+    "$bindir/ryoku-power-cutover" session-bind
+    restart_shell
+    wm_reload_rc=0
+    "$bindir/ryoku" wm act config.reload >/dev/null || wm_reload_rc=$?
+    if (( wm_reload_rc != 0 && wm_reload_rc != 4 )); then
+      say "window-manager config reload failed with exit $wm_reload_rc" >&2
+      exit "$wm_reload_rc"
+    fi
+    start_session_power_units
+    systemctl --user restart ryogami.service
+    "$bindir/ryoku-power-cutover" session-check
+    "$bindir/ryoku-power-cutover" generation-guard-stop
+    stop_power_cutover_guard
+    release_power_cutover_lock
+    say "deployed and reloaded the compositor."
+  fi
 else
-  # Staged: leave auto-reload paused so the running session keeps its current
-  # config until the next login, which loads the new one and fires the autostart.
-  say "staged. log out and back in to activate (autostart launches the daemon)."
+  # The rewritten service stages and activates the matching local generation
+  # on the next login, while this session keeps its current lock client intact.
+  say "installed. log out and back in to activate the new shell and qylock."
 fi

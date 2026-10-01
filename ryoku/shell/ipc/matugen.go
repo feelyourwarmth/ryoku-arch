@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	wm "ryoku-wm"
 )
 
 // matugen.go is the dynamic colour pipeline and the sole renderer of the
@@ -199,13 +201,17 @@ func smartMode(luma float64) string {
 }
 
 // resolveMode turns the mode knob into a concrete light/dark for matugen: an
-// explicit light/dark passes through; "smart" (or anything else) follows the
-// wallpaper's luminance. For a clip that is the whole run, not the sampled
-// frame: one bright second in a dark wallpaper used to turn the desktop white.
+// explicit light/dark passes through; "sun" follows the real day/night window
+// the weather poll publishes (sun.go), independent of what the wallpaper
+// depicts; "smart" (or anything else) follows the wallpaper's luminance. For a
+// clip that is the whole run, not the sampled frame: one bright second in a
+// dark wallpaper used to turn the desktop white.
 func resolveMode(mode, img string) string {
 	switch mode {
 	case "light", "dark":
 		return mode
+	case "sun":
+		return sunMode(img)
 	}
 	var luma float64
 	var ok bool
@@ -219,6 +225,23 @@ func resolveMode(mode, img string) string {
 		return "dark"
 	}
 	return smartMode(luma)
+}
+
+// sunMode resolves the "sun" mode: light between sunrise and sunset, dark
+// outside. The times come from the weather poll (the same location-correct
+// data the weather widget shows), so a "daytime" video that samples dark no
+// longer forces a dark theme at noon. Until the first frame lands there is no
+// window to follow, and the wallpaper's own luminance is the honest fallback:
+// the box behaves like "smart" for the minutes it has no sun data.
+func sunMode(img string) string {
+	sunrise, sunset, ok := daySun.window()
+	if !ok {
+		return resolveMode("smart", img)
+	}
+	if isDaytime(time.Now(), sunrise, sunset) {
+		return "light"
+	}
+	return "dark"
 }
 
 // videoLuma: a clip's mean luma over its first minute, sampled a frame a second
@@ -556,7 +579,15 @@ func (d *daemon) matugenApply(img string) error {
 	// matugen's post_hook (which runs only after every template has rendered). It
 	// reads the colors.json just written; a no-op unless the Material cursor is
 	// selected, and its own lock makes the post_hook's later run idempotent.
-	go func() { _ = runCommand("ryoku-cursor-material-recolor") }()
+	go func() {
+		if runCommand("ryoku-cursor-material-recolor") != nil {
+			return
+		}
+		// Recolored cursor images stay cached in the running compositor's
+		// memory; re-asserting the theme is what makes a palette change reach
+		// the pointer without a re-pick or a relogin.
+		_ = d.wmc.Act(wm.ActionCursorReassert)
+	}()
 
 	// And the tonal ramps behind those roles, from the same run.
 	if tones != nil {
@@ -1280,46 +1311,39 @@ func nudgePalette() {
 	go ipcCall("shell", "theme", "reload", "")
 }
 
-// applyHyprBorder pushes the window-border colours to the live compositor via
-// `hyprctl eval`. Under Hyprland's Lua config provider a `hyprctl reload` re-runs
-// decoration.lua but reverts col.active_border to the value parsed at login (the
-// fallback), so the border never followed the wallpaper; eval is the only path
-// that lands a runtime change. Reads the same roles the hypr-colors template uses
-// (color4 active, background inactive) from the palette just written to
-// colors.json, so it must run AFTER the caller's config reload, whose revert it undoes.
-func applyHyprBorder() {
+// applyBorderColors lands the palette's border colours on the live compositor
+// when the provider can recolour the border from the palette. It reads the roles
+// the caller just wrote to colors.json; the provider owns the colour literal
+// format and whether the store has pinned a fixed colour (then the act no-ops).
+func (d *daemon) applyBorderColors() {
+	if !d.wmc.Can(wm.CapPaletteBorder) {
+		return
+	}
+	active, inactive, ok := paletteBorderColors()
+	if !ok {
+		return
+	}
+	_ = d.wmc.Act(wm.ActionBorderColors, active, inactive)
+}
+
+// paletteBorderColors reads the active (color4) and inactive (background) border
+// roles from the palette written to colors.json.
+func paletteBorderColors() (active, inactive string, ok bool) {
 	b, err := os.ReadFile(matugenColorsPath())
 	if err != nil {
-		return
+		return "", "", false
 	}
 	var c struct {
 		Color4     string `json:"color4"`
 		Background string `json:"background"`
 	}
 	if json.Unmarshal(b, &c) != nil {
-		return
+		return "", "", false
 	}
-	var parts []string
-	if rgb := hyprRGB(c.Color4); rgb != "" {
-		parts = append(parts, `["col.active_border"]=`+strconv.Quote(rgb))
+	if c.Color4 == "" && c.Background == "" {
+		return "", "", false
 	}
-	if rgb := hyprRGB(c.Background); rgb != "" {
-		parts = append(parts, `["col.inactive_border"]=`+strconv.Quote(rgb))
-	}
-	if len(parts) == 0 {
-		return
-	}
-	_ = runCommand("hyprctl", "eval", "hl.config({general={"+strings.Join(parts, ",")+"}})")
-}
-
-// hyprRGB turns a #rrggbb palette colour into Hyprland's rgb(rrggbb) literal, or
-// "" for a non-hex value so a missing role is skipped rather than mis-set.
-func hyprRGB(hex string) string {
-	h := strings.TrimPrefix(hex, "#")
-	if len(h) != 6 {
-		return ""
-	}
-	return "rgb(" + h + ")"
+	return c.Color4, c.Background, true
 }
 
 // matugenNudgeGtk lands gtk-theme on `want`, flipping through a placeholder first
@@ -1663,6 +1687,38 @@ func writeKittyFont(mono string, size int) {
 	}
 	body := "font_family " + mono + "\nfont_size " + strconv.Itoa(size) + "\n"
 	_ = os.WriteFile(filepath.Join(dir, "current-font.conf"), []byte(body), 0o644)
+}
+
+// watchSunMode retints the desktop when the day/night edge crosses while the
+// mode knob is "sun": resolveMode only runs on a theme pass, and nothing else
+// wakes one at sunrise/sunset. The check compares the resolved value, so a
+// re-observed sun window that does not flip light/dark costs nothing. The
+// cadence matches the night light schedule's: sun times are whole minutes and
+// a few minutes of drift at the edge is invisible next to twilight.
+func (d *daemon) watchSunMode() {
+	last := ""
+	for range time.Tick(nlTickEvery) {
+		if readMatugenKnobs().Mode != "sun" {
+			last = ""
+			continue
+		}
+		sunrise, sunset, ok := daySun.window()
+		if !ok {
+			continue // no window yet: the smart fallback only flips on a real theme pass
+		}
+		got := "dark"
+		if isDaytime(time.Now(), sunrise, sunset) {
+			got = "light"
+		}
+		if last == "" {
+			last = got
+			continue
+		}
+		if got != last {
+			last = got
+			d.scheduleTheme()
+		}
+	}
 }
 
 // watchMatugenKnobs retints the desktop whenever the knob store changes, so a Hub

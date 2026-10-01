@@ -38,7 +38,17 @@ func Run(args []string) error {
 // DesktopLayout reads the layout the desktop uses, from the Hub's store. That
 // store is the source of truth: settings.lua is generated from it.
 func DesktopLayout() Layout {
-	b, err := os.ReadFile(filepath.Join(sys.ConfigHome(), "ryoku", "hypr.json"))
+	if l := readDesktopLayout(filepath.Join(sys.ConfigHome(), "ryoku", "desktop.json"), true); l != (Layout{}) {
+		return l
+	}
+	return readDesktopLayout(filepath.Join(sys.ConfigHome(), "ryoku", "hypr.json"), false)
+}
+
+// readDesktopLayout pulls the input leaves out of one store file. The Hub writes
+// them under desktop.input; the retired hypr.json carried them at the top level
+// and is still read, so a box the doctor has not migrated keeps its layout.
+func readDesktopLayout(path string, nested bool) Layout {
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return Layout{}
 	}
@@ -48,11 +58,22 @@ func DesktopLayout() Layout {
 			KbVariant string `json:"kbVariant"`
 			KbOptions string `json:"kbOptions"`
 		} `json:"input"`
+		Desktop struct {
+			Input struct {
+				KbLayout  string `json:"kbLayout"`
+				KbVariant string `json:"kbVariant"`
+				KbOptions string `json:"kbOptions"`
+			} `json:"input"`
+		} `json:"desktop"`
 	}
 	if json.Unmarshal(b, &o) != nil {
 		return Layout{}
 	}
-	return Layout{Layout: o.Input.KbLayout, Variant: o.Input.KbVariant, Options: o.Input.KbOptions}
+	in := o.Input
+	if nested {
+		in = o.Desktop.Input
+	}
+	return Layout{Layout: in.KbLayout, Variant: in.KbVariant, Options: in.KbOptions}
 }
 
 // State is every layer at once, plus whether they agree.
@@ -142,26 +163,79 @@ func runDetect() error {
 }
 
 func runApply(args []string) error {
-	noBoot := false
-	want := ""
-	for _, a := range args {
-		switch {
-		case a == "--no-boot":
-			noBoot = true
-		case strings.HasPrefix(a, "-"):
-			return fmt.Errorf(i18n.T("unknown flag: %s"), a)
-		case want == "":
-			want = a
-		default:
-			return fmt.Errorf(i18n.T("only one layout may be given"))
-		}
+	want, noBoot, resolved, err := parseApplyArgs(args)
+	if err != nil {
+		return err
 	}
+
+	// The privileged pass (root, re-exec'd under pkexec) does the writes.
+	if resolved != nil {
+		return applySystemAndBoot(*resolved, noBoot)
+	}
+
 	l := DesktopLayout()
 	if want != "" {
 		l.Layout = want
 	}
 	if l.Primary() == "" {
 		return fmt.Errorf(i18n.T("no layout to apply: pass one, or set it in Ryoku Settings"))
+	}
+
+	// Both writes need root: localectl for the greeter/console keymap, mkinitcpio
+	// for the boot image. In a terminal sudo/polkit can prompt for it, but the Hub
+	// runs this with no controlling tty, so `sudo mkinitcpio` failed with "a
+	// terminal is required to read the password" and the whole apply reported
+	// FAILED (#177). With no tty, escalate once through pkexec -- it prompts via
+	// the desktop's polkit agent -- carrying the resolved layout so the root pass
+	// (localectl as root needs no polkit, mkinitcpio as root no sudo) touches no
+	// per-user config. In a terminal the direct path keeps its familiar prompts.
+	if os.Geteuid() != 0 && !sys.StdinIsTTY() && sys.Has("pkexec") {
+		self, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf(i18n.T("locate the ryoku binary to escalate: %w"), err)
+		}
+		reArgs := []string{self, "keyboard", "apply", "--resolved", l.Layout, l.Variant, l.Options}
+		if noBoot {
+			reArgs = append(reArgs, "--no-boot")
+		}
+		return sys.Run("pkexec", reArgs...)
+	}
+	return applySystemAndBoot(l, noBoot)
+}
+
+// parseApplyArgs pulls the flags out of `keyboard apply` arguments. resolved is
+// non-nil only for our own pkexec re-exec (`--resolved <layout> <variant>
+// <options>`), which hands the fully-resolved layout across the privilege
+// boundary so the root pass never reads the user's config.
+func parseApplyArgs(args []string) (want string, noBoot bool, resolved *Layout, err error) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--no-boot":
+			noBoot = true
+		case a == "--resolved":
+			if i+3 >= len(args) {
+				return "", false, nil, fmt.Errorf(i18n.T("--resolved needs a layout, variant and options"))
+			}
+			resolved = &Layout{Layout: args[i+1], Variant: args[i+2], Options: args[i+3]}
+			i += 3
+		case strings.HasPrefix(a, "-"):
+			return "", false, nil, fmt.Errorf(i18n.T("unknown flag: %s"), a)
+		case want == "":
+			want = a
+		default:
+			return "", false, nil, fmt.Errorf(i18n.T("only one layout may be given"))
+		}
+	}
+	return want, noBoot, resolved, nil
+}
+
+// applySystemAndBoot does the two privileged writes: the greeter/console keymap
+// (localectl) and, unless noBoot, the boot image rebuild so the disk passphrase
+// prompt follows. Runs as root when reached through the pkexec re-exec above.
+func applySystemAndBoot(l Layout, noBoot bool) error {
+	if l.Primary() == "" {
+		return fmt.Errorf(i18n.T("no layout to apply"))
 	}
 	if err := ApplySystem(l); err != nil {
 		return err

@@ -2,7 +2,205 @@
 
 ## Unreleased
 
+### Fixed
+- **The picker's Matugen App Templates toggles respond again.** The row wrote
+  through `ryoku-hub hypr matugen set`, a command path that no longer exists:
+  the hub printed its usage and exited 0, and because the write was
+  `execDetached` the failure was invisible, so every toggle in the section
+  looked dead while the state file never changed. The row now uses the same
+  merge writer as the rest of the picker and the Hub
+  (`ryoku-hub desktop matugen set`), so the FileView reload flips the switch
+  the click moved (issue #276).
+
 ### Added
+- **The warm screen and the palette can follow the real sun.** The night
+  light grew a "Follow the sun" switch and an edge margin: it warms the screen
+  from sunset+margin until sunrise-margin using the sunrise/sunset the weather
+  poll already computes for your location, and a manual toggle is honoured
+  until the next edge instead of being fought every tick (`ipc/nightlight.go`,
+  `ipc/nightlight_schedule.go`, `ipc/sun.go`). The theme Mode grew a "Sun"
+  choice beside Dark/Light/Smart: light between sunrise and sunset, dark
+  outside, independent of what the wallpaper depicts -- a daytime video that
+  samples dark no longer forces a dark desktop at noon (issues #262, #263).
+
+- **Palette Bridge rides the wallpaper palette to your apps.** A small local
+  event server publishes the current matugen palette over HTTP so Spicetify,
+  Vesktop and Zen recolour with the wallpaper. The wallpaper settings' Matugen
+  tab grew a Palette Bridge page to build it, run it as a user service, and
+  install or remove each integration; the ryoku-palette-bridge package ships
+  the source tree and the unit
+  (`ryoku/palette-bridge/`, `ryoku/hub/backend/palettebridge.go`,
+  `settings/PaletteBridgeSettings.qml`).
+
+- **The Super+K cheatsheet reads the shared legend.** Short labels with the
+  hint on hover or while searching, a "not here" tag on a shortcut the running
+  compositor cannot do (the reason on hover), caps wide enough for "Num 1" and
+  "Page Up", and rail counts that only count usable shortcuts
+  (`quickshell/keys/BindRow.qml`, `Cheatsheet.qml`, `KeyCap.qml`).
+- **Night light on every compositor, from the Hub.** The warm screen was a
+  Hyprland leaf: the script shipped only with that variant and drove a CTM
+  client niri cannot serve. The backend is the window-manager provider's now
+  (`nightlight.on` / `nightlight.off` actions, a `nightLight` capability, the
+  backend's process name in caps): hyprsunset on Hyprland, gammastep over gamma
+  control on niri. The script rides the shell to every box, the daemon tracks
+  whichever backend the provider names, and the quick tile and launcher action
+  hide where there is none (`scripts/ryoku-cmd-nightlight`, `ipc/nightlight.go`).
+- **The leaf scripts ship with the shell.** `ryoku-app`, the `ryoku-cmd-*`
+  tools, the recorder helpers, folder tinting and the sysinfo readouts are
+  called by bare name on every compositor but shipped only inside the Hyprland
+  variant, so a packaged niri box had none of them while a dev checkout laid
+  every provider's scripts. They live in `scripts/` now and ship from
+  `ryoku-shell` by one glob; `deploy.sh` lays only the live provider's own
+  leaf scripts, so a checkout finally looks like a package.
+- **Summon, game mode, studio recording and the touchpad keys go through the
+  seam.** `window.summon`, `decoration.gameMode`, `input.touchpad`,
+  `output.cycle` and `output.enable` are provider actions; the cursor tracker
+  studio recording uses stays Hyprland payload, reached by capability
+  (`scripts/ryoku-summon`, `scripts/ryoku-cmd-game-mode`,
+  `scripts/ryoku-cmd-studiorecord`).
+- **The wallpaper crossfade transition, and one pool of every transition.**
+  skwd-wall v2 ships a plain crossfade its earlier catalogue lacked: a clean
+  dissolve between the two frames on a smoothed progress. It rides the shell as a
+  real shader (`modules/wallpaper/skwd/crossfade.frag`, the daemon catalogue in
+  `ryogami/daemon/transitions.go`), so "random" rotates it and the picker pins it
+  like any other. The transition picker no longer reads as a flat list: it groups
+  the 39 skwd shaders under the Fade, Wipe, Warp and Break up families v2 carries,
+  each placed by what its math does, and folds Ryogami's original 22 reveal presets
+  into the same list under a Reveal family. Both engines are now one selectable
+  pool and "random" rotates across all 61, where the reveal presets had been
+  stranded on a second, shadowed control the picker never read
+  (`ryogami/wall-ui/qml/wallpaper/ShaderPicker.qml`, `settings/PaperSettings.qml`,
+  `settings/ThemeSettings.qml`, `ryogami/daemon/transitions.go`).
+
+- **Three more wallpaper picker modes from skwd-wall v2: Hand, Sandy, Grid.**
+  The picker could fan cards (Slices), tile them (Wall, Hex, Mosaic); v2 carries
+  three layouts Ryogami lacked. Hand is a fanned deck of cards you scroll through,
+  Sandy a twisting strand carousel, and Grid six packing arrangements (uniform,
+  brick, masonry, justified, editorial and a curved cylinder). Each is a standalone
+  leaf view sharing the picker's one selection cursor, every geometry knob is a
+  live slider, and the whole set persists per-mode like the others
+  (`ryogami/wall-ui/qml/wallpaper/HandView.qml`, `SandyView.qml`,
+  `GridLayoutsView.qml`, `settings/SelectorSettings.qml`, `components/RowSlider.qml`).
+
+- **Upscaling runs in its own worker process and reports its progress.** The
+  waifu2x/ffmpeg enhance ran inside the daemon: a panicking job took the whole
+  daemon (and the picker with it) down, a crash mid-run wedged the job lock so
+  every later upscale answered "already running", and nothing showed a user
+  where their job had gone. The pipeline now lives in a child (`ryogami
+  upscale-worker`) the daemon supervises over its stdout: the child carries
+  its own process group, so a cancel or the failsafe ceiling kills waifu2x and
+  ffmpeg with it; a worker crash is just a failed verdict; and if the daemon
+  dies first the worker notices its stdin closing and tears the job down
+  instead of orphaning the GPU. The same phase/progress events reach the
+  picker's edit panel as before, and a terminal view lands beside them:
+  `ryogami upscale start <file> [scale]`, `ryogami upscale status`,
+  `ryogami upscale cancel` (`ryogami/daemon/upscale_worker.go`, `daemon/main.go`).
+
+- **Kairos, a third built-in bar style: one dynamic island carrying the clock.**
+  A single near-black pill floats at the top centre showing the time, and opens
+  on hover into that clock over a rolling date wheel: the centred day is the
+  selected one and the days either side turn away in perspective, scrollable by
+  drag, wheel and the arrow keys. Each morph is one animated progress value, the
+  clock's size steps to whole pixels (measured at a fixed size, so the resting
+  width can never fight the growth) and the wheel's visuals are interpolated from
+  each day's distance to the centre, so nothing switches at a threshold. The
+  island owns its surface (near-black over the wallpaper, with a cached drop
+  shadow) and reserves the resting band, so tiled windows clear it; the strip
+  around it stays click-through. Pick it with `ryoku-shell barstyle kairos` or
+  from Ryoku Settings' Bar Studio
+  (`modules/bar/barstyles/kairos`, `services/BarProducts.qml`).
+
+- **Kairos grows a music pill when a track plays.** A cover bubble appears just
+  left of the clock -- a track only ever brings up the bubble, never a panel of
+  its own. Hovering it peeks the island open far enough for the transport, and a
+  click opens the full now-playing panel, which closes again as soon as the
+  pointer leaves it -- no click needed. The panel's backdrop is the cover blurred
+  into an even ambient wash,
+  inset so the pill's near-black reads as a bezel around it, behind a low tint of
+  the shell's accent, so it recolours with the wallpaper palette (matugen) and
+  with a named scheme; over it sit the title, artist, album, player, a progress
+  bar with elapsed and total time, and prev/play/next wired to the player. The
+  clock stays the centre island: it rests on the screen's centre line and expands
+  there, symmetric, drawing over the music bubble, while the music grows leftward
+  from just beside it. Each island keeps its own hover target and hover-intent
+  timer, the shadows sit a little deeper under both, and each pill carries a
+  hairline rim so its rounded frame reads on a dark wallpaper where the
+  pure-black fill would otherwise vanish into the desktop
+  (`barstyles/kairos/components/{Island,MusicSurface}.qml`).
+
+- **Kairos also ships an app launcher, and Super+Space grows the island into it.**
+  The pill morphs from the RESTING island -- never from its hover size -- into the
+  clock, the app search and the app list, and its window is mapped at full size so
+  the surface never resizes mid-morph; the morph is armed only once that surface is
+  on screen, so the growth is always visible. While it is open the bar island rests
+  underneath it, and the input mask is the pill rather than the window, so the
+  desktop around the island stays usable. Select it as **Kairos** in Ryoku
+  Settings' App Launcher (`modules/launcher/variants/kairos`, `catalog.json`).
+
+- **Kairos has its own island settings, opened from the gear in the clock pill.**
+  The top-right gear on the expanded clock island opens a surface that belongs to
+  the style alone -- a near-black plate styled like the island, with three routes:
+  Island (size, top offset), Clock (12-hour, seconds, date wheel) and Music (the
+  now-playing bubble and its hover peek). Every control writes the `kairos` key in
+  `shell.json` through the shell daemon and applies live; Ryoku Settings is
+  untouched (`barstyles/kairos/settings/`, `services/Config.qml`).
+
+- **Kairos quick settings grow out of the island itself.** A tune icon beside the
+  gear extends the expanded clock island into the style's own quick settings; one
+  surface, one pill, one `Motion.morph`, so open and close read as the island
+  stretching rather than another window appearing. It carries Wi-Fi and Bluetooth
+  tiles, a weather card (the music card's place), Display and Sound fader rows and
+  the notification list; each tile opens a page in place -- Wi-Fi networks with a
+  password prompt, Bluetooth connected/saved/nearby pairing, Sound output/input
+  volume and devices, and Display brightness, scale, resolution and Night Light.
+  Pages push in from the side rather than cutting. Dismiss by clicking outside,
+  moving the pointer away, Escape, or the tune icon; Ryoku Settings is untouched
+  (`barstyles/kairos/quicksettings/`, `components/Island.qml`).
+
+- **Kairos carries a system tray in the clock pill.** A caret in the sliver
+  under the date wheel opens the tray's icon row inside the same pill; the row
+  scrolls when more apps than fit show up, and right-clicking an icon swaps the
+  row for that app's own menu, rendered live off the tray daemon. Nothing
+  appears until a tray app is actually running, and the island's surface is
+  sized once for the tallest the tray can get, so opening it never resizes the
+  bar mid-morph. Toggle it from the island's Clock settings
+  (`barstyles/kairos/components/TrayFlyout.qml`, `components/Island.qml`,
+  `settings/IslandSettings.qml`).
+
+- **Rashin works with any coding agent now, not just Hermes.** The Hub's Rashin
+  page and the dashboard both list your detected agents with a one-click Wire
+  (it drops a pointer, the ryoku skill, and prowl-agent's code-intelligence
+  skill into that agent), show every path Rashin exposes -- the skill, each
+  vault map, prowl-agent -- and offer a Copy snippet to point an agent Rashin
+  doesn't wire directly. The Super+S chat can run a coding agent other than
+  Hermes when its ACP adapter is installed; Hermes stays the recommended
+  default. `ryoku-rashin paths` and `ryoku-rashin agent` do the same in a
+  terminal.
+
+- **The Super+S chat header picks the agent and its model in one place.** The
+  chip shows what is answering -- the agent, plus its model when it has one
+  ("Hermes · gpt-5.6-luna", or just "Oh My Pi" for an agent that carries its own
+  model). Tapping it opens a two-level picker: choose the agent (Hermes, Oh My
+  Pi, and any other whose adapter is installed; the rest show "needs adapter"),
+  and, for agents that expose a model list, the model. Switching the agent takes
+  effect on your next message, and the chip no longer shows a stale model after
+  a switch.
+
+- **The Super+S needle opens with a clearer start.** Instead of a wall of text,
+  the empty chat now leads with a heading, a one-line explainer, and three
+  tap-to-fill example prompts, so it is obvious what to do first.
+
+- **The needle guides first-time setup instead of failing.** On a box with no
+  AI configured yet, the Super+S chat now shows a "Connect an AI" prompt with an
+  Open setup button (straight to Ryoku Settings' Rashin page) rather than the
+  example prompts, so a first ask never dead-ends on an error.
+
+- **Quick asks are no longer locked to Hermes.** The launcher fast lane can run
+  against any of ten built-in providers (OpenRouter, OpenAI, Groq, DeepSeek,
+  Mistral, Together, xAI, Cerebras, Ollama, local). `ryoku-rashin backend
+  <provider>[:model]` picks one (`backend auto` follows Hermes), and keys can
+  live in `~/.config/ryoku/rashin.env` instead of Hermes's own `.env`, so quick
+  asks work without a Hermes provider configured.
 
 - **The qsbar music widget opens a now-playing card, with a 10-band equalizer.**
   Clicking the widget (its title, its spectrum glyph, or anywhere on it in the
@@ -63,7 +261,117 @@
   `transition.shader` and the built-in engine. Nothing wrote the keys, so no
   config migrates (`ryogami/wall-ui/qml/Config.qml`).
 
+- **A Super tap no longer opens the niri overview.** Tapping Super by itself
+  used to toggle niri's overview through the keypress daemon; Super+Tab already
+  does that, so the tap binding, the daemon claim behind it and the reader it
+  kept alive with the visualiser off are gone (`shell.qml`,
+  `services/Keypresses.qml`, `ipc/keypress.go`).
+
 ### Fixed
+- **Suspend is fail-closed without deadlocking fast user switching.** Each
+  login1 `user`/`user-early` Wayland or X11 session holds the final delay
+  inhibitor so a global sleep waits for every qylock surface; greeter and lock
+  sessions can never become sleep owners. Only login1's active user session
+  holds the long-lived hard `sleep` block or accepts `ryoku-shell suspend`.
+  When a session becomes inactive, it retains or reacquires temporary hard
+  protection until its own qylock is compositor-secure; an inactive startup
+  follows the same rule. Lid, idle, and qylock power actions all use that
+  transaction. Marker presence alone is not accepted: the UID-scoped qylock
+  client must still be live, so another user's locker or a stale file can
+  neither suppress this session's lock nor bless it. Unlock first asks the
+  daemon to acquire hard protection, confirm the session is active and prove
+  login1 is not preparing to sleep; if that daemon is restarting, a stable
+  helper substitutes a durable login1 block until the replacement publishes
+  equivalent protection. Only then does qylock remove its marker and request
+  login1 unlock. A rejected suspend retries any failed block restoration.
+  On a lost D-Bus signal stream the daemon withdraws readiness, reconnects
+  in-process and overlaps valid old protection with its replacement; a login1
+  restart invalidates and reacquires both inhibitor types without consuming the
+  shell's service restart budget. Resume starts output and lighting recovery
+  immediately while bounded calls restore protection in order, and output-on is
+  reasserted across the GPU link's retrain window
+  (`ipc/sleepwake.go`, `ipc/daemon.go`).
+- **The bar's power profile is one owner's, not two.** The qsbar widget and
+  panel polled and wrote power-profiles-daemon with raw `powerprofilesctl`,
+  beside the daemon that banks the user's pick; a switch the daemon
+  re-asserted looked like a dead button. They now read the daemon's
+  powerprofiles stream and set through its socket, the path the sidebar and
+  the Hub use (`barstyles/qsbar/`).
+
+- **The picker toolbar stays on screen in every display mode.** The new
+  Hand/Sandy/Grid modes shipped with two layout faults a scaled or smaller
+  display hits hard: the Slices carousel lost the top margin that keeps it
+  below the toolbar strip, so the two overlapped at every size preset, and the
+  Hand stage was sized without any cap against the screen, so on a logical
+  800px-tall display the card (with the toolbar inside it) pushed the strip
+  204px above the top edge. The slice margin is restored, the fan now scales
+  its card size down to fit short screens instead of overflowing them (full
+  size on tall ones), and the card height is clamped to the panel for every
+  mode, since the toolbar lives inside the card's top
+  (`ryogami/wall-ui/qml/wallpaper/WallpaperSelector.qml`).
+- **The slice picker no longer collapses or stalls on extreme sizes.** The
+  slice-width, gap, skew and visible-count controls were free ranges that the
+  layout math could not survive: a gap more negative than the slice width made
+  the row's pitch go negative so every delegate stacked on one point and the
+  images and videos vanished; a skew wider than the slice collapsed the
+  parallelogram mask to nothing and the slice disappeared too; and the offscreen
+  cache was sized in raw pixels (up to 1800), which at a small slice width pulled
+  hundreds of full-height image and shader-effect delegates into memory at once
+  and lagged the shell toward a crash. The effective gap is now floored at a
+  one-pixel pitch, the skew is capped at the narrower slice edge, and the cache
+  is a bounded band of five pitches on each side, materialising about ten
+  delegates whatever the configured widths are
+  (`ryogami/wall-ui/qml/wallpaper/WallpaperSelector.qml`, `SliceDelegate.qml`).
+- **The autohiding dock stays up in Power Saver when you move onto an app.**
+  The edge hover strip was 3 px and the revealed dock sits 8 px in, so the
+  pointer fell through. The strip is now 8 px (`modules/dock/DockSurface.qml`).
+- **Closing the launcher no longer risks crashing the shell on niri.** Where the
+  compositor has no focus-grab protocol the launcher tore its screen capture
+  down on every close and unmapped its dismiss scrim from inside the press that
+  closed it, the lifecycle quickshell segfaults on under niri. The capture
+  object now lives as long as the surface and the scrim unmaps one turn later;
+  the daemon logs the exit status and stderr tail when the shell dies
+  (`modules/launcher/variants/hero/LauncherSurface.qml`, `LocalFrost.qml`,
+  `ipc/daemon.go`).
+- **Bluetooth devices no longer show as MAC addresses when BlueZ has no name
+  for them.** BlueZ leaves a device's alias equal to its own address (dashed,
+  such as `73-EC-EF-CD-48-8C`) until it learns a name, and Quickshell exposes
+  that alias as `name` while the device-reported name is `deviceName`. Every
+  surface read the name from the alias alone, so an unnamed device printed its
+  MAC even when `deviceName` held the real name. One shared resolver now skips
+  an address-shaped alias, prefers the device's own reported name, and falls
+  back to the address only when a device truly has no name: it covers the
+  Kairos and QS Bar Bluetooth panels, the Sumi Bluetooth menu, the launcher's
+  connection tiles, and the Hub's Connections page
+  (`ryoku/ui/lib/bluetooth.js`, `services/BtLink.qml`,
+  `barstyles/kairos/quicksettings/pages/{BluetoothPage,HomePage}.qml`,
+  `barstyles/qsbar/panels/BluetoothPanel.qml`,
+  `framebars/menus/MenuBluetooth.qml`,
+  `launcher/variants/main/BtConnections.qml`,
+  `ryoku/hub/quickshell/pages/ConnectionsPage.qml`).
+- **Turning on the Cobalt download engine no longer adds you to the `docker`
+  group.** Docker group membership is passwordless root for every process in
+  your session, so a GUI toggle should never grant it. The engine already does
+  all its container work as root through a tightly-scoped polkit helper, so the
+  membership was pure convenience and is gone: enabling Cobalt now grants your
+  session no docker access of its own. If you want plain `docker` on the command
+  line you can still add yourself by hand. Fresh installs were never in the
+  group; this only affects boxes that had switched Cobalt on.
+- **The bar AI usage pill works with OpenCode again, and refreshes faster.** The
+  `opencode-usage` collector read a long-gone `opencode.db`; current OpenCode
+  keeps per-message JSON under `storage/message/<session>/*.json`. It now walks
+  that (and the legacy `session/message` path), falling back to the old sqlite
+  only if present, so the OpenCode chip fills from real sessions. The collector
+  timer also runs 45s after boot and every 5 min instead of 2 min/10 min, so the
+  pill is fresher (`bin/opencode-usage`, `systemd/user/ryoku-ai-usage.timer`).
+- **A dev/checkout build now installs the translation catalog, so the Hub's
+  language and regional-format pickers list every shipped language instead of
+  just Auto and the two English locales.** `deploy.sh` and `dev-run.sh` copied
+  the UI module but never the i18n catalog, so on a source build `I18n` found no
+  `langs.json` and fell back to an empty language table. Both now run
+  `ryoku/i18n/tools/install.sh`, landing `langs.json` and the catalogs at
+  `~/.local/share/ryoku/i18n` (a packaged system already ships them to
+  `/usr/share/ryoku/i18n`).
 - **The now-playing spectrum follows the wallpaper.** With Follow System on, the
   bar retinted on a wallpaper change but the qsbar spectrum kept its old
   gradient: `cavaPalette` was an imperative snapshot taken when the panel
@@ -3490,18 +3798,18 @@
   namespace, so a live wallpaper scale-popped in (the global `popin` layers
   animation) instead of fading over the still
   (`hyprland/modules/decoration.lua`).
-- **`ryoku-shell lock` blocks until the compositor confirms the lock, so
-  suspend can no longer race the lockscreen.** hypridle's `before_sleep_cmd`
-  holds logind's sleep delay-inhibitor only while the command runs, but
-  `lockSession` fire-and-forgot `lock.sh` and returned in milliseconds:
-  Quickshell was still loading QML when the machine suspended, and opening the
-  lid showed the desktop for a beat before the lock painted. The daemon now
-  waits (bounded at 3s, under logind's 5s `InhibitDelayMaxSec`) for the
+- **`ryoku-shell lock` blocks until the compositor confirms the lock, so the
+  lockscreen can no longer race suspend.** `lockSession` fire-and-forgot
+  `lock.sh` and returned in milliseconds: Quickshell was still loading QML when
+  the machine suspended, and opening the lid showed the desktop for a beat
+  before the lock painted. The daemon now waits for the
   `$XDG_RUNTIME_DIR/qylock.locked` marker qylock touches once
   `WlSessionLock.secure` flips true, clearing a stale marker from a killed
-  locker first; a qylock predating the marker just rides out the wait, so
-  suspend is delayed, never blocked (`ipc/actions.go`, covered by
-  `TestLockSessionWaitsForMarker` and `TestLockSessionClearsStaleMarker`).
+  locker first, bounded by the live logind deadline it holds, and a wait that
+  runs out reports a failed lock rather than a false one; a qylock predating the
+  marker just rides out the wait, so suspend is delayed, never blocked
+  (`ipc/actions.go`, covered by `TestLockSessionWaitsForMarker` and
+  `TestLockSessionClearsStaleMarker`).
 - `ipc/actions.go`: the lock no longer leaks one zombie per lock/unlock cycle.
   `lockSession` released the `lock.sh` process handle instead of reaping it, so
   every unlock left a defunct entry in the daemon's process table for the rest

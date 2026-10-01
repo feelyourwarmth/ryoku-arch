@@ -2,7 +2,6 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import Quickshell
-import Quickshell.Hyprland
 import "../.." as Pill
 import shell.services
 import "../../../../components"
@@ -25,16 +24,6 @@ Item {
     signal requestClose()
 
     implicitHeight: 48
-
-    // Keep the toggle probes awake while this row is shown (contract 06 sec 3).
-    property bool watching: false
-    function syncWatch() {
-        if (root.open && !root.watching) { Toggles.watchers += 1; root.watching = true; }
-        else if (!root.open && root.watching) { Toggles.watchers -= 1; root.watching = false; }
-    }
-    onOpenChanged: root.syncWatch()
-    Component.onCompleted: root.syncWatch()
-    Component.onDestruction: if (root.watching) Toggles.watchers -= 1
 
     function isToggle(id) { return id === "airplane" || id === "night-light"; }
     function isOn(id) {
@@ -64,7 +53,7 @@ Item {
         case "color": Quickshell.execDetached(["ryoku-cmd-color-picker"]); root.requestClose(); return;
         case "settings": Quickshell.execDetached(["ryoku-shell", "hub", "open"]); root.requestClose(); return;
         case "lock": Quickshell.execDetached(["ryoku-shell", "lock"]); root.requestClose(); return;
-        case "logout": Hyprland.dispatch("exit"); return;
+        case "logout": SessionActions.run("logout"); return;
         case "reboot": Quickshell.execDetached(["systemctl", "reboot"]); return;
         case "shutdown": Quickshell.execDetached(["systemctl", "poweroff"]); return;
         }

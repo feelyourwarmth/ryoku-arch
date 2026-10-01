@@ -118,7 +118,6 @@ Item {
         case "audio-out": return audioOutPageLoader;
         case "audio-in": return audioInPageLoader;
         case "theme": return themePageLoader;
-        case "clipboard": return clipboardPageLoader;
         }
         return null;
     }
@@ -160,28 +159,16 @@ Item {
         case "audio-out": return I18n.tr("Sound output");
         case "audio-in": return I18n.tr("Microphone");
         case "theme": return I18n.tr("Colour scheme");
-        case "clipboard": return I18n.tr("Clipboard");
         }
         return "";
     }
 
-    // The system pull (toggle probes, module services) holds until the reveal
-    // settles, so opening stays smooth on low-resource machines.
+    // The system pull (module services) holds until the reveal settles, so
+    // opening stays smooth on low-resource machines.
     property bool settled: false
     // A brief hidden warm after login primes that pull once, so the first real
     // open already has its data and closing stays fluid.
     property bool warm: false
-    property bool watching: false
-    function syncWatch() {
-        var want = root.settled || root.warm;
-        if (want && !root.watching) {
-            Toggles.watchers += 1;
-            root.watching = true;
-        } else if (!want && root.watching) {
-            Toggles.watchers -= 1;
-            root.watching = false;
-        }
-    }
 
     function applyInitialPage() {
         if (!root.open || root.initialPage === "")
@@ -215,18 +202,18 @@ Item {
     Timer {
         id: settleTimer
         interval: 800
-        onTriggered: { root.settled = true; root.syncWatch(); }
+        onTriggered: root.settled = true
     }
 
     Timer {
         id: warmDelay
         interval: 4000
-        onTriggered: { root.warm = true; root.syncWatch(); warmHold.restart(); }
+        onTriggered: { root.warm = true; warmHold.restart(); }
     }
     Timer {
         id: warmHold
         interval: 700
-        onTriggered: { root.warm = false; root.syncWatch(); }
+        onTriggered: root.warm = false
     }
 
     function scheduleInitialPage() {
@@ -251,7 +238,6 @@ Item {
             root.page = "";
             root.navReady = false;
         }
-        root.syncWatch();
     }
     onInitialPageChanged: if (root.open && root.initialPage !== "") root.scheduleInitialPage()
     onPageChanged: {
@@ -262,12 +248,6 @@ Item {
         }
     }
     Component.onCompleted: { root.syncConfiguredModules(); warmDelay.start(); }
-    Component.onDestruction: {
-        if (root.watching) {
-            Toggles.watchers -= 1;
-            root.watching = false;
-        }
-    }
 
     Item {
         id: mainBand
@@ -489,23 +469,6 @@ Item {
                                 width: parent.width
                                 s: root.s
                                 open: root.open && root.page === "theme"
-                            }
-                        }
-                    }
-                    Loader {
-                        id: clipboardPageLoader
-                        width: pageStack.width
-                        active: root.pageSeen["clipboard"] === true
-                        visible: root.page === "clipboard" && status === Loader.Ready
-                        asynchronous: true
-                        onStatusChanged: root.completePendingPage("clipboard", clipboardPageLoader)
-                        sourceComponent: Component {
-                            MenuClipboard {
-                                avail: pageScroll.height
-                                width: parent.width
-                                s: root.s
-                                open: root.open && root.page === "clipboard"
-                                onRequestClose: root.requestClose()
                             }
                         }
                     }

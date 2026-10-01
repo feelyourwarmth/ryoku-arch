@@ -52,7 +52,7 @@ func installProduct(ctx context.Context, cache *Cache, category string, entry Pr
 // manifest and every file from the cache; with local set it takes the manifest
 // and reads the file bytes from a local directory instead. Every other check is
 // identical either way: destination allowlist, symlink rejection, per-file hash
-// verification, receipt, journal, disableFreshPlugin, and syncProductDerivedState.
+// verification, receipt, journal, setPluginPlacementEnabled, and syncProductDerivedState.
 func installProductFrom(ctx context.Context, cache *Cache, category string, entry ProductEntry, local *localProductSource) error {
 	dst, expectedDestination, err := productDestination(category, entry.ID)
 	if err != nil {
@@ -61,12 +61,13 @@ func installProductFrom(ctx context.Context, cache *Cache, category string, entr
 	if err := rejectSymlinkPath(productDestinationRoot(category), filepath.FromSlash(expectedDestination)); err != nil {
 		return err
 	}
-	// A source can pause downloads of a still-listed product without delisting
-	// it. Re-read the authoritative registry (never the provider's cached
-	// listing, never a client-supplied field) and refuse before any manifest or
-	// payload byte is fetched. A local install carries no registry and skips it.
+	// A source can pause downloads of a still-listed product, or list one that is
+	// written for another window manager, without delisting it. Re-read the
+	// authoritative registry (never the provider's cached listing, never a
+	// client-supplied field) and refuse before any manifest or payload byte is
+	// fetched. A local install carries no registry and skips it.
 	if local == nil {
-		if err := assertProductDownloadable(ctx, cache, category, entry.ID); err != nil {
+		if err := assertProductInstallable(ctx, cache, category, entry.ID); err != nil {
 			return err
 		}
 	}
@@ -278,7 +279,7 @@ func installProductFrom(ctx context.Context, cache *Cache, category string, entr
 		return rollback(err)
 	}
 	if category == "plugins" && operation == "install" {
-		if err := disableFreshPlugin(entry.ID); err != nil {
+		if err := setPluginPlacementEnabled(entry.ID, pluginAutoEnable(dst)); err != nil {
 			return rollback(err)
 		}
 		journal.Phase = "install-placement"
@@ -850,7 +851,7 @@ func productDestinationRoot(category string) string {
 }
 
 func fetchProductFile(ctx context.Context, cache *Cache, rel string, size int64, expectedHash string) ([]byte, error) {
-	if cache == nil || cache.client == nil || !validProductPath(rel) || size < 0 || size > maxProductFileSize || !productHashPattern.MatchString(expectedHash) {
+	if cache == nil || !cache.hasDownload() || !validProductPath(rel) || size < 0 || size > maxProductFileSize || !productHashPattern.MatchString(expectedHash) {
 		return nil, fmt.Errorf("invalid product fetch %q", rel)
 	}
 	data, fetchErr := fetchProductFileLive(ctx, cache, rel, size)
@@ -897,7 +898,7 @@ func fetchProductFileLive(ctx context.Context, cache *Cache, rel string, limit i
 		return nil, err
 	}
 	request.Header.Set("Cache-Control", "no-cache")
-	response, err := cache.client.Do(request)
+	response, err := cache.downloadClient().Do(request)
 	if err != nil {
 		return nil, err
 	}
